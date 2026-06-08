@@ -1,0 +1,107 @@
+# --- Secrets & local env (never commit per project plan) ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.p12
+credentials.json
+token.json
+**/secrets.local.*
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# Test / type / lint caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+*.cover
+*.py,cover
+.cache
+nosetests.xml
+test-results/
+junit.xml
+
+# --- AWS CDK ---
+cdk.out/
+node_modules/
+.npm
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.pnp.*
+.jsii
+
+# --- Terraform / IaC (plan mentions terraform/ + *.tfvars) ---
+.terraform/
+# Commit .terraform.lock.hcl for reproducible provider versions
+*.tfstate
+*.tfstate.*
+crash.*.log
+*.tfvars
+!*.tfvars.example
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# AWS SAM (plan mentions SAM as an option)
+.aws-sam/
+
+# --- Local dev & exploration dumps ---
+*.log
+localstack-data/
+.tmp/
+tmp/
+scratch/
+raw-dumps/
+
+# --- OS & editors ---
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Supabase CLI (if used alongside Postgres) ---
+supabase/.branches/
+supabase/.temp/
