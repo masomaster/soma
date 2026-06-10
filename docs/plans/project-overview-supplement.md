@@ -111,4 +111,10 @@ The overview states that API and query paths “**never need to filter by `user_
 
 ---
 
+## 8. CI/CD: GitHub Actions → one AWS account
+
+You can deploy **staging** and **prod** into the **same** AWS account: use **different resource names** (or Terraform workspaces), **different S3 buckets / Lambda names / SSM paths**, and **GitHub Environments** so prod deploys require approval. Database isolation remains **two Supabase projects** (or branches), not two AWS accounts. Full workflow outline: [implementation-plan.md](./implementation-plan.md) Phase 2.5.
+
+---
+
 *This supplement should be updated as decisions land; keep project-overview.md as historical context unless you choose to merge them later.*

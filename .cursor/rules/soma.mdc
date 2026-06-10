@@ -11,7 +11,7 @@ Soma is a serverless personal health data pipeline and coaching system.
 Architecture: AWS Lambda + EventBridge + Supabase PostgreSQL + Anthropic API.
 
 ## Stack
-- Python 3.12 (Lambda functions, ETL adapters, pipeline)
+- Python 3.14+ (Lambda functions, ETL adapters, pipeline) — confirm AWS Lambda **managed runtime** or **container image** supports 3.14 before pinning deploy runtime.
 - PostgreSQL via Supabase (psycopg2 for complex queries, supabase-py for simple CRUD)
 - AWS: Lambda, EventBridge, SES, S3, Secrets Manager, SSM Parameter Store
 - Anthropic API: Haiku for daily briefing, Sonnet for weekly anomaly scan

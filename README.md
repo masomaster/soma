@@ -32,9 +32,23 @@ This repository holds the product and technical plan, the **`pipeline`** Python 
 
 ## Development
 
+**`pyproject.toml`** is the standard Python project manifest: it declares the package name, Python version, optional dev dependencies (`pytest`), and setuptools packaging so `pip install -e .` installs the `pipeline` package in editable mode. You can ignore it day-to-day and just run `pip`/`pytest` yourself if you prefer.
+
+**`Makefile`** is a thin convenience so you do not have to remember venv paths. **`make`** alone runs **tests**; use **`make install`** once to create `.venv` and install deps. Optional — delete the Makefile if you prefer raw commands.
+
+**Python version:** this repo targets **Python 3.14+** (`requires-python` in `pyproject.toml`). Install 3.14 locally (e.g. [pyenv](https://github.com/pyenv/pyenv) or python.org), then:
+
 ```bash
-make install    # creates .venv and pip install -e ".[dev]"
-make test       # pytest
+python3.14 -m venv .venv && .venv/bin/pip install -e ".[dev]"
+.venv/bin/python -m pytest tests/ -q
+.venv/bin/python -m compileall -q pipeline
+```
+
+Or with Make (`python3.14` by default; override with `PYTHON=…` if needed):
+
+```bash
+make install    # one-time: create .venv + pip install -e ".[dev]"
+make            # same as `make test` — pytest
 make compile    # bytecode compile check for pipeline/
 ```
 

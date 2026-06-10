@@ -20,11 +20,12 @@ That pattern is common for CI and full offline parity, but it **adds moving part
 
 **Product owner preference (recorded):** avoid Docker for local dev; use Bruno + Supabase (hosted) for API and schema work.
 
-## Bruno (`.bruno/`)
+## Bruno (`.bruno/`) & Makefile
 
 - One **collection per vendor** (or per API surface) keeps environments clear: e.g. `hevy`, `strava`, `anthropic`, `supabase-rest`.  
 - Use **environments** for `{{baseUrl}}`, `{{api_key}}`, OAuth token vars.  
 - For **OAuth** flows (Strava, Google): Bruno can hold the **token refresh** requests; initial authorization may still need a browser once.
+- **`Makefile`:** optional shortcuts (`make install`, `make test`); equivalent shell commands are in [README.md](../../README.md) § Development — delete the Makefile if you do not want it.
 
 ## Supabase auto-generated REST API
 
