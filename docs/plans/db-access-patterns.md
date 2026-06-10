@@ -12,6 +12,8 @@ This document records **who** connects to Soma’s domain tables, **which creden
 
 **Decision (Soma):** pipeline jobs use **`service_role`** (or direct Postgres with a role that bypasses RLS) plus **explicit `user_id`** on every insert/update scoped to the job’s tenant. RLS remains the safety net for **user JWT** paths (REST and clients using the user’s session).
 
+Inserts into **`strength_events`** and **`cardio_events`** must always set **`source_id`** (both columns are **`NOT NULL`** in `0001_initial.sql` so `UNIQUE (user_id, source_id)` dedupes reliably).
+
 ## PostgREST (REST)
 
 Base URL: `https://<project-ref>.supabase.co/rest/v1/<table>`

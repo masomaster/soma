@@ -24,7 +24,7 @@ CREATE TABLE strength_events (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id       UUID NOT NULL REFERENCES auth.users(id),
     source        TEXT NOT NULL,        -- 'hevy', 'strong', 'manual'
-    source_id     TEXT,                 -- for dedup
+    source_id     TEXT NOT NULL,        -- for dedup (required; UNIQUE with user_id)
     event_date    DATE NOT NULL,
     exercise_name TEXT NOT NULL,
     muscle_group  TEXT,                 -- 'push', 'pull', 'legs', 'core'
@@ -48,7 +48,7 @@ CREATE TABLE cardio_events (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID NOT NULL REFERENCES auth.users(id),
     source          TEXT NOT NULL,
-    source_id       TEXT,
+    source_id       TEXT NOT NULL,
     event_date      DATE NOT NULL,
     activity_type   TEXT NOT NULL,      -- 'run', 'ride', 'swim', 'hike', 'walk'
     duration_min    FLOAT,
