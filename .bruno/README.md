@@ -13,8 +13,7 @@ Create additional folders under `.bruno/` as you go, for example:
   README.md                 ← this file
   bruno.json                ← collection root
   environments/
-    local.bru               ← optional; or use Global Environment
-    staging.bru
+    soma.example.bru        ← committed template (copy to soma.bru locally; soma.bru is gitignored)
   hevy/
     folder.bru
     list-workouts.bru
@@ -30,7 +29,8 @@ Adjust names to match how you like to organize repos (single monorepo collection
 
 ## Secrets
 
-- Use **Bruno Secret** variables or a **`.env` referenced by Bruno** that stays **gitignored** (this repo already ignores `.env`).  
+- **Tracked:** `environments/soma.example.bru` — placeholders only; safe to commit.
+- **Ignored:** `environments/soma.bru` (your real `HEVY_API_KEY`), `environments/*.local.bru`, and `.bruno/.env`. Copy the example: duplicate `soma.example.bru` → `soma.bru` in the same folder, replace the placeholder, pick the **soma** environment in Bruno.
 - Never commit API keys, OAuth refresh tokens, or Supabase **service_role** keys.
 
 ## Supabase REST from Bruno

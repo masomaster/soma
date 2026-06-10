@@ -8,6 +8,10 @@
 credentials.json
 token.json
 **/secrets.local.*
+# Bruno — real env vars (never commit); copy from environments/*.example.bru
+.bruno/environments/soma.bru
+.bruno/environments/*.local.bru
+.bruno/.env
 
 # --- Python ---
 __pycache__/
