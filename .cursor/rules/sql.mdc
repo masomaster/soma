@@ -1,0 +1,17 @@
+---
+description: SQL conventions for Soma schema
+globs: ["**/*.sql"]
+alwaysApply: false
+---
+
+# Soma SQL Conventions
+
+- All tables have user_id UUID NOT NULL REFERENCES auth.users(id)
+- All tables have created_at TIMESTAMPTZ DEFAULT NOW()
+- Primary keys are UUID with gen_random_uuid()
+- Deduplication via UNIQUE(user_id, source_id) on event tables
+- Every table gets a corresponding RLS policy after creation
+- Use event_date DATE (not TIMESTAMPTZ) for daily health data
+- Canonical biometric metric names: hrv_rmssd, resting_hr, sleep_hours,
+  sleep_deep_hrs, sleep_rem_hrs, body_weight_lbs, body_fat_pct, vo2_max, steps
+- Index pattern: (user_id, date_column DESC) for all time-series tables

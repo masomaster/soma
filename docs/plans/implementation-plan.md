@@ -1,0 +1,148 @@
+# Implementation Plan: Soma (Personal Health OS)
+
+**Status:** Planning only — no application build until you confirm.  
+**Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [integrations-checklist.md](./integrations-checklist.md) (sources to confirm).  
+**Historical / detailed vision:** [project-overview.md](./project-overview.md) (unchanged source conversation).
+
+---
+
+## Requirements Restatement
+
+Build a **multi-tenant-ready**, **environment-isolated** pipeline that:
+
+1. **Ingests** fitness/health data from external APIs and webhooks, **writes raw JSON to S3 first**, then normalizes into **Supabase Postgres** tables with **RLS** and `user_id` on every domain table.
+2. **Derives** daily wide metrics and `daily_features`, runs a **deterministic rules layer** (thresholds externalized, e.g. SSM) and **statistical anomaly** detection, optionally **weekly** LLM-assisted pattern scan.
+3. **Synthesizes** a daily coaching note via LLM that **narrates pre-computed signals** (no free-form reasoning over raw event dumps as the sole logic).
+4. **Delivers** the briefing (e.g. SES email in cloud envs; stdout/local log when `ENV=local`).
+5. Supports **local development without Docker** (Bruno + hosted Supabase for schema/API validation), plus **staging** and **production** with promotion discipline. See [local-dev-and-tooling.md](./local-dev-and-tooling.md).
+
+Non-goals for initial phases: polished NL query UI (deferred), native iOS app (optional later), replacing the whole stack with a persistent “agent runtime.”
+
+---
+
+## Phases
+
+### Phase 0 — Repository & agent/plugin harness (no cloud)
+
+- Add minimal **Python package layout** (`pyproject.toml`, `pipeline/` or equivalent) aligned with `.cursor/rules/soma.mdc` (logging, type hints, thin handlers later).
+- Add **`schema/migrations/`** convention (numbered SQL) when implementation starts; until then **`schema/soma-planned-schema.sql`** is the planned DDL (see [docs/schema/README.md](../schema/README.md)).
+- **Cursor:** keep `.cursor/rules/soma.mdc` and `sql.mdc` as source of truth; add **AGENTS.md** (or extend README) describing which **subagents/skills** to use per task class (e.g. Supabase skill for RLS/migrations, aws-lambda for handlers, deploy-on-aws for Terraform).
+- **Plugins:** document intended use (Supabase MCP for remote debugging only; Terraform/AWS docs plugins for IaC) — no requirement to wire MCP in Phase 0.
+- **Deliverable:** **Bruno** collections under `.bruno/` (see [.bruno/README.md](../../.bruno/README.md)); documented **venv** + env vars; optional **Makefile / justfile**; no Docker requirement. Seed data can target **Supabase dev** via SQL or a small script once migrations exist.
+
+### Phase 1 — Schema + RLS + “who is the database client?”
+
+- Implement **migrations** for core tables from overview: `user_settings`, `strength_events`, `cardio_events`, `biometrics`, `daily_health_metrics`, `daily_features`, `interventions`, `daily_briefings`, `anomaly_events`.
+- **Decide explicitly:** Lambda/data jobs use **service role** (bypass RLS) vs **per-user JWT**. If service role: document that **application code must scope by `user_id`** for job safety; RLS remains for **end-user** paths (Streamlit/Next later). Reconcile this with overview wording — do not pretend RLS absolves batch jobs.
+- **RLS tests:** as in overview — second user’s JWT sees zero rows.
+- **Deliverable:** migration set + short doc on DB access patterns.
+
+### Phase 2 — Raw S3 + one ETL adapter (vertical slice)
+
+- S3 raw path: `raw/{user_id}/{source}/{YYYY-MM-DD}/{timestamp}.json` (match workspace rule).
+- **Hevy first** (or Strava if OAuth setup is easier for you): fetch → **raw write** → normalize → upsert with **`ON CONFLICT (user_id, source_id) DO NOTHING`** (per workspace rule).
+- Local raw writes: **optional** (staging S3 bucket with a `dev/` prefix, or defer S3 until first Lambda); LocalStack/Docker **not** assumed — add only if you need offline S3.
+- **Deliverable:** one adapter with unit tests + fixture JSON under `tests/fixtures/`.
+
+### Phase 3 — Scheduling + orchestration (fix the “5–10 minute” problem)
+
+- Replace **tight multi-cron** (5:50 / 5:55 / 6:00) with either:
+  - **One daily pipeline** (single Lambda or Step Functions) with **internal ordered steps** and a **single scheduled start** well before desired email time, **or**
+  - **Event-driven chain:** ETL completion → SQS/EventBridge → features → briefing, with **visibility timeouts** and **DLQ**, **or**
+  - **Wider stagger** (e.g. 60–120+ minutes between ingest window close and briefing) if cron simplicity is preferred.
+- **Ingest latency:** webhook sources (Apple Health export) may land **after** “ETL cron”; define **cutoff** (“briefing uses data as of T-2h local”) or **re-run** policy.
+- **Deliverable:** diagram + Terraform/EventBridge (or Step Functions) matching chosen pattern; SLAs documented in supplement.
+
+### Phase 4 — Features + rules + briefing (still staging-first)
+
+- Populate `daily_health_metrics` from `biometrics`; compute `daily_features`.
+- Rules engine **Option A** (hand-coded + externalized thresholds). Unify **SSM path** convention early: `/soma/{env}/{user_id}/rules/...` (fix overview inconsistencies at implementation time).
+- Briefing Lambda: build prompt from **flags + features + anomalies + guidelines**; call Haiku; persist `daily_briefings`; SES in staging with `[STAGING]` subject.
+- **Deliverable:** end-to-end staging runbook + CloudWatch alarms on failures.
+
+### Phase 5 — Production + more sources
+
+- Promote Terraform + Supabase migrations to prod; secrets per env/user.
+- Add sources in order of **dependency / risk** (e.g. Strava OAuth, Apple webhook adapter, Renpho, Google Health before Fitbit sunset).
+- **Deduplication / source priority** as in overview — implement explicitly in code or small config table.
+
+### Phase 6 — Anomaly layer
+
+- Statistical anomalies daily; weekly Sonnet scan optional behind feature flag.
+- Persist to `anomaly_events`; include in briefing prompt per overview.
+
+### Phase 7 — Query frontend (optional)
+
+- Streamlit spike → Next.js PWA if validated; text-to-SQL only with **schema-bound** prompts and **read-only** role — threat model in supplement.
+
+---
+
+## Dependencies
+
+- **AWS:** account, IAM, S3, Lambda, EventBridge (or Step Functions), SES (sandbox exit in prod), Secrets Manager, SSM, CloudWatch.
+- **Supabase:** staging + prod projects (or single project + branches if you adopt that model — decide explicitly).
+- **Anthropic:** API keys, spend limits; **model IDs** pinned in config (refresh names when implementing).
+- **External APIs:** Hevy Pro API, Strava OAuth, Health Auto Export behavior, Google Health Connect / OAuth, Renpho, CalDAV.
+- **Local:** Python 3.12 on the host, **Bruno**, **Supabase CLI** (optional) or Dashboard-only workflow; **no Docker** unless you later choose LocalStack or containerized CI.
+
+---
+
+## Risks
+
+| Severity | Risk |
+|----------|------|
+| **High** | **RLS vs batch jobs:** service role bypasses RLS — wrong `user_id` or missing filter can corrupt or leak data across tenants. |
+| **High** | **Webhook + cron mismatch:** briefing runs before Apple Health payload arrives → stale coaching. |
+| **Medium** | **SSM path drift** between overview sections (`/soma-staging/...` vs `/soma/{env}/{user_id}/...`) → misconfigured thresholds in prod. |
+| **Medium** | **Supabase “URL” confusion:** REST URL vs Postgres connection string for different clients — misconfiguration in Lambda. |
+| **Medium** | **OAuth token refresh** (Strava, Google) — secrets rotation and failure handling. |
+| **Low** | **Cost estimate** in overview is rough; Secrets Manager and API usage can exceed early expectations at scale. |
+
+---
+
+## Existing Patterns to Follow
+
+- **Workspace rules:** `.cursor/rules/soma.mdc` — raw-before-normalize, SSM thresholds, RLS discipline, canonical metric names, adapter return shape.
+- **SQL style:** `.cursor/rules/sql.mdc` when writing migrations.
+- **Docs:** `README.md` for high-level; keep long-form in `docs/plans/` with supplements for deltas.
+
+---
+
+## Agents & Plugins (when building)
+
+| Work type | Suggested agent / plugin |
+|-----------|-------------------------|
+| Postgres migrations, RLS, advisors | Supabase skill + Supabase MCP (read-only / staging first). |
+| Lambda, EventBridge, Step Functions | `aws-lambda` / `aws-serverless-deployment` skills; AWS MCP for IaC snippets if enabled. |
+| Terraform structure | `terraform-specialist` or deploy-on-aws plugin patterns. |
+| Security review before prod | Dedicated security-review / ce-security-reviewer after auth + SES + secrets land. |
+| E2E of email path | Optional later: staging integration tests or manual runbook — not Phase 0. |
+
+Use **planner → implement** workflow: keep this file updated when phases complete.
+
+---
+
+## Out of Scope (unless you ask)
+
+- Rewriting `project-overview.md` in place (use supplement for corrections).
+- Parquet cold archive / “second query engine” until retention or cost proves necessary (overview itself is mixed on Phase 4 archival — pick one story).
+- OpenClaw or always-on agent hosts (already “archived” in overview — aligned).
+- Nike Run Club as ongoing integration (historical export only).
+
+---
+
+## Estimated Complexity
+
+**High** for full multi-source + orchestration + RLS-correct batch design — roughly **80–160+ hours** spread across evenings/weekends (depends on OAuth sources and operational polish). **Medium** for a credible **Hevy + local + staging email** vertical slice — roughly **24–40 hours**.
+
+---
+
+## Open Questions (need your input)
+
+See [project-overview-supplement.md](./project-overview-supplement.md) § Questions for product owner.
+
+---
+
+WAITING FOR CONFIRMATION
+
+Reply with **`yes`** / **`proceed`** to authorize implementation starting at Phase 0, or **`modify: ...`** to adjust phasing, or specify **`skip phase N`** / **`do phase N first`**.

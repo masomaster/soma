@@ -10,7 +10,7 @@
 - **Compute** daily features, run a rules engine and anomaly layer, then **synthesize** coaching copy with an LLM (the model narrates pre-computed signals; it does not replace the logic layer).
 - **Deliver** a daily briefing (e.g. email via SES) on a schedule.
 
-The design targets multiple users, isolated staging and production environments, and local development with Docker Postgres and LocalStack where possible.
+The design targets multiple users and isolated staging and production environments. **Local development** is documented without Docker: Bruno for vendor APIs, hosted Supabase for schema and PostgREST — see [docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md).
 
 ## Documentation
 
@@ -18,6 +18,14 @@ Full architecture, data sources, schema direction, and operational notes live in
 
 **[docs/plans/project-overview.md](docs/plans/project-overview.md)**
 
+Phased implementation plan, orchestration/timing notes, and doc validation:
+
+- **[docs/plans/implementation-plan.md](docs/plans/implementation-plan.md)** — phased build, risks, agents/plugins when coding  
+- **[docs/plans/project-overview-supplement.md](docs/plans/project-overview-supplement.md)** — pipeline timing, inconsistencies flagged, open questions  
+- **[docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md)** — no-Docker workflow, Bruno, Supabase REST mapping  
+- **[docs/plans/integrations-checklist.md](docs/plans/integrations-checklist.md)** — services to integrate (confirm / edit)  
+- **[docs/schema/README.md](docs/schema/README.md)** — planned SQL schema (diagram + full DDL)
+
 ## Status
 
-This repository currently holds the product and technical plan. Application code and infrastructure are not present yet; use the overview doc as the source of truth for intended stack (Python pipeline, AWS, Supabase Auth, etc.) and conventions.
+This repository holds the product and technical plan, **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, and Bruno guidance (`.bruno/README.md`). Application code and Terraform are not present yet; use the overview and supplement docs as the source of truth for intended stack and conventions.
