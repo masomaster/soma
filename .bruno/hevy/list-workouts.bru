@@ -1,0 +1,16 @@
+meta {
+  name: List workouts (paginated)
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://api.hevyapp.com/v1/workouts?page=1&pageSize=10
+  body: none
+  auth: none
+}
+
+headers {
+  api-key: {{HEVY_API_KEY}}
+  Accept: application/json
+}

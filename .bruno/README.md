@@ -4,12 +4,14 @@ Use [Bruno](https://www.usebruno.com/) to exercise **vendor APIs** and, later, *
 
 ## Layout (suggested)
 
-Create folders under `.bruno/` as you go, for example:
+This repo includes `bruno.json` at `.bruno/bruno.json` and a **Hevy** folder (`hevy/list-workouts.bru`). Open `.bruno` as a collection in Bruno and set `HEVY_API_KEY` in a secret / environment (never commit).
+
+Create additional folders under `.bruno/` as you go, for example:
 
 ```text
 .bruno/
   README.md                 ← this file
-  bruno.json                ← collection root (Bruno creates this)
+  bruno.json                ← collection root
   environments/
     local.bru               ← optional; or use Global Environment
     staging.bru

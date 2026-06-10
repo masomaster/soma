@@ -32,4 +32,13 @@ Use it to confirm scope before building adapters. **Reply in-repo** (or issue) w
 
 ---
 
+## Phase 1 — payload capture (in progress)
+
+Redacted samples and shape tests live under `tests/fixtures/` (see `tests/fixtures/README.md`). Replace fixtures with your own captures after hitting the real APIs; never commit secrets.
+
+| Source | API / path | Pagination / units | Dedup / keys (proposed) |
+|--------|------------|--------------------|-------------------------|
+| **Hevy** | `GET /v1/workouts` — `page`, `pageSize` (max 10), response `page`, `page_count`, `workouts` | Timestamps ISO 8601; set weights in **kg** (`weight_kg`) — convert to `strength_events.weight_lbs` in ETL | `source_id`: `hevy:{workout_id}:{exercise_index}:{set_index}` — sets expose `index` only (no stable set UUID in list payload); revisit if single-workout endpoint adds ids |
+| **Apple Health export** (webhook / daily rollup) | App-specific JSON — normalize to `biometrics` rows | One row per `(event_date, metric)`; values must use [canonical metric names](../../schema/soma-planned-schema.sql) | DB `UNIQUE (user_id, source, event_date, metric)` per planned schema |
+
 **Your confirmation:** Edit this file (or list deltas in chat) with ✅ / ❌ per row, any renames (e.g. different export app than Health Auto Export), and **order of implementation** if it differs from the table.

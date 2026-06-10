@@ -1,6 +1,6 @@
 # Implementation Plan: Soma (Personal Health OS)
 
-**Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). Phase 1 (API validation) onward pending.  
+**Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). **Phase 1** started: redacted Hevy + biometrics fixtures, shape tests, Bruno `hevy/list-workouts` — still need real captures and checklist sign-off before freezing migrations.  
 **Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [integrations-checklist.md](./integrations-checklist.md) (sources to confirm).  
 **Historical / detailed vision:** [project-overview.md](./project-overview.md) (unchanged source conversation).
 

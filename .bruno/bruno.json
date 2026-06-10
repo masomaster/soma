@@ -1,0 +1,6 @@
+{
+  "version": "1",
+  "name": "soma",
+  "type": "collection",
+  "ignore": ["node_modules", ".git"]
+}
