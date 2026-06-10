@@ -299,10 +299,13 @@ local dev → passes local tests
 Use **AWS CDK v2 (Python)** for all AWS resources. Same app can deploy **staging** and **production** via separate **stacks** or **stages** (different names, buckets, Lambdas, SSM path prefixes). **Terraform and SAM are not part of this project.**
 
 ```
-infrastructure/          # or cdk/ — team choice
-  app.py                 # CDK App entry
-  soma_stack.py          # Lambda, EventBridge, S3, SES, IAM, …
-  # staging vs prod: two stacks, or Stage with env context
+infrastructure/
+  app.py                 # CDK App — registers SomaStagingStack + SomaProdStack
+  cdk.json
+  requirements.txt       # pins (mirror optional [cdk] in repo pyproject.toml)
+  soma_cdk/
+    staging_stack.py     # class SomaStagingStack
+    prod_stack.py        # class SomaProdStack
 ```
 
 ---
@@ -1614,7 +1617,8 @@ Iterate on the prompt and guidelines files until output is genuinely useful acro
 ### Step 8 — Staging Deployment & End-to-End Test
 
 ```bash
-# Deploy to staging (CDK Python — exact stack names from your app)
+# Deploy to staging (from infrastructure/; stack id must match app.py)
+cd infrastructure
 cdk deploy SomaStagingStack
 
 # Trigger ETL manually
@@ -1633,6 +1637,7 @@ Let staging run for 2-3 days. Verify:
 ### Step 9 — Production Deployment
 
 ```bash
+cd infrastructure
 cdk deploy SomaProdStack
 ```
 
@@ -1654,7 +1659,7 @@ Monitor the first week of production briefings. Tune SSM thresholds as needed. U
 
 ```
 Repo
-  infrastructure/  — AWS CDK v2 (Python): stacks define AWS below
+  infrastructure/  — AWS CDK v2 (Python): app.py registers SomaStagingStack, SomaProdStack
 
 AWS
   EventBridge    — cron scheduling

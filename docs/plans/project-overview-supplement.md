@@ -2,7 +2,7 @@
 
 This document **does not replace** [project-overview.md](./project-overview.md). It records **corrections**, **timing/orchestration recommendations**, **internal inconsistencies** found when validating the overview against the current repo and engineering reality, and **questions** for the product owner.
 
-**Current repo state:** Planning docs, `.cursor/rules/`, **`.bruno/README.md`**, **`schema/soma-planned-schema.sql`**, **`docs/schema/`** (diagram + index), `.gitignore` — application code and **AWS CDK (Python)** infra are still future work.
+**Current repo state:** Planning docs, `.cursor/rules/`, **`.bruno/README.md`**, **`schema/soma-planned-schema.sql`**, **`docs/schema/`**, **`pipeline/`** package + tests, minimal **AWS CDK (Python)** under **`infrastructure/`** (`SomaStagingStack`, `SomaProdStack`). Full Lambdas / S3 / SES wiring still future work.
 
 ---
 

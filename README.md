@@ -24,11 +24,11 @@ Phased implementation plan, orchestration/timing notes, and doc validation:
 - **[docs/plans/project-overview-supplement.md](docs/plans/project-overview-supplement.md)** — pipeline timing, inconsistencies flagged, open questions  
 - **[docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md)** — no-Docker workflow, Bruno, Supabase REST mapping  
 - **[docs/plans/integrations-checklist.md](docs/plans/integrations-checklist.md)** — services to integrate (confirm / edit)  
-- **[docs/schema/README.md](docs/schema/README.md)** — planned SQL schema (diagram + full DDL)
+- **[infrastructure/README.md](infrastructure/README.md)** — CDK app: `SomaStagingStack` / `SomaProdStack`, synth & deploy  
 
 ## Status
 
-This repository holds the product and technical plan, the **`pipeline`** Python package (installable via `pyproject.toml`), **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, **AGENTS.md**, and Bruno guidance (`.bruno/README.md`). **AWS CDK (Python)** app and deployed AWS resources are not in this repo yet.
+This repository holds the product and technical plan, the **`pipeline`** Python package (installable via `pyproject.toml`), **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, **AGENTS.md**, Bruno guidance (`.bruno/README.md`), and a minimal **AWS CDK (Python)** app under **`infrastructure/`** (`SomaStagingStack`, `SomaProdStack`). Deployed AWS resources beyond synth still require your account bootstrap + `cdk deploy`.
 
 ## Development
 
@@ -50,7 +50,21 @@ Or with Make (`python3.14` by default; override with `PYTHON=…` if needed):
 make install    # one-time: create .venv + pip install -e ".[dev]"
 make            # same as `make test` — pytest
 make compile    # bytecode compile check for pipeline/
+make cdk-synth  # pip install .[cdk] + CDK synth (writes cdk.out under infrastructure/)
 ```
 
 Copy [`.env.example`](.env.example) to `.env` for local secrets (gitignored). `ENV` defaults to `local`; see `pipeline.settings`.
+
+### AWS CDK (Python)
+
+Infra code lives in [`infrastructure/`](infrastructure/). Stable stack names: **`SomaStagingStack`**, **`SomaProdStack`**.
+
+```bash
+pip install -e ".[cdk]"          # aws-cdk-lib + constructs (from repo root)
+make cdk-synth                   # writes infrastructure/cdk.out/ (uses npx aws-cdk CLI)
+```
+
+Direct `python infrastructure/app.py` also runs `app.synth()` but emits assembly to a **temp** dir unless you use the CDK CLI — prefer `make cdk-synth` or `cd infrastructure && cdk synth SomaStagingStack`.
+
+See [`infrastructure/README.md`](infrastructure/README.md) for bootstrap and deploy commands.
 

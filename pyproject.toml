@@ -12,6 +12,10 @@ dependencies = []
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
+cdk = [
+    "aws-cdk-lib>=2.160,<3",
+    "constructs>=10.3,<11",
+]
 
 [tool.setuptools.packages.find]
 include = ["pipeline*"]
