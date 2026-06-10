@@ -1,7 +1,7 @@
 # Implementation Plan: Soma (Personal Health OS)
 
-**Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). **Phase 1 complete:** Hevy `GET /v1/workouts` validated against live API + [Swagger docs](https://api.hevyapp.com/docs/); redacted fixtures and shape tests under `tests/fixtures/`; Bruno `hevy/list-workouts`; [integrations checklist](./integrations-checklist.md) signed off for ship-first strength + biometrics rollup. **Next:** Phase 2 — freeze `schema/migrations/0001_*.sql` from `schema/soma-planned-schema.sql`, RLS, staging apply, DB access doc.  
-**Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [integrations-checklist.md](./integrations-checklist.md) (scope + Phase 1 payload notes).  
+**Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). **Phase 1 complete:** Hevy `GET /v1/workouts` validated against live API + [Swagger docs](https://api.hevyapp.com/docs/); redacted fixtures and shape tests under `tests/fixtures/`; Bruno `hevy/list-workouts`; [integrations checklist](./integrations-checklist.md) signed off for ship-first strength + biometrics rollup. **Phase 2 (repo deliverables) complete:** `schema/migrations/0001_initial.sql` (RLS + grants + Hevy `superset_id`), [db-access-patterns.md](./db-access-patterns.md), migration RLS contract tests. **Operator next:** apply `0001` to **Supabase staging**, run two-user RLS smoke check, then promote to prod with your release process.  
+**Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [integrations-checklist.md](./integrations-checklist.md) (scope + Phase 1 payload notes), [db-access-patterns.md](./db-access-patterns.md) (keys, RLS vs service role, migration apply order).  
 **Historical / detailed vision:** [project-overview.md](./project-overview.md) (unchanged source conversation).
 
 ### How we work (agents / humans)
@@ -48,11 +48,11 @@ Non-goals for initial phases: polished NL query UI (deferred), native iOS app (o
 
 ### Phase 2 — Schema + RLS + “who is the database client?”
 
-- Implement **`schema/migrations/`** (e.g. `0001_initial.sql`) from the **validated** model — evolved from `schema/soma-planned-schema.sql` after Phase 1.
-- Apply to **Supabase staging**; document promotion to prod.
-- **Decide explicitly:** Lambda/data jobs use **service role** (bypass RLS) vs **per-user JWT**. If service role: document that **application code must scope by `user_id`** for job safety; RLS remains for **end-user** paths (Streamlit/Next later). Reconcile this with overview wording — do not pretend RLS absolves batch jobs.
-- **RLS tests:** as in overview — second user’s JWT sees zero rows.
-- **Deliverable:** migration set + short doc on DB access patterns.
+- ✅ Implement **`schema/migrations/`** — `0001_initial.sql` from the validated model (`schema/soma-planned-schema.sql` + Phase 1 `superset_id` on `strength_events`).
+- **Apply to Supabase staging** (operator): Dashboard SQL, `psql`, or Supabase CLI; then **promote to prod** via your release checklist — see [db-access-patterns.md](./db-access-patterns.md).
+- ✅ **Decide explicitly:** [db-access-patterns.md](./db-access-patterns.md) — Lambdas / ETL use **`service_role`** + explicit `user_id`; RLS protects **user JWT** paths.
+- ✅ **RLS tests:** `tests/test_migration_rls_contract.py` asserts every domain table has RLS + `auth.uid()` policies in the migration; manual two-user REST check documented in [db-access-patterns.md](./db-access-patterns.md).
+- ✅ **Deliverable:** migration + [db-access-patterns.md](./db-access-patterns.md).
 
 ### Phase 3 — Raw S3 + one ETL adapter (vertical slice)
 

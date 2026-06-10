@@ -29,6 +29,7 @@ CREATE TABLE strength_events (
     exercise_name TEXT NOT NULL,
     muscle_group  TEXT,                 -- 'push', 'pull', 'legs', 'core'
     movement_type TEXT,                 -- 'compound', 'isolation'
+    superset_id   INTEGER,              -- Hevy: nullable int grouping supersets
     set_number    INT,
     reps          INT,
     weight_lbs    FLOAT,

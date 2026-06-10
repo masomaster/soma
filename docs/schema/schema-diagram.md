@@ -29,6 +29,7 @@ erDiagram
     text source_id
     date event_date
     text exercise_name
+    int superset_id
   }
 
   cardio_events {
