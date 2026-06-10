@@ -70,9 +70,8 @@ node_modules/
 .pnp.*
 .jsii
 
-# --- Terraform / IaC (plan mentions terraform/ + *.tfvars) ---
+# --- Stray Terraform artifacts (Soma uses CDK only; still ignore if present) ---
 .terraform/
-# Commit .terraform.lock.hcl for reproducible provider versions
 *.tfstate
 *.tfstate.*
 crash.*.log
@@ -83,7 +82,7 @@ override.tf.json
 *_override.tf
 *_override.tf.json
 
-# AWS SAM (plan mentions SAM as an option)
+# AWS SAM (not used for Soma; ignore if tooling drops files here)
 .aws-sam/
 
 # --- Local dev & exploration dumps ---

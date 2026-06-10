@@ -2,7 +2,7 @@
 
 This document **does not replace** [project-overview.md](./project-overview.md). It records **corrections**, **timing/orchestration recommendations**, **internal inconsistencies** found when validating the overview against the current repo and engineering reality, and **questions** for the product owner.
 
-**Current repo state:** Planning docs, `.cursor/rules/`, **`.bruno/README.md`**, **`schema/soma-planned-schema.sql`**, **`docs/schema/`** (diagram + index), `.gitignore` — application code and Terraform are still future work.
+**Current repo state:** Planning docs, `.cursor/rules/`, **`.bruno/README.md`**, **`schema/soma-planned-schema.sql`**, **`docs/schema/`** (diagram + index), `.gitignore` — application code and **AWS CDK (Python)** infra are still future work.
 
 ---
 
@@ -28,7 +28,7 @@ The overview’s **Daily Pipeline Flow** uses **5:50 → 5:55 → 6:00** (five- 
 
 ### Recommendation
 
-Pick one of these **documented** strategies (implementation can follow in Phase 3 of the implementation plan):
+Pick one of these **documented** strategies (implementation can follow in **Phase 5** of the implementation plan):
 
 1. **Single orchestrated pipeline** (preferred for clarity): one scheduled start (e.g. **04:00 local**), run steps **sequentially** inside one Lambda or Step Functions state machine: ETL (all sources) → normalize → `daily_health_metrics` / `daily_features` → rules → anomalies → LLM → persist → SES. Target email by **06:30** or **07:00** with internal slack, not wall-clock cron spacing.
 2. **Wide staggered crons** (simpler but looser): e.g. ETL **04:00**, features **05:30**, briefing **07:00** — **90–180 minutes** between ingest *window start* and email, with explicit “ingest window closes at” semantics.
@@ -74,7 +74,7 @@ The overview states that API and query paths “**never need to filter by `user_
 
 | Item | Issue |
 |------|--------|
-| **SSM paths** | Mix of `/soma/{env}/{user_id}/rules/`, `/soma/{user_id}/rules/`, `/soma-staging/rules/...`, and local `/soma/rules/...`. **Pick one convention** and use it in Terraform + seed scripts. |
+| **SSM paths** | Mix of `/soma/{env}/{user_id}/rules/`, `/soma/{user_id}/rules/`, `/soma-staging/rules/...`, and local `/soma/rules/...`. **Pick one convention** and encode it in **CDK** (construct props / constants) + seed scripts. |
 | **`daily_briefings` example** | Python upsert uses `metrics`; table DDL uses `features_json` / `recommendations` / `flags` — **align field names** when coding. |
 | **“No archival” vs Phase 4** | Narrative says keep Supabase hot without Parquet complexity; phased plan mentions **Parquet archive** and NRC cold archive — **contradictory**. Choose: (a) no Parquet, or (b) Parquet only for raw exports / analytics — then update the narrative phase. |
 | **`.env.local` `SUPABASE_URL`** | Shown as `postgresql://...` — valid for psycopg2; **supabase-py** often expects project URL + keys. Document **two variables** if both are used: `DATABASE_URL` vs `SUPABASE_URL` REST. |
@@ -94,7 +94,7 @@ The overview states that API and query paths “**never need to filter by `user_
 ## 6. Agents & plugins when building (operational)
 
 - **Cursor rules** (already present): keep stack conventions synchronized with code.  
-- **Skills:** Supabase + Postgres best-practices for migrations/RLS; AWS Lambda for handlers; Terraform skill for `infrastructure/` layout.  
+- **Skills:** Supabase + Postgres best-practices for migrations/RLS; AWS Lambda for handlers; **AWS CDK (Python)** for `infrastructure/` (or repo-chosen CDK package path).  
 - **MCP:** Use Supabase MCP for **staging** inspection (logs, advisors) — avoid applying migrations to prod from automation without explicit human gate.  
 - **Code review:** Use security-focused review after secrets, SES, and any public HTTP endpoint (webhooks) exist.
 
@@ -113,7 +113,7 @@ The overview states that API and query paths “**never need to filter by `user_
 
 ## 8. CI/CD: GitHub Actions → one AWS account
 
-You can deploy **staging** and **prod** into the **same** AWS account: use **different resource names** (or Terraform workspaces), **different S3 buckets / Lambda names / SSM paths**, and **GitHub Environments** so prod deploys require approval. Database isolation remains **two Supabase projects** (or branches), not two AWS accounts. Full workflow outline: [implementation-plan.md](./implementation-plan.md) Phase 2.5.
+You can deploy **staging** and **prod** into the **same** AWS account: use **different resource names** (separate **CDK stacks** or **CDK stages** per environment), **different S3 buckets / Lambda names / SSM paths**, and **GitHub Environments** so prod deploys require approval. Database isolation remains **two Supabase projects** (or branches), not two AWS accounts. Full workflow outline: [implementation-plan.md](./implementation-plan.md) **Phase 4**.
 
 ---
 

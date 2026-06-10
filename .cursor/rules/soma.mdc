@@ -15,7 +15,7 @@ Architecture: AWS Lambda + EventBridge + Supabase PostgreSQL + Anthropic API.
 - PostgreSQL via Supabase (psycopg2 for complex queries, supabase-py for simple CRUD)
 - AWS: Lambda, EventBridge, SES, S3, Secrets Manager, SSM Parameter Store
 - Anthropic API: Haiku for daily briefing, Sonnet for weekly anomaly scan
-- Infrastructure: Terraform
+- Infrastructure: **AWS CDK v2 (Python)** only — no Terraform in this repo
 
 ## Key Architectural Rules
 - Every ETL adapter writes raw JSON to S3 BEFORE normalizing. Never normalize in place.

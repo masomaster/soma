@@ -28,7 +28,7 @@ Phased implementation plan, orchestration/timing notes, and doc validation:
 
 ## Status
 
-This repository holds the product and technical plan, the **`pipeline`** Python package (installable via `pyproject.toml`), **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, **AGENTS.md**, and Bruno guidance (`.bruno/README.md`). Terraform and AWS resources are not in this repo yet.
+This repository holds the product and technical plan, the **`pipeline`** Python package (installable via `pyproject.toml`), **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, **AGENTS.md**, and Bruno guidance (`.bruno/README.md`). **AWS CDK (Python)** app and deployed AWS resources are not in this repo yet.
 
 ## Development
 

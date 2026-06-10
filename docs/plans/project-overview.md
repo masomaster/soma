@@ -296,15 +296,13 @@ local dev → passes local tests
 
 ### Infrastructure as Code
 
-Use Terraform or AWS SAM to codify all AWS resources. This makes staging/prod parity automatic — the same template deploys to both, parameterized by environment.
+Use **AWS CDK v2 (Python)** for all AWS resources. Same app can deploy **staging** and **production** via separate **stacks** or **stages** (different names, buckets, Lambdas, SSM path prefixes). **Terraform and SAM are not part of this project.**
 
 ```
-infrastructure/
-  terraform/
-    main.tf              # Lambda, EventBridge, SES, S3
-    variables.tf         # env = "staging" | "prod"
-    staging.tfvars
-    prod.tfvars
+infrastructure/          # or cdk/ — team choice
+  app.py                 # CDK App entry
+  soma_stack.py          # Lambda, EventBridge, S3, SES, IAM, …
+  # staging vs prod: two stacks, or Stage with env context
 ```
 
 ---
@@ -1616,8 +1614,8 @@ Iterate on the prompt and guidelines files until output is genuinely useful acro
 ### Step 8 — Staging Deployment & End-to-End Test
 
 ```bash
-# Deploy to staging
-terraform apply -var-file=staging.tfvars
+# Deploy to staging (CDK Python — exact stack names from your app)
+cdk deploy SomaStagingStack
 
 # Trigger ETL manually
 aws lambda invoke --function-name soma-staging-etl_job response.json
@@ -1635,7 +1633,7 @@ Let staging run for 2-3 days. Verify:
 ### Step 9 — Production Deployment
 
 ```bash
-terraform apply -var-file=prod.tfvars
+cdk deploy SomaProdStack
 ```
 
 Monitor the first week of production briefings. Tune SSM thresholds as needed. Update guidelines files via S3 upload — no redeploy required.
@@ -1655,6 +1653,9 @@ Monitor the first week of production briefings. Tune SSM thresholds as needed. U
 ## Where Everything Lives
 
 ```
+Repo
+  infrastructure/  — AWS CDK v2 (Python): stacks define AWS below
+
 AWS
   EventBridge    — cron scheduling
   Lambda         — ETL (raw write + normalize), feature computation,
