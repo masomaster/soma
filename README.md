@@ -28,4 +28,15 @@ Phased implementation plan, orchestration/timing notes, and doc validation:
 
 ## Status
 
-This repository holds the product and technical plan, **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, and Bruno guidance (`.bruno/README.md`). Application code and Terraform are not present yet; use the overview and supplement docs as the source of truth for intended stack and conventions.
+This repository holds the product and technical plan, the **`pipeline`** Python package (installable via `pyproject.toml`), **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, **AGENTS.md**, and Bruno guidance (`.bruno/README.md`). Terraform and AWS resources are not in this repo yet.
+
+## Development
+
+```bash
+make install    # creates .venv and pip install -e ".[dev]"
+make test       # pytest
+make compile    # bytecode compile check for pipeline/
+```
+
+Copy [`.env.example`](.env.example) to `.env` for local secrets (gitignored). `ENV` defaults to `local`; see `pipeline.settings`.
+
