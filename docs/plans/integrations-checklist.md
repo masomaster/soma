@@ -1,8 +1,8 @@
 # Integrations checklist — confirm with product owner
 
-This list is derived from [project-overview.md](./project-overview.md) and the README. **Status is “planned”** until you tick each row.
+This list is derived from [project-overview.md](./project-overview.md) and the README. **Scope:** ✅ **confirmed** — proceed with Hevy + Apple Health export path as first strength + biometrics sources unless priorities change.
 
-Use it to confirm scope before building adapters. **Reply in-repo** (or issue) with edits: add/remove sources, change priority.
+Use it to confirm scope before building adapters. For future changes: edit this file (or an issue) with deltas.
 
 | # | Service | Data you care about | Integration style (typical) | Priority / notes |
 |---|---------|----------------------|----------------------------|------------------|
@@ -26,19 +26,17 @@ Use it to confirm scope before building adapters. **Reply in-repo** (or issue) w
 ## Not vendor APIs but part of “integration” work
 
 | Piece | Purpose |
-|-------|--------|
+|-------|---------|
 | **Supabase PostgREST** | Auto CRUD-ish HTTP API over your tables — map after migrations. |
 | **Email (SES)** | Outbound briefing — tested from staging/prod AWS, not Bruno unless you add raw SMTP/API tests. |
 
 ---
 
-## Phase 1 — payload capture (in progress)
+## Phase 1 — payload capture (**complete**)
 
-Redacted samples and shape tests live under `tests/fixtures/` (see `tests/fixtures/README.md`). Replace fixtures with your own captures after hitting the real APIs; never commit secrets.
+**Closed 2026-06:** Live `GET https://api.hevyapp.com/v1/workouts` exercised with real credentials; wire format matches expectations for migrations + ETL. Redacted samples and shape tests live under `tests/fixtures/` (see `tests/fixtures/README.md`). Never commit secrets or raw personal captures—trim fixtures to synthetic IDs and placeholder titles when refreshing.
 
 | Source | API / path | Pagination / units | Dedup / keys (proposed) |
 |--------|------------|--------------------|-------------------------|
-| **Hevy** | `GET /v1/workouts` — `page`, `pageSize` (max 10), response `page`, `page_count`, `workouts` | Timestamps ISO 8601; set weights in **kg** (`weight_kg`) — convert to `strength_events.weight_lbs` in ETL | `source_id`: `hevy:{workout_id}:{exercise_index}:{set_index}` — sets expose `index` only (no stable set UUID in list payload); revisit if single-workout endpoint adds ids |
+| **Hevy** | `GET /v1/workouts` — `page`, `pageSize` (max **10**), response `page`, `page_count`, `workouts` | Timestamps ISO 8601 (`start_time`/`end_time` often `+00:00`; `created_at`/`updated_at` often `Z` with ms). Weights in **kg** (`weight_kg`, nullable for bodyweight); `description`/`notes` may be `""`. Exercises include **`superset_id`** (nullable int; groups supersets). Walk **`page` … `page_count`** until all workouts fetched. | `source_id`: `hevy:{workout_id}:{exercise_index}:{set_index}` — use exercise **`index`**, not title (same title can repeat in one workout). Sets expose `index` only in list payload. |
 | **Apple Health export** (webhook / daily rollup) | App-specific JSON — normalize to `biometrics` rows | One row per `(event_date, metric)`; values must use [canonical metric names](../../schema/soma-planned-schema.sql) | DB `UNIQUE (user_id, source, event_date, metric)` per planned schema |
-
-**Your confirmation:** Edit this file (or list deltas in chat) with ✅ / ❌ per row, any renames (e.g. different export app than Health Auto Export), and **order of implementation** if it differs from the table.

@@ -1,4 +1,4 @@
 # Test fixtures
 
-- **`hevy/`** — Redacted samples shaped like `GET https://api.hevyapp.com/v1/workouts` (paginated list). Replace with captures from your account when validating Phase 1; keep secrets out of git.
-- **`biometrics/`** — Redacted daily rollup examples for export/webhook paths (canonical `metric` names match `schema/soma-planned-schema.sql`).
+- **`hevy/`** — Redacted samples for `GET https://api.hevyapp.com/v1/workouts` (Phase **1** complete — live-validated); see `hevy/README.md` and [api.hevyapp.com/docs](https://api.hevyapp.com/docs/). Keep secrets and raw personal data out of git.
+- **`biometrics/`** — Redacted daily rollup rows use the **`metric`** key (maps to `biometrics.metric`); values are canonical names from `schema/soma-planned-schema.sql`.

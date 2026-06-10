@@ -17,7 +17,7 @@
           "title": "Bench Press (Barbell)",
           "notes": null,
           "exercise_template_id": "TPL00001",
-          "supersets_id": null,
+          "superset_id": null,
           "sets": [
             {
               "index": 0,

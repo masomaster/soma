@@ -1,7 +1,7 @@
 # Implementation Plan: Soma (Personal Health OS)
 
-**Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). **Phase 1** started: redacted Hevy + biometrics fixtures, shape tests, Bruno `hevy/list-workouts` — still need real captures and checklist sign-off before freezing migrations.  
-**Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [integrations-checklist.md](./integrations-checklist.md) (sources to confirm).  
+**Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). **Phase 1 complete:** Hevy `GET /v1/workouts` validated against live API + [Swagger docs](https://api.hevyapp.com/docs/); redacted fixtures and shape tests under `tests/fixtures/`; Bruno `hevy/list-workouts`; [integrations checklist](./integrations-checklist.md) signed off for ship-first strength + biometrics rollup. **Next:** Phase 2 — freeze `schema/migrations/0001_*.sql` from `schema/soma-planned-schema.sql`, RLS, staging apply, DB access doc.  
+**Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [integrations-checklist.md](./integrations-checklist.md) (scope + Phase 1 payload notes).  
 **Historical / detailed vision:** [project-overview.md](./project-overview.md) (unchanged source conversation).
 
 ### How we work (agents / humans)
@@ -43,6 +43,8 @@ Non-goals for initial phases: polished NL query UI (deferred), native iOS app (o
 - Decide **dedup keys** (`source_id` patterns) and **canonical metric names** from actual fields — update the **planned** SQL file if needed before generating migration SQL.
 - **Optional:** hit Supabase **REST** with a scratch table only if you want to validate auth headers — **not** required to apply the full domain schema yet.
 - **Deliverable:** checklist complete for at least **one** strength source and **one** biometric/cardio path you will ship first; you are ready to freeze `0001_*.sql` in Phase 2.
+
+**Phase 1 closure (2026-06):** Live Hevy list response confirmed `page` / `page_count` / `workouts`, exercise field **`superset_id`** (nullable int), nullable **`weight_kg`** with reps (bodyweight), ISO timestamps mixed (`+00:00` vs `Z` + ms), `routine_id` nullable. See [integrations-checklist.md](./integrations-checklist.md) § Phase 1.
 
 ### Phase 2 — Schema + RLS + “who is the database client?”
 

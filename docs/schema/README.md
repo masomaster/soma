@@ -1,6 +1,6 @@
 # SQL schema (planned)
 
-This folder documents the **planned** relational schema for Soma. Nothing is applied to your Supabase project until you run migrations from `schema/migrations/` — see [implementation plan Phase 2](../plans/implementation-plan.md) (**after** Phase 1 API/fixture validation updates the model).
+This folder documents the **planned** relational schema for Soma. Nothing is applied to your Supabase project until you run migrations from `schema/migrations/` — see [implementation plan Phase 2](../plans/implementation-plan.md) (**Phase 1** API/fixture validation is complete; next step is Phase 2 migrations + RLS).
 
 ## Files
 
@@ -36,6 +36,6 @@ Planning detail: [local-dev-and-tooling.md](../plans/local-dev-and-tooling.md) �
 
 ## Keeping docs in sync
 
-1. **Phase 1:** validate vendor APIs and fixtures; revise `soma-planned-schema.sql` if needed.  
+1. **Phase 1:** ✅ validate vendor APIs and fixtures; revise `soma-planned-schema.sql` when real payloads imply DDL changes (optional before first migration).  
 2. **Phase 2:** add **numbered migrations** under `schema/migrations/` and apply to Supabase.  
 3. Either regenerate this overview from migrations or keep `soma-planned-schema.sql` aligned when the model changes.

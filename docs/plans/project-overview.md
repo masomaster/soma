@@ -693,7 +693,7 @@ def fetch_and_normalize(user_id: str, secrets: dict, since_date: date) -> list[d
     return [{
         "user_id":       user_id,
         "source":        "hevy",
-        "source_id":     f"hevy_{workout_id}_{exercise_idx}_{set_num}",
+        "source_id":     f"hevy:{workout_id}:{exercise_index}:{set_index}",
         "event_date":    workout_date,
         "exercise_name": normalize_exercise_name(raw_name),
         "muscle_group":  EXERCISE_MUSCLE_MAP.get(raw_name),
@@ -1545,7 +1545,7 @@ Manually insert 2-3 real rows from each API response:
 ```sql
 -- Insert real Hevy data sample
 INSERT INTO strength_events (user_id, source, source_id, event_date, exercise_name, set_number, reps, weight_lbs)
-VALUES ('local-dev-user', 'hevy', 'hevy_abc123_0_1', '2026-06-01', 'Barbell Bench Press', 1, 8, 185.0);
+VALUES ('local-dev-user', 'hevy', 'hevy:a1b2c3d4-e5f6-7890-abcd-ef1234567890:0:1', '2026-06-01', 'Barbell Bench Press', 1, 8, 185.0);
 ```
 
 **Validation checklist:**

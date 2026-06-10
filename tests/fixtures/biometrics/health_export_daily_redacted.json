@@ -2,8 +2,8 @@
   "source": "apple_health_export",
   "event_date": "2024-06-01",
   "metrics": [
-    { "name": "hrv_rmssd", "value": 48.2, "unit": "ms" },
-    { "name": "resting_hr", "value": 56, "unit": "bpm" },
-    { "name": "sleep_hours", "value": 7.25, "unit": "h" }
+    { "metric": "hrv_rmssd", "value": 48.2, "unit": "ms" },
+    { "metric": "resting_hr", "value": 56, "unit": "bpm" },
+    { "metric": "sleep_hours", "value": 7.25, "unit": "h" }
   ]
 }

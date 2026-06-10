@@ -48,6 +48,7 @@ def test_hevy_list_workouts_fixture_matches_paginated_shape() -> None:
     assert isinstance(exercises, list) and len(exercises) >= 1
     ex0 = exercises[0]
     assert isinstance(ex0.get("title"), str) and len(ex0["title"]) > 0
+    assert "superset_id" in ex0
     sets = ex0.get("sets")
     assert isinstance(sets, list) and len(sets) >= 1
     s0 = sets[0]
@@ -64,6 +65,6 @@ def test_biometrics_daily_fixture_uses_canonical_metric_names() -> None:
     assert isinstance(metrics, list) and len(metrics) >= 1
     for row in metrics:
         assert isinstance(row, dict)
-        name = row.get("name")
-        assert name in _CANONICAL_BIOMETRIC_METRICS
+        metric = row.get("metric")
+        assert metric in _CANONICAL_BIOMETRIC_METRICS
         assert isinstance(row.get("value"), int | float)
