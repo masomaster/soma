@@ -1,7 +1,5 @@
 """Tests for pipeline environment resolution."""
 
-import os
-
 import pytest
 
 from pipeline.settings import Environment, get_environment
