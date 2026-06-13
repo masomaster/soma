@@ -20,7 +20,6 @@ import logging
 import os
 from datetime import date, timezone
 from datetime import datetime as _dt
-from functools import partial
 from typing import Any
 
 import psycopg2
@@ -67,24 +66,46 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
             users = cur.fetchall()
 
         for user_id, email in users:
-            thresholds = load_thresholds(
-                env=env.value, user_id=str(user_id), get_parameters=get_parameters
-            )
-            io = DailyPipelineIO(
-                llm=llm,
-                thresholds=thresholds,
-                to_address=email,
-                deliver=partial(deliver_briefing, env=env, send_email=send_email, to_address=email),
-                persist_daily_metrics=_persister("daily_health_metrics"),
-                persist_features=_persister("daily_features"),
-                persist_briefing=_persister("daily_briefings"),
-                **loaders,
-            )
-            result = run_daily_pipeline(user_id=str(user_id), run_date=run_date, io=io)
-            summaries.append(
-                {"user_id": str(user_id), "ok": result.ok, "flags": [f.code for f in result.flags]}
-            )
-        conn.commit()
+            # Each user runs in its own transaction so one user's DB error cannot
+            # poison the next user's writes, and we commit BEFORE emailing so an
+            # irreversible email is never sent for rows that failed to persist.
+            try:
+                thresholds = load_thresholds(
+                    env=env.value, user_id=str(user_id), get_parameters=get_parameters
+                )
+                io = DailyPipelineIO(
+                    llm=llm,
+                    thresholds=thresholds,
+                    to_address=email,
+                    deliver=None,  # delivered after commit, below
+                    persist_daily_metrics=_persister("daily_health_metrics"),
+                    persist_features=_persister("daily_features"),
+                    persist_briefing=_persister("daily_briefings"),
+                    **loaders,
+                )
+                result = run_daily_pipeline(user_id=str(user_id), run_date=run_date, io=io)
+                conn.commit()
+
+                delivered = False
+                if result.ok and result.briefing is not None:
+                    deliver_briefing(
+                        result.briefing, env=env, send_email=send_email, to_address=email
+                    )
+                    delivered = True
+                summaries.append(
+                    {
+                        "user_id": str(user_id),
+                        "ok": result.ok,
+                        "delivered": delivered,
+                        "flags": [f.code for f in result.flags],
+                    }
+                )
+            except Exception as exc:
+                conn.rollback()
+                logger.exception("Daily pipeline failed for user %s", user_id)
+                summaries.append(
+                    {"user_id": str(user_id), "ok": False, "error": type(exc).__name__}
+                )
     finally:
         conn.close()
 

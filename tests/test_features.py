@@ -72,6 +72,30 @@ def test_compute_daily_features_windows_and_readiness():
     assert f["overall_readiness_score"] == 44.0
 
 
+def test_readiness_uses_configurable_acwr_threshold():
+    daily_metrics = [
+        {"metric_date": _d(i), "sleep_hours": 7.0, "hrv_rmssd": (30.0 if i == 0 else 50.0)}
+        for i in range(7)
+    ]
+    cardio = [
+        {"event_date": _d(0), "duration_min": 30},
+        {"event_date": _d(3), "duration_min": 40},
+        {"event_date": _d(20), "duration_min": 60},
+    ]
+    # ACWR ~2.15; with a raised threshold of 3.0 the training-load penalty is skipped.
+    f = F.compute_daily_features(
+        user_id="u1",
+        feature_date=RUN,
+        cardio_events=cardio,
+        daily_metrics=daily_metrics,
+        target_sleep_hours=8.0,
+        hrv_suppressed_ratio=0.85,
+        max_acute_chronic_ratio=3.0,
+    )
+    # 100 - min(40, 7*4=28) - min(40, 1*8) = 64 (no -20 ACWR penalty)
+    assert f["overall_readiness_score"] == 64.0
+
+
 def test_compute_daily_features_handles_empty_inputs():
     f = F.compute_daily_features(user_id="u1", feature_date=RUN)
     assert f["strength_sessions_7d"] == 0

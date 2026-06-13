@@ -192,13 +192,19 @@ def _recovery_features(
     }
 
 
-def _readiness_score(features: Mapping[str, Any], *, target_sleep_hours: float) -> float:
+def _readiness_score(
+    features: Mapping[str, Any],
+    *,
+    target_sleep_hours: float,
+    max_acute_chronic_ratio: float,
+) -> float:
     """Composite 0–100 readiness: starts at 100, subtract penalties.
 
     Deterministic and intentionally simple (the rules engine and LLM add nuance):
     - sleep debt: −4 points per cumulative hour short over the week (cap −40)
     - HRV suppression: −8 points per suppressed day (cap −40)
-    - training-load spike: −20 if ACWR > 1.5 (classic injury-risk threshold)
+    - training-load spike: −20 when ACWR exceeds ``max_acute_chronic_ratio``
+      (same configurable threshold the rules engine flags on)
     """
     score = 100.0
     sleep_debt = _num(features.get("sleep_debt_7d")) or 0.0
@@ -206,7 +212,7 @@ def _readiness_score(features: Mapping[str, Any], *, target_sleep_hours: float) 
     suppressed = _num(features.get("hrv_suppressed_days")) or 0.0
     score -= min(40.0, suppressed * 8.0)
     acwr = _num(features.get("acute_chronic_ratio"))
-    if acwr is not None and acwr > 1.5:
+    if acwr is not None and acwr > max_acute_chronic_ratio:
         score -= 20.0
     return round(max(0.0, min(100.0, score)), 1)
 
@@ -220,6 +226,7 @@ def compute_daily_features(
     daily_metrics: Sequence[Mapping[str, Any]] = (),
     target_sleep_hours: float = 8.0,
     hrv_suppressed_ratio: float = 0.85,
+    max_acute_chronic_ratio: float = 1.5,
 ) -> dict[str, Any]:
     """Compute a deterministic ``daily_features`` row from windowed event/metric rows.
 
@@ -240,6 +247,8 @@ def compute_daily_features(
         )
     )
     features["overall_readiness_score"] = _readiness_score(
-        features, target_sleep_hours=target_sleep_hours
+        features,
+        target_sleep_hours=target_sleep_hours,
+        max_acute_chronic_ratio=max_acute_chronic_ratio,
     )
     return features
