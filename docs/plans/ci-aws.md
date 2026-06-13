@@ -26,7 +26,9 @@ aws iam create-open-id-connect-provider \
   --client-id-list sts.amazonaws.com
 ```
 
-**b. Create the deploy role `soma-github-deploy`** with this trust policy (`trust.json`):
+**b. Create the deploy role `soma-github-deploy`** with this trust policy (`trust.json`).
+
+> **Security:** scope the `sub` claim to the two **deployment environments**, not `repo:masomaster/soma:*`. Both deploy jobs declare `environment: staging`/`production`, so their OIDC subject is the `…:environment:<name>` form. Restricting to these subjects means an arbitrary branch or pull request (which has no environment) cannot assume this role, and the `production` environment's required-reviewer gate becomes a real prerequisite for obtaining prod credentials.
 
 ```json
 {
@@ -36,12 +38,19 @@ aws iam create-open-id-connect-provider \
     "Principal": { "Federated": "arn:aws:iam::<ACCOUNT_ID>:oidc-provider/token.actions.githubusercontent.com" },
     "Action": "sts:AssumeRoleWithWebIdentity",
     "Condition": {
-      "StringEquals": { "token.actions.githubusercontent.com:aud": "sts.amazonaws.com" },
-      "StringLike":   { "token.actions.githubusercontent.com:sub": "repo:masomaster/soma:*" }
+      "StringEquals": {
+        "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+        "token.actions.githubusercontent.com:sub": [
+          "repo:masomaster/soma:environment:staging",
+          "repo:masomaster/soma:environment:production"
+        ]
+      }
     }
   }]
 }
 ```
+
+> Already created the role with the broader `repo:masomaster/soma:*`? Update the trust policy in IAM → Roles → `soma-github-deploy` → Trust relationships to the scoped version above. For stronger isolation you can instead create **two** roles (`soma-github-deploy-staging` / `-prod`), each trusting only its own `environment:` subject, and point the matching GitHub Environment variable at it.
 
 ```bash
 aws iam create-role --role-name soma-github-deploy \
@@ -73,8 +82,6 @@ cdk bootstrap aws://<ACCOUNT_ID>/us-west-2
 ```
 
 Copy the role ARN — it looks like `arn:aws:iam::<ACCOUNT_ID>:role/soma-github-deploy`.
-
-> Tip: To restrict staging vs prod to different sub-claims later, point each GitHub Environment at a **separate role** whose trust `sub` is scoped (e.g. `repo:masomaster/soma:environment:production`).
 
 ---
 
