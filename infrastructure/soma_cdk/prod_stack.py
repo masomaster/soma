@@ -18,4 +18,6 @@ class SomaProdStack(Stack):
         Tags.of(self).add("Project", "Soma")
         Tags.of(self).add("Environment", "production")
 
-        DailyBriefingPipeline(self, "DailyBriefing", env_name="production")
+        # Use "prod" (not "production") to match pipeline.settings.Environment and
+        # the rules SSM prefix /soma/prod/{user_id}/rules/.
+        DailyBriefingPipeline(self, "DailyBriefing", env_name="prod")

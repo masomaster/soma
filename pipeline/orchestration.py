@@ -115,6 +115,7 @@ def run_daily_pipeline(
             daily_metrics=window,
             target_sleep_hours=thresholds["target_sleep_hours"],
             hrv_suppressed_ratio=thresholds["hrv_suppressed_ratio"],
+            max_acute_chronic_ratio=thresholds["max_acute_chronic_ratio"],
         )
         if io.persist_features is not None:
             io.persist_features(result.features)
@@ -147,7 +148,10 @@ def run_daily_pipeline(
         return result
     if not step("compute_features", do_features):
         return result
-    step("evaluate_rules", do_rules)
+    # Rules failure is fatal: never send a falsely "all clear" briefing that
+    # silently dropped the deterministic flags.
+    if not step("evaluate_rules", do_rules):
+        return result
     if not step("generate_briefing", do_briefing):
         return result
     step("deliver", do_deliver)

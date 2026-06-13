@@ -3,10 +3,14 @@
 
 These tables are **recomputed** each run, so the conflict action is
 ``DO UPDATE`` (idempotent overwrite) rather than the ``DO NOTHING`` used for
-append-only event ingestion. Rows are sparse — only the columns present in the
-dict are written — and every column name is validated against an allow-list, so
-identifiers are never taken from untrusted input. Expects a psycopg2 cursor on a
-``service_role`` connection (RLS bypassed; caller supplies ``user_id``).
+append-only event ingestion. Rows are **sparse by design** — only the columns
+present in the dict are written, so columns populated by a different job (e.g.
+``daily_health_metrics.hrv_7d_avg``) are preserved rather than nulled. Because a
+single computation pass produces the full set of columns it owns, this does not
+leave stale values within that pass. Every column name is validated against an
+allow-list, so identifiers are never taken from untrusted input. Expects a
+psycopg2 cursor on a ``service_role`` connection (RLS bypassed; caller supplies
+``user_id``).
 """
 
 from __future__ import annotations
