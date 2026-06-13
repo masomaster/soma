@@ -15,13 +15,17 @@ Stable stack IDs (use these in docs, GitHub Actions, and CLI):
 
 ## Synth (no AWS call)
 
-`python app.py` runs `app.synth()` but by default writes the assembly to a **temp** directory. For **`infrastructure/cdk.out/`** next to `cdk.json`, use the CDK CLI or Make:
+`python app.py` runs `app.synth()` but by default writes the assembly to a **temp** directory. For **`cdk.out/`** next to the active `cdk.json`, use the CDK CLI or Make:
 
 ```bash
 # From repo root (recommended)
 make cdk-synth
 
-# Or from infrastructure/ with global cdk on PATH
+# Or from repo root (uses repo-root `cdk.json`; activate the venv that has `.[cdk]` installed)
+cdk synth SomaStagingStack SomaProdStack
+cdk diff SomaStagingStack
+
+# Or from infrastructure/ (uses infrastructure/cdk.json)
 cd infrastructure
 cdk synth SomaStagingStack
 cdk synth SomaProdStack
