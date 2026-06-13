@@ -76,6 +76,8 @@ Non-goals for initial phases: polished NL query UI (deferred), native iOS app (o
 - **Secrets:** GitHub Actions **secrets** / **environments** for Supabase deploy URLs, CDK context or asset publishing if needed, etc.; AWS access via OIDC role only where possible.
 - **Deliverable:** `.github/workflows/` with the above split; short `docs/plans/ci-aws.md` (optional) or a **Runbook** section in README listing required GitHub Environment + IAM OIDC setup steps.
 
+**Phase 4 closure (2026-06):** Workflows merged (PR #2) and OIDC role + `cdk bootstrap` provisioned by operator. Security review applied: OIDC trust `sub` scoped to `environment:staging` / `environment:production` (was `repo:…:*`) so only environment-gated deploy jobs — not arbitrary branches/PRs — can assume the deploy role; `production` retains required-reviewer protection. See [ci-aws.md](./ci-aws.md).
+
 ### Phase 5 — Scheduling + orchestration (fix the “5–10 minute” problem)
 
 - Replace **tight multi-cron** (5:50 / 5:55 / 6:00) with either:
