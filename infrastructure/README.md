@@ -40,3 +40,10 @@ cdk deploy SomaStagingStack
 ```
 
 Stacks are intentionally minimal (tags only) until pipeline Lambdas and data plane land in later work.
+
+## Continuous deployment (GitHub Actions → AWS)
+
+CI and deploys are wired via GitHub Actions using **OIDC → AWS IAM role** (no stored keys):
+`ci.yml` (tests + synth), `deploy-staging.yml` (push to `main`), `deploy-prod.yml` (tag/dispatch + approval).
+One-time AWS/GitHub setup and required environment variables are documented in
+[`docs/plans/ci-aws.md`](../docs/plans/ci-aws.md).
