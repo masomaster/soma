@@ -7,6 +7,8 @@ from typing import Any
 from aws_cdk import Stack, Tags
 from constructs import Construct
 
+from soma_cdk.daily_pipeline import DailyBriefingPipeline
+
 
 class SomaProdStack(Stack):
     """AWS resources for Soma **production** — add Lambda, S3, EventBridge, etc. here."""
@@ -15,3 +17,5 @@ class SomaProdStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
         Tags.of(self).add("Project", "Soma")
         Tags.of(self).add("Environment", "production")
+
+        DailyBriefingPipeline(self, "DailyBriefing", env_name="production")

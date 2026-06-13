@@ -1,0 +1,154 @@
+"""Phase 5 orchestration: a single daily pipeline with ordered, isolated steps.
+
+Per ``docs/plans/implementation-plan.md`` Phase 5 we run **one daily pipeline**
+(single scheduled start) whose steps execute in a fixed order rather than racing
+several tight cron jobs:
+
+    rollup today's metrics -> compute features -> evaluate rules
+        -> generate briefing -> deliver
+
+All IO (DB loads/writes, the LLM, email) is injected via :class:`DailyPipelineIO`
+so the orchestrator itself is pure control-flow and fully unit-testable; the
+Lambda handler builds the concrete IO from boto3 / psycopg2 / Anthropic. Each
+step is wrapped so a failure is recorded and stops the run cleanly with a partial
+:class:`PipelineResult` instead of a bare traceback.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any
+
+from pipeline import features as features_mod
+from pipeline import rules as rules_mod
+from pipeline.briefing import Briefing, LLMClient, generate_briefing
+from pipeline.rules import Flag
+
+logger = logging.getLogger(__name__)
+
+Row = Mapping[str, Any]
+
+
+@dataclass(slots=True)
+class DailyPipelineIO:
+    """Injected boundaries. DB writers/deliver are optional (skipped if ``None``)."""
+
+    llm: LLMClient
+    load_biometrics_today: Callable[[str, date], Sequence[Row]]
+    load_daily_metrics_window: Callable[[str, date], Sequence[Row]]
+    load_strength_events: Callable[[str, date], Sequence[Row]]
+    load_cardio_events: Callable[[str, date], Sequence[Row]]
+    persist_daily_metrics: Callable[[Row], None] | None = None
+    persist_features: Callable[[Row], None] | None = None
+    persist_briefing: Callable[[Row], None] | None = None
+    deliver: Callable[[Briefing], dict[str, Any]] | None = None
+    thresholds: Mapping[str, float] = field(default_factory=dict)
+    to_address: str | None = None
+
+
+@dataclass(slots=True)
+class StepResult:
+    name: str
+    ok: bool
+    detail: str = ""
+
+
+@dataclass(slots=True)
+class PipelineResult:
+    user_id: str
+    run_date: date
+    steps: list[StepResult] = field(default_factory=list)
+    daily_metrics: dict[str, Any] | None = None
+    features: dict[str, Any] | None = None
+    flags: list[Flag] = field(default_factory=list)
+    briefing: Briefing | None = None
+    delivery: dict[str, Any] | None = None
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.steps) and all(s.ok for s in self.steps)
+
+
+def run_daily_pipeline(
+    *,
+    user_id: str,
+    run_date: date,
+    io: DailyPipelineIO,
+) -> PipelineResult:
+    """Execute the ordered daily pipeline for one user; never raises on step failure."""
+    result = PipelineResult(user_id=user_id, run_date=run_date)
+    thresholds = {**rules_mod.DEFAULT_THRESHOLDS, **dict(io.thresholds)}
+
+    def step(name: str, fn: Callable[[], None]) -> bool:
+        try:
+            fn()
+            result.steps.append(StepResult(name, ok=True))
+            return True
+        except Exception as exc:  # isolate: one bad step shouldn't crash the scheduler
+            logger.exception("Pipeline step %r failed for %s", name, user_id)
+            result.steps.append(StepResult(name, ok=False, detail=f"{type(exc).__name__}: {exc}"))
+            return False
+
+    def do_rollup() -> None:
+        today = io.load_biometrics_today(user_id, run_date)
+        result.daily_metrics = features_mod.rollup_daily_health_metrics(
+            today, user_id=user_id, metric_date=run_date
+        )
+        if io.persist_daily_metrics is not None:
+            io.persist_daily_metrics(result.daily_metrics)
+
+    def do_features() -> None:
+        window = list(io.load_daily_metrics_window(user_id, run_date))
+        # Ensure today's freshly-rolled metrics are part of the feature window.
+        if result.daily_metrics is not None and not any(
+            features_mod.as_date(m.get("metric_date")) == run_date for m in window
+        ):
+            window.append(result.daily_metrics)
+        result.features = features_mod.compute_daily_features(
+            user_id=user_id,
+            feature_date=run_date,
+            strength_events=io.load_strength_events(user_id, run_date),
+            cardio_events=io.load_cardio_events(user_id, run_date),
+            daily_metrics=window,
+            target_sleep_hours=thresholds["target_sleep_hours"],
+            hrv_suppressed_ratio=thresholds["hrv_suppressed_ratio"],
+        )
+        if io.persist_features is not None:
+            io.persist_features(result.features)
+
+    def do_rules() -> None:
+        result.flags = rules_mod.evaluate(
+            features=result.features or {},
+            daily_metrics=result.daily_metrics or {},
+            thresholds=thresholds,
+        )
+
+    def do_briefing() -> None:
+        result.briefing = generate_briefing(
+            user_id=user_id,
+            feature_date=run_date,
+            flags=result.flags,
+            features=result.features or {},
+            llm=io.llm,
+            daily_metrics=result.daily_metrics or {},
+        )
+        if io.persist_briefing is not None:
+            io.persist_briefing(result.briefing.to_row())
+
+    def do_deliver() -> None:
+        if io.deliver is not None and result.briefing is not None:
+            result.delivery = io.deliver(result.briefing)
+
+    # Ordered, dependency-respecting execution. Stop at the first hard failure.
+    if not step("rollup_metrics", do_rollup):
+        return result
+    if not step("compute_features", do_features):
+        return result
+    step("evaluate_rules", do_rules)
+    if not step("generate_briefing", do_briefing):
+        return result
+    step("deliver", do_deliver)
+    return result
