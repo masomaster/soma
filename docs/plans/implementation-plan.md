@@ -1,6 +1,6 @@
 # Implementation Plan: Soma (Personal Health OS)
 
-**Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). **Phase 1 complete:** Hevy `GET /v1/workouts` validated against live API + [Swagger docs](https://api.hevyapp.com/docs/); redacted fixtures and shape tests under `tests/fixtures/`; Bruno `hevy/list-workouts`; [integrations checklist](./integrations-checklist.md) signed off for ship-first strength + biometrics rollup. **Phase 2 (repo deliverables) complete:** `schema/migrations/0001_initial.sql` (RLS + grants + Hevy `superset_id`), [db-access-patterns.md](./db-access-patterns.md), migration RLS contract tests. **Operator next:** apply `0001` to **Supabase staging**, run two-user RLS smoke check, then promote to prod with your release process.  
+**Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). **Phase 1 complete:** Hevy `GET /v1/workouts` validated against live API + [Swagger docs](https://api.hevyapp.com/docs/); redacted fixtures and shape tests under `tests/fixtures/`; Bruno `hevy/list-workouts`; [integrations checklist](./integrations-checklist.md) signed off for ship-first strength + biometrics rollup. **Phase 2 (repo deliverables) complete:** `schema/migrations/0001_initial.sql` (RLS + grants + Hevy `superset_id`), [db-access-patterns.md](./db-access-patterns.md), migration RLS contract tests. **Phase 3 (repo slice) complete:** `pipeline/raw_storage.py` (raw key layout), `pipeline/adapters/hevy.py` (fetch / raw callback / normalize), `pipeline/strength_upsert.py` (`ON CONFLICT DO NOTHING`), `tests/test_hevy_adapter.py`. **Operator next:** apply `0001` to **Supabase staging** if not already; wire `raw_put` to real S3 in Lambda when Phase 4 lands.  
 **Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [integrations-checklist.md](./integrations-checklist.md) (scope + Phase 1 payload notes), [db-access-patterns.md](./db-access-patterns.md) (keys, RLS vs service role, migration apply order).  
 **Historical / detailed vision:** [project-overview.md](./project-overview.md) (unchanged source conversation).
 
@@ -56,10 +56,10 @@ Non-goals for initial phases: polished NL query UI (deferred), native iOS app (o
 
 ### Phase 3 — Raw S3 + one ETL adapter (vertical slice)
 
-- S3 raw path: `raw/{user_id}/{source}/{YYYY-MM-DD}/{timestamp}.json` (match workspace rule).
-- **Hevy first** (or Strava if OAuth setup is easier for you): fetch → **raw write** → normalize → upsert with **`ON CONFLICT (user_id, source_id) DO NOTHING`** (per workspace rule).
+- ✅ S3 raw path: `raw/{user_id}/{source}/{YYYY-MM-DD}/{timestamp}.json` — `pipeline/raw_storage.format_raw_object_key` (UTC); callers pass bytes to S3 / local sink via injectable `raw_put`.
+- ✅ **Hevy first:** `pipeline/adapters/hevy.py` — `fetch_hevy_workouts_page` / pagination helper, `fetch_and_normalize` (raw write + normalize), `normalize_hevy_list_workouts`; `pipeline/strength_upsert.upsert_strength_events` uses **`ON CONFLICT (user_id, source_id) DO NOTHING`**.
 - Local raw writes: **optional** (staging S3 bucket with a `dev/` prefix, or defer S3 until first Lambda); LocalStack/Docker **not** assumed — add only if you need offline S3.
-- **Deliverable:** one adapter with unit tests that load **Phase 1 fixtures** + any extra edge-case files under `tests/fixtures/`.
+- ✅ **Deliverable:** Hevy adapter + `tests/test_hevy_adapter.py` using **Phase 1** `tests/fixtures/hevy/get_workouts_page1_redacted.json`.
 
 ### Phase 4 — GitHub Actions → AWS (continuous deployment)
 
