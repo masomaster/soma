@@ -8,7 +8,7 @@ This repo is **greenfield**: improve structure, names, and boundaries as you lea
 
 | Task type | Prefer |
 |-----------|--------|
-| Supabase schema, RLS, migrations, advisors | **Supabase** skill; **Supabase MCP** for staging inspection (avoid blind `apply_migration` on prod). |
+| Supabase schema, RLS, migrations, advisors | **Supabase** skill; **Supabase MCP** (`search_docs`, project read tools, `execute_sql` where appropriate) for staging inspection and doc-backed answers — **avoid blind `apply_migration` on prod**. Prefer MCP over guessing when the agent has Supabase MCP enabled. |
 | Postgres query shape, indexes | **supabase-postgres-best-practices** skill. |
 | Lambda handlers, EventBridge, Step Functions | **aws-lambda** / **aws-serverless-deployment** skills. |
 | AWS CDK (Python) stacks / stages | **deployment-engineer** / AWS CDK docs; deploy-on-aws plugin if used for design review — **no Terraform** in Soma. |
