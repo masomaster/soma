@@ -41,4 +41,5 @@ class SomaProdStack(Stack):
             deps_layer=pipeline_layer,
             runtime_secret_ref=briefing.runtime_secret_ref,
             raw_bucket=apple.raw_bucket,
+            pipeline_alarm_topic=briefing.alarm_topic,
         )

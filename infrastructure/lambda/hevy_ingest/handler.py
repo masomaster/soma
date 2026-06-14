@@ -1,4 +1,4 @@
-"""EventBridge → Hevy API → raw S3 → ``strength_events`` upsert.
+"""EventBridge Scheduler → Hevy API → raw S3 → ``strength_events`` upsert.
 
 Environment (set by CDK):
 
@@ -24,7 +24,7 @@ from pipeline.lambda_secrets import (
     resolve_soma_user_id,
 )
 
-logging.getLogger().setLevel(logging.INFO)
+logging.getLogger(__name__).setLevel(logging.INFO)
 logger = logging.getLogger(__name__)
 
 
@@ -37,10 +37,10 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
     api_key = resolve_hevy_api_key()
     dsn = resolve_db_connect_string()
 
-    s3 = boto3.client("s3")
+    s3_client = boto3.client("s3")
 
     def raw_put(key: str, body: bytes) -> None:
-        s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
+        s3_client.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/json")
 
     utc = datetime.now(timezone.utc)
     result = run_hevy_scheduled_ingest(

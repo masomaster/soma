@@ -9,7 +9,7 @@ Stable stack IDs (use these in docs, GitHub Actions, and CLI):
 
 **Apple Health ingest:** each stack also deploys an **HTTP API** (`POST …/ingest/apple-health`), **access logs** in CloudWatch (`AppleHealthHttpApiAccessLogGroup` output → `/aws/apigateway/soma-{env}-apple-health-access`), an **S3 raw bucket**, and Lambda `soma-{env}-apple-health-webhook` (see [apple-health-export.md](../docs/plans/apple-health-export.md) and `infrastructure/lambda/apple_health_webhook/README.md`). CloudFormation output **`AppleHealthIngestUrl`** is the URL for Health Auto Export.
 
-**Hevy scheduled ingest:** EventBridge rule `soma-{env}-hevy-ingest` (default **09:00 UTC**) invokes Lambda `soma-{env}-hevy-ingest`, which writes raw pages to the **same** S3 bucket as Apple (`RAW_BUCKET`) and upserts **`strength_events`**. Set **`HEVY_API_KEY`** and **`SOMA_USER_ID`** in Secrets Manager `soma-{env}-lambda-runtime` (or as Lambda env overrides). See `infrastructure/lambda/hevy_ingest/README.md`.
+**Hevy scheduled ingest:** EventBridge **Scheduler** schedule `soma-{env}-hevy-ingest` (default **09:00 UTC**) invokes Lambda `soma-{env}-hevy-ingest`, which writes raw pages to the **same** S3 bucket as Apple (`RAW_BUCKET`) and upserts **`strength_events`**. Set **`HEVY_API_KEY`** and **`SOMA_USER_ID`** in Secrets Manager `soma-{env}-lambda-runtime` (or as Lambda env overrides). See `infrastructure/lambda/hevy_ingest/README.md`.
 
 ## Prereqs
 
@@ -53,7 +53,11 @@ cdk deploy SomaStagingStack
 # cdk deploy SomaProdStack
 ```
 
-Stacks define the **daily briefing** EventBridge → Lambda pipeline. Runtime secrets
+**Rule → Scheduler migration:** CloudFormation cannot change an existing resource’s **type** in place (for example `AWS::Events::Rule` → `AWS::Scheduler::Schedule` under the same logical ID). The CDK construct ids for the schedules are chosen so synth produces **new** logical IDs; a normal `cdk deploy` then **deletes** the old rules and **creates** the schedules in one pass.
+
+If you previously deployed a failed hybrid template, fix drift (remove orphaned rules or failed stacks) and deploy again.
+
+Stacks define the **daily briefing** EventBridge **Scheduler** → Lambda pipeline. Runtime secrets
 live in Secrets Manager (`soma-{env}-lambda-runtime`); see
 `infrastructure/lambda/briefing/README.md` for the seed parameter and how to avoid
 overwrites after you edit the secret in the console.
@@ -61,14 +65,18 @@ overwrites after you edit the secret in the console.
 ## Pipeline alarms (operator email)
 
 Each stack creates an SNS topic `soma-{staging|prod}-daily-pipeline-alarms` and
-CloudWatch alarms that publish to it:
+CloudWatch alarms that publish to it (briefing + Hevy ingest when wired):
 
 | Alarm | What it catches |
 |-------|-----------------|
-| `soma-{env}-daily-pipeline-rule-failures` | EventBridge **FailedInvocations** (rule could not invoke Lambda). |
+| `soma-{env}-daily-pipeline-scheduler-target-errors` | EventBridge **Scheduler** ``TargetErrorCount`` for schedule ``soma-{env}-daily-pipeline`` (Lambda returned an error after invoke). |
+| `soma-{env}-daily-pipeline-scheduler-invocations-dropped` | Scheduler **gave up** after retries (**InvocationDroppedCount**) — permissions, DLQ, or target misconfiguration. |
 | `soma-{env}-daily-briefing-lambda-errors` | Lambda **Errors** (unhandled exception, timeout, etc.). |
 | `soma-{env}-daily-briefing-lambda-throttles` | Lambda **Throttles**. |
 | `soma-{env}-daily-briefing-user-pipeline-failures` | Log lines matching the per-user catch in `handler.py` (`Daily pipeline failed for user`). |
+| `soma-{env}-hevy-ingest-scheduler-target-errors` | Hevy schedule: Scheduler ``TargetErrorCount``. |
+| `soma-{env}-hevy-ingest-scheduler-invocations-dropped` | Hevy schedule: **InvocationDroppedCount**. |
+| `soma-{env}-hevy-ingest-lambda-errors` | Hevy ingest Lambda **Errors**. |
 
 **Subscribe your inbox** by passing CDK context at synth/deploy (same value for both stacks if you deploy together):
 

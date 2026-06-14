@@ -32,5 +32,4 @@ them in Secrets Manager (same seed parameter pattern as
 
 ## Schedule
 
-CDK rule ``soma-{env}-hevy-ingest`` runs at **09:00 UTC** by default, before the
-daily briefing rule (11:00 UTC) so ``strength_events`` is current for features.
+CDK creates an EventBridge **Scheduler** schedule named ``soma-{env}-hevy-ingest`` at **09:00 UTC** by default, before the daily briefing schedule (11:00 UTC) so ``strength_events`` is current for features.

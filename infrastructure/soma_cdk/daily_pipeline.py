@@ -1,15 +1,15 @@
 """Phase 5/6 infrastructure: the daily briefing pipeline (schedule + Lambda).
 
-Implements the Phase 5 "one daily pipeline, single scheduled start" pattern: a
-single EventBridge rule fires one Lambda well before the user's briefing time;
-the Lambda runs the ordered steps in :mod:`pipeline.orchestration`. Least-priv
-IAM grants SSM rule-threshold reads, Secrets Manager read for runtime config,
-and SES send.
+Implements the Phase 5 "one daily pipeline, single scheduled start" pattern:
+**Amazon EventBridge Scheduler** invokes one Lambda well before the user's
+briefing time; the Lambda runs the ordered steps in :mod:`pipeline.orchestration`.
+Least-priv IAM grants SSM rule-threshold reads, Secrets Manager read for runtime
+config, and SES send.
 
-Also wires **SNS + CloudWatch alarms** for EventBridge failed invocations, Lambda
-errors/throttles, and per-user pipeline failures (log metric filter on the
-handler's ``Daily pipeline failed for user`` line). Set CDK context
-``soma:pipelineAlarmEmail`` to subscribe an operator inbox (confirm in SNS).
+Also wires **SNS + CloudWatch alarms** for Scheduler ``TargetErrorCount`` (failed
+target delivery), Lambda errors/throttles, and per-user pipeline failures (log
+metric filter on the handler's ``Daily pipeline failed for user`` line). Set CDK
+context ``soma:pipelineAlarmEmail`` to subscribe an operator inbox (confirm in SNS).
 
 The ``pipeline`` package and ``psycopg2-binary`` are bundled into a **Lambda
 layer** at synth/deploy time via **local** ``pip`` (no Docker) — see
@@ -22,14 +22,14 @@ from __future__ import annotations
 import json
 import os
 
-from aws_cdk import Aws, CfnCondition, CfnDeletionPolicy, CfnParameter, Duration, Fn, Stack
+from aws_cdk import Aws, CfnCondition, CfnDeletionPolicy, CfnParameter, Duration, Fn, Stack, TimeZone
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
-from aws_cdk import aws_events as events
-from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_scheduler as scheduler
+from aws_cdk import aws_scheduler_targets as scheduler_targets
 from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as sns_subs
@@ -52,7 +52,7 @@ _RUNTIME_SECRET_PLACEHOLDER = json.dumps(
 
 
 class DailyBriefingPipeline(Construct):
-    """EventBridge daily schedule → briefing Lambda for one environment."""
+    """EventBridge **Scheduler** daily cron → briefing Lambda for one environment."""
 
     def __init__(
         self,
@@ -140,13 +140,20 @@ class DailyBriefingPipeline(Construct):
             iam.PolicyStatement(actions=["ses:SendEmail"], resources=["*"])
         )
 
-        self.rule = events.Rule(
+        schedule_name = f"soma-{env_name}-daily-pipeline"
+        # Id ``SchedulerDailyCron`` (not ``DailySchedule``): new CFN logical id so Rule→Schedule is not an in-place type swap.
+        self.schedule = scheduler.Schedule(
             self,
-            "DailySchedule",
-            rule_name=f"soma-{env_name}-daily-pipeline",
-            schedule=events.Schedule.cron(minute="0", hour=str(schedule_hour_utc)),
+            "SchedulerDailyCron",
+            schedule_name=schedule_name,
+            schedule=scheduler.ScheduleExpression.cron(
+                minute="0",
+                hour=str(schedule_hour_utc),
+                time_zone=TimeZone.ETC_UTC,
+            ),
+            target=scheduler_targets.LambdaInvoke(self.function),
+            description="Daily briefing pipeline (EventBridge Scheduler → Lambda)",
         )
-        self.rule.add_target(targets.LambdaFunction(self.function))
 
         # --- Operator alerts (Phase 6): SNS + CloudWatch alarms ---
         alarm_topic = sns.Topic(
@@ -159,23 +166,51 @@ class DailyBriefingPipeline(Construct):
         if isinstance(alarm_email, str) and alarm_email.strip():
             alarm_topic.add_subscription(sns_subs.EmailSubscription(alarm_email.strip()))
 
-        failed_invocations = cloudwatch.Metric(
-            namespace="AWS/Events",
-            metric_name="FailedInvocations",
-            dimensions_map={"RuleName": self.rule.rule_name},
+        # Default schedule group; must match ``Schedule`` when ``schedule_group`` is omitted.
+        _sched_dims = {"ScheduleGroup": "default", "ScheduleName": schedule_name}
+
+        scheduler_target_errors = cloudwatch.Metric(
+            namespace="AWS/Scheduler",
+            metric_name="TargetErrorCount",
+            dimensions_map=_sched_dims,
             statistic=cloudwatch.Stats.SUM,
             period=Duration.minutes(5),
         )
         cloudwatch.Alarm(
             self,
-            "EventRuleFailedInvocations",
-            alarm_name=f"soma-{env_name}-daily-pipeline-rule-failures",
-            metric=failed_invocations,
+            "SchedulerTargetErrors",
+            alarm_name=f"soma-{env_name}-daily-pipeline-scheduler-target-errors",
+            metric=scheduler_target_errors,
             threshold=1,
             evaluation_periods=1,
             comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
             treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-            alarm_description="EventBridge could not invoke the daily briefing Lambda (permissions, DLQ, or target errors).",
+            alarm_description=(
+                "EventBridge Scheduler TargetErrorCount for this schedule (Lambda returned an error). "
+                "Does not cover invoke throttles or retries exhausted; see companion dropped-count alarm."
+            ),
+        ).add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        scheduler_invocation_dropped = cloudwatch.Metric(
+            namespace="AWS/Scheduler",
+            metric_name="InvocationDroppedCount",
+            dimensions_map=_sched_dims,
+            statistic=cloudwatch.Stats.SUM,
+            period=Duration.minutes(5),
+        )
+        cloudwatch.Alarm(
+            self,
+            "SchedulerInvocationDropped",
+            alarm_name=f"soma-{env_name}-daily-pipeline-scheduler-invocations-dropped",
+            metric=scheduler_invocation_dropped,
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                "EventBridge Scheduler stopped retrying this schedule (InvocationDroppedCount). "
+                "Check target permissions, DLQ, and Scheduler retry policy."
+            ),
         ).add_alarm_action(cw_actions.SnsAction(alarm_topic))
 
         cloudwatch.Alarm(
@@ -240,4 +275,5 @@ class DailyBriefingPipeline(Construct):
             ),
         ).add_alarm_action(cw_actions.SnsAction(alarm_topic))
 
+        self.alarm_topic = alarm_topic
         self.runtime_secret_ref = runtime_secret.ref
