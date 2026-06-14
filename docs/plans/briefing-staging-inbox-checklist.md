@@ -29,13 +29,15 @@ Use after the first **SES** smoke send from staging (`ENV=staging`). Goal: confi
 - [ ] **`overall_readiness_score` null:** copy says readiness was not scored (or equivalent), not a fake numeric score.
 - [ ] Flags in the email narrative align with **rules** output for that run (severity order: worst first).
 - [ ] **STATISTICAL_SIGNALS (Phase 8):** if the prompt block lists z-score outliers, the note does not contradict listed **z_score** / **direction**; if the anomalies array is empty, the model does not invent statistical outliers (see [briefing-llm-failure-modes.md](./briefing-llm-failure-modes.md) § Contradicting STATISTICAL_SIGNALS).
-- [ ] **`anomaly_events`:** for the same `user_id` + run date, any `anomaly_type = 'statistical'` rows match what you expect from recovery metrics (optional SQL spot-check in Supabase).
+- [ ] **`anomaly_events`:** count of `anomaly_type = 'statistical'` rows for that user/day matches expectations (**often zero** when z-scores do not fire; the run still **deletes** prior statistical rows for that day, then may insert none). Optional SQL in Supabase.
 
 ## Preconditions (Hevy + Apple on staging)
 
-The briefing Lambda **reads Postgres only** — it does not call Hevy or Apple. Before expecting strength + recovery in the email:
+The briefing Lambda **reads Postgres only** — it does not call Hevy or Apple.
 
-- [ ] **Apple:** Health Auto Export (or your ingest path) has landed rows in **`biometrics`** so the daily rollup can fill **`daily_health_metrics`** for today; prior days should exist in **`daily_health_metrics`** if you want rolling features and z-score baselines (≥14 prior days with values for a metric before z-score flags).
+- [ ] **Apple — today:** **`biometrics`** has rows for the run date so the rollup can build **`daily_health_metrics`** for **today** (enough for same-day metrics + many rules).
+- [ ] **Apple — history / z-scores:** Older **`daily_health_metrics`** accumulate as the pipeline runs. **Fewer than 14 prior calendar days** with non-null values for a metric ⇒ **no z-score flags** (`stat_signals.anomalies` usually empty; **no** new statistical **`anomaly_events`**). **Normal on a cold start** — not a blocker for an SES smoke.
+- [ ] **Apple — history / rolling windows:** **7d/28d** features stay **partial** until windows fill; expect **`SPARSE_RECOVERY_DATA`** and nulls — no invented weekly sleep/HRV story ([briefing-llm-failure-modes.md](./briefing-llm-failure-modes.md)).
 - [ ] **Hevy:** **`strength_events`** populated for your user (e.g. **`scripts/smoke_hevy.py db-upsert`**, historical backfill, or scheduled ingest once wired — see [implementation-plan.md](./implementation-plan.md) § *Integration slices*).
 
 ## Operational
