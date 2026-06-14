@@ -77,6 +77,27 @@ Per Supabase: **`db.<project-ref>.supabase.co`** (direct, port **5432**) resolve
 
 **Fix:** In Dashboard → **Connect** → choose **Session pooler** (Shared pooler / Supavisor, port **5432**, host `aws-*..pooler.supabase.com`, username `postgres.<project-ref>`). Copy that URI into **`SOMA_DATABASE_URL`**. Alternatives: enable the **IPv4 add-on** (paid) so the direct host speaks IPv4, or confirm IPv6 works from your network ([test-ipv6.com](https://test-ipv6.com/)).
 
+## Phase 5–6: running `run_daily_pipeline` locally
+
+The entry point is `pipeline.orchestration.run_daily_pipeline` with a constructed
+`DailyPipelineIO` (LLM callable, DB loaders, optional persisters, thresholds map,
+delivery callback, etc.). There is **no** dedicated CLI in-repo yet.
+
+- **Best reference (offline):** `tests/test_orchestration.py` — fakes for every
+  boundary, no AWS or Postgres. Run it with **`python3 tests/test_orchestration.py`**
+  (forwards to pytest) or **`pytest tests/test_orchestration.py -q`**.
+- **Production-shaped wiring:** `infrastructure/lambda/briefing/handler.py` —
+  psycopg2, boto3 (Secrets Manager for DB/Anthropic/SES, SSM for rule thresholds),
+  then `run_daily_pipeline` per user.
+
+After `pip install -e ".[dev]"`, you can exercise the orchestrator from a small
+script or `python -c` by copying the `DailyPipelineIO` construction pattern from
+those files. For email and LLM behavior without AWS, use `ENV=local` and the
+injected fakes from the tests.
+
+For **AWS CDK** (`make cdk-synth`), the Lambda dependency layer is built with **local**
+``pip`` (no Docker); use Python **3.14** and PyPI access — see [README.md](../../README.md) § AWS CDK.
+
 ## Related docs
 
 - [integrations-checklist.md](./integrations-checklist.md) — services to integrate (confirm with you).  

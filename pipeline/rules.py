@@ -101,6 +101,27 @@ def evaluate(
     metrics = daily_metrics or {}
     flags: list[Flag] = []
 
+    if (
+        "recovery_sleep_days_7d" in features
+        and "recovery_hrv_days_7d" in features
+        and int(features.get("recovery_sleep_days_7d") or 0) == 0
+        and int(features.get("recovery_hrv_days_7d") or 0) == 0
+    ):
+        flags.append(
+            Flag(
+                code="SPARSE_RECOVERY_DATA",
+                severity="info",
+                message=(
+                    "No sleep or HRV rows in the last 7 days — recovery signals are unavailable; "
+                    "do not infer sleep debt or HRV trends."
+                ),
+                evidence={
+                    "recovery_sleep_days_7d": int(features.get("recovery_sleep_days_7d") or 0),
+                    "recovery_hrv_days_7d": int(features.get("recovery_hrv_days_7d") or 0),
+                },
+            )
+        )
+
     last_night_sleep = _f(metrics, "sleep_hours")
     if last_night_sleep is not None and last_night_sleep < th["min_sleep_hours"]:
         flags.append(

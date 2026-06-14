@@ -3,27 +3,39 @@
 Implements the Phase 5 "one daily pipeline, single scheduled start" pattern: a
 single EventBridge rule fires one Lambda well before the user's briefing time;
 the Lambda runs the ordered steps in :mod:`pipeline.orchestration`. Least-priv
-IAM grants only SSM rule-threshold reads and SES send.
+IAM grants SSM rule-threshold reads, Secrets Manager read for runtime config,
+and SES send.
 
-Packaging note: the Lambda asset (``infrastructure/lambda/briefing/``) holds the
-handler + thin client builders. The ``pipeline`` package and ``psycopg2`` are
-supplied to the function via a **layer** (or container image) at deploy time —
-see ``infrastructure/lambda/briefing/README.md``. Synthesis does not require that
-layer, so ``cdk synth`` stays Docker-free in CI.
+The ``pipeline`` package and ``psycopg2-binary`` are bundled into a **Lambda
+layer** at synth/deploy time via **local** ``pip`` (no Docker) — see
+:mod:`soma_cdk.pipeline_layer`. The handler asset (``infrastructure/lambda/briefing/``)
+stays handler-only.
 """
 
 from __future__ import annotations
 
+import json
 import os
 
-from aws_cdk import Duration
+from aws_cdk import Aws, CfnCondition, CfnDeletionPolicy, CfnParameter, Duration, Fn, Stack
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_secretsmanager as secretsmanager
 from constructs import Construct
 
+from soma_cdk.pipeline_layer import build_pipeline_deps_layer
+
 _LAMBDA_ASSET = os.path.join(os.path.dirname(__file__), "..", "lambda", "briefing")
+
+_RUNTIME_SECRET_PLACEHOLDER = json.dumps(
+    {
+        "DB_CONNECT_STRING": "update_me",
+        "ANTHROPIC_API_KEY": "update_me",
+        "SES_SENDER": "update_me",
+    }
+)
 
 
 class DailyBriefingPipeline(Construct):
@@ -39,23 +51,58 @@ class DailyBriefingPipeline(Construct):
     ) -> None:
         super().__init__(scope, construct_id)
 
+        deps_layer = build_pipeline_deps_layer(self, construct_id="PipelineDepsLayer")
+
+        stack = Stack.of(self)
+        seed_runtime_secret = CfnParameter(
+            stack,
+            f"{env_name.capitalize()}SeedLambdaRuntimeSecret",
+            type="String",
+            default="Yes",
+            allowed_values=["Yes", "No"],
+            description=(
+                "Yes: CloudFormation may set/reset the runtime secret JSON to update_me. "
+                "After replacing values in Secrets Manager, deploy with No so updates stop "
+                "sending SecretString (your console values are kept)."
+            ),
+        )
+        seed_yes = CfnCondition(
+            self,
+            f"{env_name.capitalize()}SeedLambdaRuntimeSecretYes",
+            expression=Fn.condition_equals(seed_runtime_secret.value_as_string, "Yes"),
+        )
+
+        runtime_secret = secretsmanager.CfnSecret(
+            self,
+            "LambdaRuntimeSecret",
+            name=f"soma-{env_name}-lambda-runtime",
+            description="DB URI, Anthropic key, SES From (JSON) for daily briefing Lambda",
+        )
+        runtime_secret.add_property_override(
+            "SecretString",
+            Fn.condition_if(seed_yes.logical_id, _RUNTIME_SECRET_PLACEHOLDER, Aws.NO_VALUE),
+        )
+        runtime_secret.cfn_options.deletion_policy = CfnDeletionPolicy.RETAIN
+        runtime_secret.cfn_options.update_replace_policy = CfnDeletionPolicy.RETAIN
+
         self.function = lambda_.Function(
             self,
             "BriefingFunction",
             function_name=f"soma-{env_name}-daily-briefing",
             runtime=lambda_.Runtime.PYTHON_3_14,
+            architecture=lambda_.Architecture.X86_64,
             handler="handler.handler",
             code=lambda_.Code.from_asset(_LAMBDA_ASSET),
+            layers=[deps_layer],
             timeout=Duration.minutes(5),
             memory_size=512,
             environment={
                 "ENV": env_name,
-                # SSM tree for per-user rule thresholds: /soma/{env}/{user_id}/rules/
                 "SOMA_RULES_PREFIX": f"/soma/{env_name}/",
+                "SOMA_LAMBDA_SECRET_ARN": runtime_secret.ref,
             },
         )
 
-        # Least-privilege: read only this env's rule thresholds, send only SES email.
         region = os.environ.get("CDK_DEFAULT_REGION", "us-west-2")
         account = os.environ.get("CDK_DEFAULT_ACCOUNT", "*")
         self.function.add_to_role_policy(
@@ -65,10 +112,15 @@ class DailyBriefingPipeline(Construct):
             )
         )
         self.function.add_to_role_policy(
+            iam.PolicyStatement(
+                actions=["secretsmanager:GetSecretValue"],
+                resources=[runtime_secret.ref],
+            )
+        )
+        self.function.add_to_role_policy(
             iam.PolicyStatement(actions=["ses:SendEmail"], resources=["*"])
         )
 
-        # Single daily start, well before the 06:00 local briefing time.
         self.rule = events.Rule(
             self,
             "DailySchedule",

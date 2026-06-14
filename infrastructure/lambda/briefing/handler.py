@@ -5,13 +5,16 @@ concrete clients to :func:`pipeline.orchestration.run_daily_pipeline` for each
 active user and returns a small summary. The ``pipeline`` package + ``psycopg2``
 are provided via a Lambda layer/container (see ``README.md``).
 
-Environment variables (set by ``DailyBriefingPipeline`` / operator secrets):
-    ENV                 local|staging|prod
-    SOMA_RULES_PREFIX   /soma/{env}/   (SSM tree for per-user thresholds)
-    DB_CONNECT_STRING   Postgres (Supabase) service-role connection string
-    ANTHROPIC_API_KEY   Anthropic key
-    BRIEFING_MODEL      (optional) override briefing model id
-    SES_SENDER          verified SES From address
+Environment variables:
+
+    ENV                     local|staging|prod (set by CDK in AWS)
+    SOMA_RULES_PREFIX       /soma/{env}/  (SSM tree for per-user thresholds)
+    SOMA_LAMBDA_SECRET_ARN  Secrets Manager secret ARN whose string is JSON with
+                            DB_CONNECT_STRING, ANTHROPIC_API_KEY, SES_SENDER
+                            (set by CDK). Alternatively set those three as plain
+                            env vars (local dev / overrides).
+
+    BRIEFING_MODEL          (optional) override briefing model id
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ import psycopg2
 
 from pipeline import clients
 from pipeline import persistence
+from pipeline.lambda_secrets import resolve_lambda_secrets
 from pipeline.briefing import DEFAULT_BRIEFING_MODEL
 from pipeline.delivery import deliver_briefing
 from pipeline.orchestration import DailyPipelineIO, run_daily_pipeline
@@ -42,14 +46,16 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
         _dt.now(timezone.utc).date()
     )
 
+    db_url, anthropic_key, ses_sender = resolve_lambda_secrets()
+
     llm = clients.anthropic_llm(
-        os.environ["ANTHROPIC_API_KEY"],
+        anthropic_key,
         model=os.environ.get("BRIEFING_MODEL", DEFAULT_BRIEFING_MODEL),
     )
-    send_email = clients.ses_email_sender(os.environ["SES_SENDER"])
+    send_email = clients.ses_email_sender(ses_sender)
     get_parameters = clients.ssm_threshold_loader()
 
-    conn = psycopg2.connect(os.environ["DB_CONNECT_STRING"])
+    conn = psycopg2.connect(db_url)
     summaries: list[dict[str, Any]] = []
 
     def _persister(table: str):
@@ -102,7 +108,13 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
                 )
             except Exception as exc:
                 conn.rollback()
-                logger.exception("Daily pipeline failed for user %s", user_id)
+                logger.error(
+                    "Daily pipeline failed for user %s: %s: %s",
+                    user_id,
+                    type(exc).__name__,
+                    exc,
+                    exc_info=False,
+                )
                 summaries.append(
                     {"user_id": str(user_id), "ok": False, "error": type(exc).__name__}
                 )

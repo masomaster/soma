@@ -79,3 +79,11 @@ def test_pipeline_stops_cleanly_when_llm_fails():
     assert result.delivery is None
     # Earlier steps still succeeded and persisted.
     assert "features" in persisted
+
+
+if __name__ == "__main__":
+    import sys
+
+    import pytest
+
+    raise SystemExit(pytest.main([__file__, *sys.argv[1:]]))

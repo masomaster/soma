@@ -556,7 +556,7 @@ CREATE TABLE daily_features (
     -- Strength load
     strength_sessions_7d    INT,
     strength_hard_sets_7d   INT,      -- sets at RPE >= 7
-    strength_tonnage_7d     FLOAT,    -- total kg/lbs moved
+    strength_tonnage_7d     FLOAT,    -- US short tons: sum(reps*weight_lbs)/2000 (7d window)
     upper_body_sets_7d      INT,
     lower_body_sets_7d      INT,
     push_sets_7d            INT,

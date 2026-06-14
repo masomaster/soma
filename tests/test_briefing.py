@@ -24,6 +24,7 @@ def test_build_prompt_includes_flags_and_features():
     assert "overall_readiness_score" in prompt
     assert "missing" not in prompt  # None values are dropped
     assert "2024-06-08" in prompt
+    assert "US short tons" in prompt
 
 
 def test_build_prompt_handles_no_flags():

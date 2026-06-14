@@ -60,7 +60,10 @@ def test_compute_daily_features_windows_and_readiness():
 
     assert f["strength_sessions_7d"] == 2
     assert f["strength_hard_sets_7d"] == 3
-    assert f["strength_tonnage_7d"] == 1400.0
+    # (5*100 + 5*100 + 8*50) lb·reps = 1400 → 1400/2000 short tons
+    assert f["strength_tonnage_7d"] == 0.7
+    assert f["recovery_sleep_days_7d"] == 7
+    assert f["recovery_hrv_days_7d"] == 7
     assert f["cardio_sessions_7d"] == 2
     assert f["cardio_minutes_7d"] == 70.0
     assert f["cardio_minutes_14d"] == 70.0
@@ -101,6 +104,8 @@ def test_compute_daily_features_handles_empty_inputs():
     assert f["strength_sessions_7d"] == 0
     assert f["cardio_minutes_7d"] == 0.0
     assert f["acute_chronic_ratio"] is None
-    assert f["sleep_debt_7d"] == 0.0
+    assert f["sleep_debt_7d"] is None
+    assert f["recovery_sleep_days_7d"] == 0
+    assert f["recovery_hrv_days_7d"] == 0
     assert f["hrv_suppressed_days"] == 0
-    assert f["overall_readiness_score"] == 100.0
+    assert f["overall_readiness_score"] is None

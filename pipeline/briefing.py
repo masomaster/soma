@@ -20,7 +20,9 @@ from pipeline.rules import Flag
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BRIEFING_MODEL = "claude-3-5-haiku-latest"
+# Pinned snapshot ID (see Anthropic model deprecations). Aliases like
+# ``claude-haiku-4-5`` also work; avoid retired IDs such as ``claude-3-5-haiku-latest``.
+DEFAULT_BRIEFING_MODEL = "claude-haiku-4-5-20251001"
 
 SYSTEM_GUIDELINES = (
     "You are Soma, a concise personal health coach. You are given PRE-COMPUTED "
@@ -28,7 +30,11 @@ SYSTEM_GUIDELINES = (
     "those signals into a short, actionable morning briefing. Do NOT invent data, "
     "do NOT contradict the flags, and do NOT perform your own statistical analysis "
     "of raw history — only explain and act on what you are given. Lead with the "
-    "most severe flag. Keep it under 150 words, warm but direct."
+    "most severe flag. If SPARSE_RECOVERY_DATA is present, do not describe sleep "
+    "debt, sleep quality, or HRV trends. If overall_readiness_score is null, say "
+    "readiness could not be scored from recovery data and focus on training load. "
+    "Use plain sentences; at most light Markdown (bold, short bullets). "
+    "Keep it under 150 words, warm but direct."
 )
 
 # LLM client contract: given (system, user_prompt) return the assistant text.
@@ -92,6 +98,13 @@ def build_prompt(
         f"FLAGS (pre-computed, narrate these in priority order):\n{flag_lines}\n\n"
         f"FEATURES (rolling computed metrics):\n{feature_blob}\n\n"
         f"TODAY'S METRICS:\n{metrics_blob}\n\n"
+        "UNITS / INTERPRETATION (do not contradict):\n"
+        "- strength_tonnage_7d is US short tons (2000 lb): sum over the window of "
+        "(reps x weight_lbs) / 2000. Do not call it \"metric tonnes\" unless you "
+        "explicitly convert.\n"
+        "- recovery_sleep_days_7d / recovery_hrv_days_7d count calendar days in the "
+        "7-day window with at least one observation. When both are 0, recovery "
+        "was not observed - do not fill in sleep or HRV narrative.\n\n"
         "Write the morning briefing now."
     )
 

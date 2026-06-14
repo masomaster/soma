@@ -88,7 +88,14 @@ def run_daily_pipeline(
             result.steps.append(StepResult(name, ok=True))
             return True
         except Exception as exc:  # isolate: one bad step shouldn't crash the scheduler
-            logger.exception("Pipeline step %r failed for %s", name, user_id)
+            logger.error(
+                "Pipeline step %r failed for user %s: %s: %s",
+                name,
+                user_id,
+                type(exc).__name__,
+                exc,
+                exc_info=False,
+            )
             result.steps.append(StepResult(name, ok=False, detail=f"{type(exc).__name__}: {exc}"))
             return False
 

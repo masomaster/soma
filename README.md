@@ -50,7 +50,7 @@ Or with Make (`python3.14` by default; override with `PYTHON=…` if needed):
 make install    # one-time: create .venv + pip install -e ".[dev]"
 make            # same as `make test` — pytest
 make compile    # bytecode compile check for pipeline/
-make cdk-synth  # pip install .[cdk] + CDK synth (writes cdk.out under infrastructure/)
+make cdk-synth  # pip install .[cdk] + CDK synth (local pip builds Lambda layer; Python 3.14 + PyPI)
 ```
 
 Copy [`.env.example`](.env.example) to `.env` for local secrets (gitignored). `ENV` defaults to `local`; see `pipeline.settings`. For **Phase 3 Hevy smoke** (live API, raw files on disk, optional Supabase upsert), see [`scripts/README.md`](scripts/README.md) and [docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md) § Phase 3 smoke.
@@ -64,7 +64,7 @@ pip install -e ".[cdk]"          # aws-cdk-lib + constructs (from repo root)
 make cdk-synth                   # writes infrastructure/cdk.out/ (uses npx aws-cdk CLI)
 ```
 
-Direct `python infrastructure/app.py` also runs `app.synth()` but emits assembly to a **temp** dir unless you use the CDK CLI — prefer `make cdk-synth` or `cd infrastructure && cdk synth SomaStagingStack`.
+**`cdk synth`** builds the briefing Lambda dependency layer with **local** ``pip`` (no Docker): use **Python 3.14** and allow PyPI access. On Apple Silicon the layer targets **x86_64** Lambda wheels.
 
 See [`infrastructure/README.md`](infrastructure/README.md) for bootstrap and deploy commands.
 

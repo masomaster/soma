@@ -4,13 +4,14 @@ All functions here are **pure** (no DB / network): callers pass already-loaded
 rows (the shapes produced by adapters / ``SELECT``) and receive plain dicts ready
 to upsert into ``daily_health_metrics`` / ``daily_features``. The LLM never sees
 raw events — it only narrates the conclusions computed here (see
-``.cursor/rules/soma.mdc``).
+``.cursor/rules/soma.mdc``). Strength ``strength_tonnage_7d`` is **US short tons**
+(``sum(reps * weight_lbs) / 2000``) over the acute window.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 # Canonical biometric metric names that map 1:1 onto ``daily_health_metrics``
@@ -37,6 +38,8 @@ DAILY_HEALTH_METRIC_COLUMNS: frozenset[str] = frozenset(
 
 ACUTE_WINDOW_DAYS = 7
 CHRONIC_WINDOW_DAYS = 28
+# Hevy stores ``weight_lbs``; convert summed (reps × lbs) into approximate US short tons.
+_LBS_PER_SHORT_TON = 2000.0
 # Sets Hevy marks as real working effort (see hevy._hevy_set_type_to_db).
 _HARD_SET_TYPES = frozenset({"working"})
 
@@ -108,7 +111,7 @@ def _strength_features(
 ) -> dict[str, Any]:
     session_dates: set[date] = set()
     hard_sets = 0
-    tonnage = 0.0
+    volume_lb_reps = 0.0
     for ev in strength_events:
         d = _as_date(ev.get("event_date"))
         if d is None or not _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS):
@@ -120,11 +123,13 @@ def _strength_features(
             reps = _num(ev.get("reps"))
             weight = _num(ev.get("weight_lbs"))
             if reps is not None and weight is not None:
-                tonnage += reps * weight
+                volume_lb_reps += reps * weight
+    # ``strength_tonnage_7d`` is US short tons (lb·reps / 2000), not raw lb·reps.
+    short_tons = volume_lb_reps / _LBS_PER_SHORT_TON
     return {
         "strength_sessions_7d": len(session_dates),
         "strength_hard_sets_7d": hard_sets,
-        "strength_tonnage_7d": round(tonnage, 2),
+        "strength_tonnage_7d": round(short_tons, 3),
     }
 
 
@@ -160,6 +165,11 @@ def _cardio_features(
     }
 
 
+def _acute_calendar_dates(as_of: date, *, days: int = ACUTE_WINDOW_DAYS) -> list[date]:
+    """Inclusive trailing ``days`` calendar days ending at ``as_of``."""
+    return [as_of - timedelta(days=i) for i in range(days)]
+
+
 def _recovery_features(
     daily_metrics: Sequence[Mapping[str, Any]],
     *,
@@ -174,6 +184,15 @@ def _recovery_features(
         if (d := _as_date(m.get("metric_date"))) is not None
         and _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS)
     ]
+    sleep_obs_days = 0
+    hrv_obs_days = 0
+    for d in _acute_calendar_dates(as_of):
+        day_rows = [m for m in window if _as_date(m.get("metric_date")) == d]
+        if any(_num(m.get("sleep_hours")) is not None for m in day_rows):
+            sleep_obs_days += 1
+        if any(_num(m.get("hrv_rmssd")) is not None for m in day_rows):
+            hrv_obs_days += 1
+
     hrv_values = [v for m in window if (v := _num(m.get("hrv_rmssd"))) is not None]
     hrv_baseline = sum(hrv_values) / len(hrv_values) if hrv_values else None
 
@@ -187,7 +206,9 @@ def _recovery_features(
         if hrv is not None and hrv_baseline is not None and hrv < hrv_baseline * hrv_suppressed_ratio:
             suppressed_days += 1
     return {
-        "sleep_debt_7d": round(sleep_debt, 2),
+        "recovery_sleep_days_7d": sleep_obs_days,
+        "recovery_hrv_days_7d": hrv_obs_days,
+        "sleep_debt_7d": None if sleep_obs_days == 0 else round(sleep_debt, 2),
         "hrv_suppressed_days": suppressed_days,
     }
 
@@ -207,8 +228,9 @@ def _readiness_score(
       (same configurable threshold the rules engine flags on)
     """
     score = 100.0
-    sleep_debt = _num(features.get("sleep_debt_7d")) or 0.0
-    score -= min(40.0, sleep_debt * 4.0)
+    sleep_debt = _num(features.get("sleep_debt_7d"))
+    if sleep_debt is not None:
+        score -= min(40.0, sleep_debt * 4.0)
     suppressed = _num(features.get("hrv_suppressed_days")) or 0.0
     score -= min(40.0, suppressed * 8.0)
     acwr = _num(features.get("acute_chronic_ratio"))
@@ -246,9 +268,14 @@ def compute_daily_features(
             hrv_suppressed_ratio=hrv_suppressed_ratio,
         )
     )
-    features["overall_readiness_score"] = _readiness_score(
-        features,
-        target_sleep_hours=target_sleep_hours,
-        max_acute_chronic_ratio=max_acute_chronic_ratio,
-    )
+    sleep_cov = int(features.get("recovery_sleep_days_7d") or 0)
+    hrv_cov = int(features.get("recovery_hrv_days_7d") or 0)
+    if sleep_cov == 0 and hrv_cov == 0:
+        features["overall_readiness_score"] = None
+    else:
+        features["overall_readiness_score"] = _readiness_score(
+            features,
+            target_sleep_hours=target_sleep_hours,
+            max_acute_chronic_ratio=max_acute_chronic_ratio,
+        )
     return features

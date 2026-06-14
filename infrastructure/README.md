@@ -15,6 +15,12 @@ Stable stack IDs (use these in docs, GitHub Actions, and CLI):
 
 ## Synth (no AWS call)
 
+`cdk synth` / `cdk deploy` runs **local** ``pip`` to build the briefing Lambda **layer**
+(this repo’s ``pipeline`` package plus ``psycopg2-binary``). No Docker. You need
+**Python 3.14** on ``PATH`` (same as the Lambda runtime) and network access to PyPI.
+On **Apple Silicon**, the bundler requests **manylinux x86_64** wheels so they match
+the **x86_64** Lambda architecture.
+
 `python app.py` runs `app.synth()` but by default writes the assembly to a **temp** directory. For **`cdk.out/`** next to the active `cdk.json`, use the CDK CLI or Make:
 
 ```bash
@@ -43,7 +49,10 @@ cdk deploy SomaStagingStack
 # cdk deploy SomaProdStack
 ```
 
-Stacks are intentionally minimal (tags only) until pipeline Lambdas and data plane land in later work.
+Stacks define the **daily briefing** EventBridge → Lambda pipeline. Runtime secrets
+live in Secrets Manager (`soma-{env}-lambda-runtime`); see
+`infrastructure/lambda/briefing/README.md` for the seed parameter and how to avoid
+overwrites after you edit the secret in the console.
 
 ## Continuous deployment (GitHub Actions → AWS)
 

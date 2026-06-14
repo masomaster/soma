@@ -32,7 +32,7 @@ def test_anthropic_llm_posts_and_parses_text():
         captured["body"] = json.loads(req.data.decode("utf-8"))
         return _FakeResp({"content": [{"type": "text", "text": "Hello"}, {"type": "text", "text": " world"}]})
 
-    llm = clients.anthropic_llm("sk-test", model="claude-3-5-haiku-latest", urlopen=fake_urlopen)
+    llm = clients.anthropic_llm("sk-test", model="claude-haiku-4-5-20251001", urlopen=fake_urlopen)
     out = llm("SYS", "USER PROMPT")
 
     assert out == "Hello world"
@@ -41,6 +41,28 @@ def test_anthropic_llm_posts_and_parses_text():
     assert captured["headers"]["anthropic-version"] == clients.ANTHROPIC_VERSION
     assert captured["body"]["system"] == "SYS"
     assert captured["body"]["messages"][0]["content"] == "USER PROMPT"
+
+
+def test_anthropic_llm_http_error_surfaces_body():
+    import io
+    import urllib.error
+
+    err_json = b'{"type":"error","error":{"type":"not_found_error","message":"model: xyz"}}'
+
+    def fake_urlopen(req, timeout=None):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            404,
+            "Not Found",
+            hdrs=None,
+            fp=io.BytesIO(err_json),
+        )
+
+    llm = clients.anthropic_llm("sk-test", model="bad-model", urlopen=fake_urlopen)
+    with pytest.raises(RuntimeError) as ei:
+        llm("s", "u")
+    assert "HTTP 404" in str(ei.value)
+    assert "model: xyz" in str(ei.value)
 
 
 def test_anthropic_llm_raises_on_empty_content():
@@ -63,6 +85,22 @@ def test_ses_email_sender_uses_injected_client():
     assert calls["Source"] == "from@soma.app"
     assert calls["Destination"]["ToAddresses"] == ["to@x.com"]
     assert calls["Message"]["Subject"]["Data"] == "Subj"
+    assert "Html" not in calls["Message"]["Body"]
+
+
+def test_ses_email_sender_includes_html_when_provided():
+    calls = {}
+
+    class FakeSes:
+        def send_email(self, **kwargs):
+            calls.update(kwargs)
+            return {"MessageId": "m-2"}
+
+    send = clients.ses_email_sender("from@soma.app", client=FakeSes())
+    send("to@x.com", "Subj", "Plain", "<html><body><p>Hi</p></body></html>")
+    body = calls["Message"]["Body"]
+    assert "Text" in body and body["Text"]["Data"] == "Plain"
+    assert "Html" in body and "<p>Hi</p>" in body["Html"]["Data"]
 
 
 def test_ssm_threshold_loader_flattens_pages():

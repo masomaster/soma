@@ -54,3 +54,4 @@ Each adapter in pipeline/adapters/ must:
 - Docstrings on all adapter fetch_and_normalize() functions
 - No print() in production code — use Python logging module
 - Keep Lambda handlers thin: they call pipeline modules, don't contain logic
+- **String formatting:** use **f-strings** only. Do **not** use printf-style `%` formatting (`"%d" % n`, `"..." % (...)`). (Psycopg2 `cursor.execute("... %s ...", (val,))` placeholders are fine — that is parameterized SQL, not string interpolation.)

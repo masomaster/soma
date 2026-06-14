@@ -19,7 +19,7 @@ def _briefing() -> Briefing:
         coaching_note="Easy day.",
         flags=["LOW_HRV"],
         features_json={},
-        model_used="claude-3-5-haiku-latest",
+        model_used="claude-haiku-4-5-20251001",
     )
 
 
@@ -34,10 +34,13 @@ def test_local_env_prints_to_stream():
 
 
 def test_prod_env_sends_email_without_prefix():
-    sent = {}
+    sent: dict[str, str | None] = {}
 
-    def send_email(to: str, subject: str, body: str) -> str:
-        sent.update(to=to, subject=subject, body=body)
+    def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> str:
+        sent["to"] = to
+        sent["subject"] = subject
+        sent["body"] = body
+        sent["html"] = html_body
         return "msg-123"
 
     out = D.deliver_briefing(
@@ -53,6 +56,15 @@ def test_prod_env_sends_email_without_prefix():
     }
     assert sent["to"] == "user@example.com"
     assert not sent["subject"].startswith("[")
+    assert sent["body"] == "Easy day."
+    assert isinstance(sent["html"], str) and "Easy day." in sent["html"] and "<html>" in sent["html"]
+
+
+def test_coaching_note_to_html_wraps_bold_and_headings():
+    html = D.coaching_note_to_html("# Title\n\n**Bold** line\n\n- one\n- two")
+    assert "<h1" in html and "Title" in html
+    assert "<strong>Bold</strong>" in html
+    assert "<ul" in html and "<li>one</li>" in html
 
 
 def test_staging_without_address_falls_back_to_stdout():

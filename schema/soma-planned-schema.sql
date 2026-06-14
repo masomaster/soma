@@ -148,13 +148,15 @@ CREATE TABLE daily_features (
     acute_chronic_ratio     FLOAT,
     strength_sessions_7d    INT,
     strength_hard_sets_7d   INT,
-    strength_tonnage_7d     FLOAT,
+    strength_tonnage_7d     FLOAT,  -- US short tons: sum(reps*weight_lbs)/2000 in 7d window
     upper_body_sets_7d      INT,
     lower_body_sets_7d      INT,
     push_sets_7d            INT,
     pull_sets_7d            INT,
     sleep_debt_7d           FLOAT,
     hrv_suppressed_days     INT,
+    recovery_sleep_days_7d  INT,
+    recovery_hrv_days_7d    INT,
     overall_readiness_score FLOAT,
     updated_at              TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (user_id, feature_date)

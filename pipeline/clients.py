@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import urllib.error
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
@@ -57,8 +58,32 @@ def anthropic_llm(
             },
             method="POST",
         )
-        with urlopen(req, timeout=60) as resp:
-            payload = json.loads(resp.read().decode("utf-8"))
+        try:
+            with urlopen(req, timeout=60) as resp:
+                raw = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            err_raw = ""
+            try:
+                err_raw = exc.read().decode("utf-8", errors="replace")
+            except Exception:
+                pass
+            err_raw = err_raw.strip()
+            detail = err_raw[:1200] if err_raw else ""
+            try:
+                parsed = json.loads(err_raw)
+                inner = parsed.get("error")
+                if isinstance(inner, dict) and inner.get("message"):
+                    detail = str(inner["message"])
+            except (json.JSONDecodeError, TypeError, AttributeError):
+                pass
+            raise RuntimeError(
+                f"Anthropic Messages API HTTP {exc.code} (model={model!r})"
+                + (f": {detail}" if detail else "")
+            ) from None
+        except urllib.error.URLError as exc:
+            raise RuntimeError(f"Anthropic request failed: {exc}") from None
+
+        payload = json.loads(raw)
         blocks = payload.get("content")
         if not isinstance(blocks, list) or not blocks:
             raise ValueError("Anthropic response missing 'content' blocks")
@@ -82,13 +107,16 @@ def ses_email_sender(
 
         client = boto3.client("ses", region_name=region)
 
-    def _send(to_address: str, subject: str, body: str) -> str:
+    def _send(to_address: str, subject: str, body: str, html_body: str | None = None) -> str:
+        msg_body: dict[str, Any] = {"Text": {"Data": body, "Charset": "UTF-8"}}
+        if html_body:
+            msg_body["Html"] = {"Data": html_body, "Charset": "UTF-8"}
         resp = client.send_email(
             Source=sender,
             Destination={"ToAddresses": [to_address]},
             Message={
-                "Subject": {"Data": subject},
-                "Body": {"Text": {"Data": body}},
+                "Subject": {"Data": subject, "Charset": "UTF-8"},
+                "Body": msg_body,
             },
         )
         return resp.get("MessageId", "")
