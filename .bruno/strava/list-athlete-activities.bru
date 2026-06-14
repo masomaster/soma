@@ -1,0 +1,16 @@
+meta {
+  name: List athlete activities (page 1)
+  type: http
+  seq: 1
+}
+
+get {
+  url: https://www.strava.com/api/v3/athlete/activities?page=1&per_page=30
+  body: none
+  auth: none
+}
+
+headers {
+  Authorization: Bearer {{STRAVA_ACCESS_TOKEN}}
+  Accept: application/json
+}

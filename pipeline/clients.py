@@ -18,7 +18,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from pipeline.briefing import LLMClient
-from pipeline.features import ACUTE_WINDOW_DAYS, CHRONIC_WINDOW_DAYS
+from pipeline.features import CHRONIC_WINDOW_DAYS
 
 logger = logging.getLogger(__name__)
 
@@ -171,14 +171,14 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
 
     def load_strength_events(user_id: str, d: date) -> list[dict[str, Any]]:
         return _query(
-            "SELECT event_date, set_type, reps, weight_lbs FROM strength_events "
+            "SELECT event_date, set_type, reps, weight_lbs, rpe FROM strength_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s",
-            (user_id, d - timedelta(days=ACUTE_WINDOW_DAYS - 1), d),
+            (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
         )
 
     def load_cardio_events(user_id: str, d: date) -> list[dict[str, Any]]:
         return _query(
-            "SELECT event_date, duration_min FROM cardio_events "
+            "SELECT event_date, duration_min, session_rpe FROM cardio_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s",
             (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
         )

@@ -8,7 +8,7 @@ This folder documents the relational schema for Soma. **Applied state** is defin
 |------|--------|
 | [schema-diagram.md](./schema-diagram.md) | **Human-readable** entity–relationship view (Mermaid). Start here for a picture of the model. |
 | [`../../schema/soma-planned-schema.sql`](../../schema/soma-planned-schema.sql) | **Planned DDL** for diffing and reviews — keep aligned with migrations. |
-| [`../../schema/migrations/0002_daily_features_recovery_counts.sql`](../../schema/migrations/0002_daily_features_recovery_counts.sql) | **Second migration** — recovery observation counts + `strength_tonnage_7d` column comment. |
+| [`../../schema/migrations/0003_training_load_and_effort.sql`](../../schema/migrations/0003_training_load_and_effort.sql) | **Third migration** — `training_load_*`, `effort_*` on `daily_features`; optional `session_rpe` on `cardio_events`. |
 
 ## Tables (quick list)
 

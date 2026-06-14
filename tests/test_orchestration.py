@@ -30,7 +30,7 @@ def _io(persisted: dict, *, llm=None) -> DailyPipelineIO:
         load_strength_events=lambda u, d: [
             {"event_date": RUN, "set_type": "working", "reps": 5, "weight_lbs": 100}
         ],
-        load_cardio_events=lambda u, d: [{"event_date": RUN, "duration_min": 30}],
+        load_cardio_events=lambda u, d: [{"event_date": RUN, "duration_min": 30, "session_rpe": None}],
         persist_daily_metrics=lambda row: persisted.setdefault("metrics", []).append(row),
         persist_features=lambda row: persisted.setdefault("features", []).append(row),
         persist_briefing=lambda row: persisted.setdefault("briefings", []).append(row),

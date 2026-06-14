@@ -4,7 +4,7 @@ Use [Bruno](https://www.usebruno.com/) to exercise **vendor APIs** and, later, *
 
 ## Layout (suggested)
 
-This repo includes `bruno.json` at `.bruno/bruno.json` and a **Hevy** folder (`hevy/list-workouts.bru`). Open `.bruno` as a collection in Bruno and set `HEVY_API_KEY` in a secret / environment (never commit).
+This repo includes `bruno.json` at `.bruno/bruno.json`, **Hevy** (`hevy/list-workouts.bru`), and **Strava** (`strava/list-athlete-activities.bru`). Open `.bruno` as a collection in Bruno and set `HEVY_API_KEY` / `STRAVA_ACCESS_TOKEN` in a secret / environment (never commit).
 
 Create additional folders under `.bruno/` as you go, for example:
 
@@ -19,7 +19,7 @@ Create additional folders under `.bruno/` as you go, for example:
     list-workouts.bru
   strava/
     folder.bru
-    get-activity.bru
+    list-athlete-activities.bru
   supabase-rest/
     folder.bru
     get-strength-events.bru   ← after table exists; uses RLS + user JWT
@@ -30,7 +30,7 @@ Adjust names to match how you like to organize repos (single monorepo collection
 ## Secrets
 
 - **Tracked:** `environments/soma.example.bru` — placeholders only; safe to commit.
-- **Ignored:** `environments/soma.bru` (your real `HEVY_API_KEY`), `environments/*.local.bru`, and `.bruno/.env`. Copy the example: duplicate `soma.example.bru` → `soma.bru` in the same folder, replace the placeholder, pick the **soma** environment in Bruno.
+- **Ignored:** `environments/soma.bru` (your real keys / tokens), `environments/*.local.bru`, and `.bruno/.env`. Copy the example: duplicate `soma.example.bru` → `soma.bru` in the same folder, replace the placeholder, pick the **soma** environment in Bruno.
 - Never commit API keys, OAuth refresh tokens, or Supabase **service_role** keys.
 
 ## Supabase REST from Bruno

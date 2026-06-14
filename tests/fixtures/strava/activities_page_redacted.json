@@ -1,0 +1,27 @@
+[
+  {
+    "id": 12345678901,
+    "name": "Morning run (redacted)",
+    "distance": 8046.8,
+    "moving_time": 2400,
+    "elapsed_time": 2520,
+    "total_elevation_gain": 42.5,
+    "type": "Run",
+    "start_date": "2024-06-01T14:30:07Z",
+    "start_date_local": "2024-06-01T07:30:07-07:00"
+  },
+  {
+    "id": 12345678902,
+    "name": "Lunch ride (redacted)",
+    "distance": 25000.0,
+    "moving_time": 3600,
+    "elapsed_time": 3720,
+    "total_elevation_gain": 120.0,
+    "type": "Ride",
+    "start_date": "2024-06-02T18:00:00Z",
+    "start_date_local": "2024-06-02T11:00:00-07:00",
+    "average_heartrate": 142.3,
+    "max_heartrate": 168.1,
+    "kilojoules": 800
+  }
+]

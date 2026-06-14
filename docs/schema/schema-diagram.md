@@ -39,6 +39,7 @@ erDiagram
     text source_id
     date event_date
     text activity_type
+    float session_rpe
   }
 
   biometrics {
@@ -64,6 +65,8 @@ erDiagram
     date feature_date
     int strength_sessions_7d
     float cardio_minutes_7d
+    float training_load_cardio_minutes_28d
+    float effort_unified_index_7d
   }
 
   interventions {

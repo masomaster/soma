@@ -62,6 +62,18 @@ def test_compute_daily_features_windows_and_readiness():
     assert f["strength_hard_sets_7d"] == 3
     # (5*100 + 5*100 + 8*50) lb·reps = 1400 → 1400/2000 short tons
     assert f["strength_tonnage_7d"] == 0.7
+    assert f["training_load_strength_short_tons_7d"] == 0.7
+    assert f["training_load_strength_short_tons_28d"] == 0.7
+    assert f["training_load_strength_hard_sets_28d"] == 3
+    assert f["training_load_strength_sessions_28d"] == 2
+    assert f["training_load_cardio_minutes_7d"] == 70.0
+    assert f["training_load_cardio_minutes_28d"] == 130.0
+    # effort index: 70 + 0.7 * 90 = 133
+    assert f["effort_unified_index_7d"] == 133.0
+    assert f["effort_unified_index_28d"] == 193.0
+    assert f["effort_foster_cardio_au_7d"] is None
+    assert f["effort_foster_strength_au_7d"] is None
+    assert f["effort_foster_au_7d"] is None
     assert f["recovery_sleep_days_7d"] == 7
     assert f["recovery_hrv_days_7d"] == 7
     assert f["cardio_sessions_7d"] == 2
@@ -103,9 +115,35 @@ def test_compute_daily_features_handles_empty_inputs():
     f = F.compute_daily_features(user_id="u1", feature_date=RUN)
     assert f["strength_sessions_7d"] == 0
     assert f["cardio_minutes_7d"] == 0.0
+    assert f["training_load_cardio_minutes_28d"] == 0.0
+    assert f["effort_unified_index_7d"] == 0.0
+    assert f["effort_unified_index_28d"] == 0.0
+    assert f["effort_foster_au_7d"] is None
     assert f["acute_chronic_ratio"] is None
     assert f["sleep_debt_7d"] is None
     assert f["recovery_sleep_days_7d"] == 0
     assert f["recovery_hrv_days_7d"] == 0
     assert f["hrv_suppressed_days"] == 0
     assert f["overall_readiness_score"] is None
+
+
+def test_effort_foster_from_rpe_and_session_rpe():
+    strength = [
+        {"event_date": _d(0), "set_type": "working", "reps": 5, "weight_lbs": 100, "rpe": 8.0},
+        {"event_date": _d(0), "set_type": "working", "reps": 5, "weight_lbs": 100, "rpe": 8.0},
+    ]
+    cardio = [{"event_date": _d(1), "duration_min": 20.0, "session_rpe": 5.0}]
+    f = F.compute_daily_features(
+        user_id="u1", feature_date=RUN, strength_events=strength, cardio_events=cardio
+    )
+    assert f["effort_foster_strength_au_7d"] == 48.0  # mean RPE 8 × 2 sets × 3 min/set
+    assert f["effort_foster_cardio_au_7d"] == 100.0  # 5 × 20
+    assert f["effort_foster_au_7d"] == 148.0
+
+
+def test_training_load_strength_28d_includes_chronic_window_only():
+    strength = [{"event_date": _d(20), "set_type": "working", "reps": 10, "weight_lbs": 200}]
+    f = F.compute_daily_features(user_id="u1", feature_date=RUN, strength_events=strength)
+    assert f["training_load_strength_short_tons_7d"] == 0.0
+    assert f["training_load_strength_short_tons_28d"] == 1.0
+    assert f["training_load_strength_hard_sets_28d"] == 1

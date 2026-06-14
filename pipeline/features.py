@@ -6,10 +6,20 @@ to upsert into ``daily_health_metrics`` / ``daily_features``. The LLM never sees
 raw events — it only narrates the conclusions computed here (see
 ``.cursor/rules/soma.mdc``). Strength ``strength_tonnage_7d`` is **US short tons**
 (``sum(reps * weight_lbs) / 2000``) over the acute window.
+
+**Training load (v0):** Modality-split external metrics under ``training_load_*``
+mirror 7d legacy columns and add **28-day** rolling strength tonnage / cardio
+minutes — see ``docs/plans/workload-indicators.md``.
+
+**Effort (v1 attempt):** ``effort_unified_index_*`` is a **heuristic** single scale
+(cardio minutes + strength short tons × a nominal conversion). Foster-style
+``effort_foster_*`` uses ``cardio_events.session_rpe`` and per-set ``rpe`` on
+strength working sets when present — not a validated physiological TRIMP.
 """
 
 from __future__ import annotations
 
+from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, timedelta
 from typing import Any
@@ -42,6 +52,11 @@ CHRONIC_WINDOW_DAYS = 28
 _LBS_PER_SHORT_TON = 2000.0
 # Sets Hevy marks as real working effort (see hevy._hevy_set_type_to_db).
 _HARD_SET_TYPES = frozenset({"working"})
+# Heuristic unified index: map strength short tons to nominal cardio-equivalent minutes
+# (arbitrary units for trending — not VO₂-derived). See workload-indicators.md.
+EFFORT_STRENGTH_SHORT_TON_AS_EQUIV_CARDIO_MINUTES = 90.0
+# Foster-style strength: minutes proxy per hard set when inferring session duration from sets only.
+EFFORT_STRENGTH_MINUTES_PER_HARD_SET = 3.0
 
 
 def _as_date(value: Any) -> date | None:
@@ -106,41 +121,62 @@ def rollup_daily_health_metrics(
     return row
 
 
-def _strength_features(
+def _strength_training_load(
     strength_events: Sequence[Mapping[str, Any]], *, as_of: date
 ) -> dict[str, Any]:
-    session_dates: set[date] = set()
-    hard_sets = 0
-    volume_lb_reps = 0.0
+    """Legacy 7d strength metrics plus modality-split ``training_load_strength_*`` (7d + 28d)."""
+    session_7: set[date] = set()
+    session_28: set[date] = set()
+    hard_7 = 0
+    hard_28 = 0
+    vol_7_lb = 0.0
+    vol_28_lb = 0.0
     for ev in strength_events:
         d = _as_date(ev.get("event_date"))
-        if d is None or not _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS):
+        if d is None:
             continue
-        session_dates.add(d)
+        in7 = _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS)
+        in28 = _in_window(d, as_of=as_of, days=CHRONIC_WINDOW_DAYS)
+        if not in28:
+            continue
+        if in7:
+            session_7.add(d)
+        session_28.add(d)
         set_type = str(ev.get("set_type") or "").strip().lower()
-        if set_type in _HARD_SET_TYPES:
-            hard_sets += 1
-            reps = _num(ev.get("reps"))
-            weight = _num(ev.get("weight_lbs"))
+        if set_type not in _HARD_SET_TYPES:
+            continue
+        reps = _num(ev.get("reps"))
+        weight = _num(ev.get("weight_lbs"))
+        if in7:
+            hard_7 += 1
             if reps is not None and weight is not None:
-                volume_lb_reps += reps * weight
-    # ``strength_tonnage_7d`` is US short tons (lb·reps / 2000), not raw lb·reps.
-    short_tons = volume_lb_reps / _LBS_PER_SHORT_TON
+                vol_7_lb += reps * weight
+        hard_28 += 1
+        if reps is not None and weight is not None:
+            vol_28_lb += reps * weight
+    tons_7 = round(vol_7_lb / _LBS_PER_SHORT_TON, 3)
+    tons_28 = round(vol_28_lb / _LBS_PER_SHORT_TON, 3)
     return {
-        "strength_sessions_7d": len(session_dates),
-        "strength_hard_sets_7d": hard_sets,
-        "strength_tonnage_7d": round(short_tons, 3),
+        "strength_sessions_7d": len(session_7),
+        "strength_hard_sets_7d": hard_7,
+        "strength_tonnage_7d": tons_7,
+        "training_load_strength_short_tons_7d": tons_7,
+        "training_load_strength_short_tons_28d": tons_28,
+        "training_load_strength_hard_sets_28d": hard_28,
+        "training_load_strength_sessions_28d": len(session_28),
     }
 
 
-def _cardio_features(
+def _cardio_training_load(
     cardio_events: Sequence[Mapping[str, Any]], *, as_of: date
 ) -> dict[str, Any]:
+    """Legacy cardio windows plus ``training_load_cardio_minutes_*`` (7d + 28d)."""
     sessions_7d: set[date] = set()
     minutes_7d = 0.0
     minutes_14d = 0.0
     minutes_acute = 0.0
     minutes_chronic = 0.0
+    minutes_28d = 0.0
     for ev in cardio_events:
         d = _as_date(ev.get("event_date"))
         if d is None:
@@ -154,7 +190,7 @@ def _cardio_features(
             minutes_14d += minutes
         if _in_window(d, as_of=as_of, days=CHRONIC_WINDOW_DAYS):
             minutes_chronic += minutes
-    # Acute:chronic workload ratio (ACWR): 7-day load vs the 28-day weekly average.
+            minutes_28d += minutes
     chronic_weekly_avg = minutes_chronic / (CHRONIC_WINDOW_DAYS / ACUTE_WINDOW_DAYS)
     acwr = round(minutes_acute / chronic_weekly_avg, 3) if chronic_weekly_avg > 0 else None
     return {
@@ -162,6 +198,89 @@ def _cardio_features(
         "cardio_minutes_7d": round(minutes_7d, 2),
         "cardio_minutes_14d": round(minutes_14d, 2),
         "acute_chronic_ratio": acwr,
+        "training_load_cardio_minutes_7d": round(minutes_7d, 2),
+        "training_load_cardio_minutes_28d": round(minutes_28d, 2),
+    }
+
+
+def _effort_foster_strength_au(
+    strength_events: Sequence[Mapping[str, Any]], *, as_of: date, days: int
+) -> float | None:
+    """Foster-style AU from strength: per calendar day, mean(set RPE) × minutes proxy for hard sets."""
+    day_rpes: dict[date, list[float | None]] = defaultdict(list)
+    for ev in strength_events:
+        d = _as_date(ev.get("event_date"))
+        if d is None or not _in_window(d, as_of=as_of, days=days):
+            continue
+        if str(ev.get("set_type") or "").strip().lower() not in _HARD_SET_TYPES:
+            continue
+        day_rpes[d].append(_num(ev.get("rpe")))
+
+    total = 0.0
+    contributed = False
+    for rpes in day_rpes.values():
+        valid = [x for x in rpes if x is not None]
+        if not valid:
+            continue
+        n_sets = len(rpes)
+        mean_rpe = sum(valid) / len(valid)
+        total += mean_rpe * (n_sets * EFFORT_STRENGTH_MINUTES_PER_HARD_SET)
+        contributed = True
+    return round(total, 2) if contributed else None
+
+
+def _effort_foster_cardio_au(
+    cardio_events: Sequence[Mapping[str, Any]], *, as_of: date, days: int
+) -> float | None:
+    """Foster AU: sum of ``duration_min * session_rpe`` when both are set on a cardio row."""
+    total = 0.0
+    for ev in cardio_events:
+        d = _as_date(ev.get("event_date"))
+        if d is None or not _in_window(d, as_of=as_of, days=days):
+            continue
+        rpe = _num(ev.get("session_rpe"))
+        dur = _num(ev.get("duration_min"))
+        if rpe is None or dur is None or dur <= 0:
+            continue
+        total += rpe * dur
+    return round(total, 2) if total > 0 else None
+
+
+def _effort_foster_combined(
+    cardio_au: float | None, strength_au: float | None
+) -> float | None:
+    if cardio_au is None and strength_au is None:
+        return None
+    return round((cardio_au or 0.0) + (strength_au or 0.0), 2)
+
+
+def _effort_features(
+    strength_events: Sequence[Mapping[str, Any]],
+    cardio_events: Sequence[Mapping[str, Any]],
+    *,
+    as_of: date,
+    training_load_cardio_minutes_7d: float,
+    training_load_cardio_minutes_28d: float,
+    training_load_strength_short_tons_7d: float,
+    training_load_strength_short_tons_28d: float,
+) -> dict[str, Any]:
+    """Unified effort index (heuristic) + optional Foster RPE-derived AU."""
+    fc7 = _effort_foster_cardio_au(cardio_events, as_of=as_of, days=ACUTE_WINDOW_DAYS)
+    fs7 = _effort_foster_strength_au(strength_events, as_of=as_of, days=ACUTE_WINDOW_DAYS)
+    fc28 = _effort_foster_cardio_au(cardio_events, as_of=as_of, days=CHRONIC_WINDOW_DAYS)
+    fs28 = _effort_foster_strength_au(strength_events, as_of=as_of, days=CHRONIC_WINDOW_DAYS)
+    k = EFFORT_STRENGTH_SHORT_TON_AS_EQUIV_CARDIO_MINUTES
+    idx7 = training_load_cardio_minutes_7d + training_load_strength_short_tons_7d * k
+    idx28 = training_load_cardio_minutes_28d + training_load_strength_short_tons_28d * k
+    return {
+        "effort_unified_index_7d": round(idx7, 2),
+        "effort_unified_index_28d": round(idx28, 2),
+        "effort_foster_cardio_au_7d": fc7,
+        "effort_foster_strength_au_7d": fs7,
+        "effort_foster_au_7d": _effort_foster_combined(fc7, fs7),
+        "effort_foster_cardio_au_28d": fc28,
+        "effort_foster_strength_au_28d": fs28,
+        "effort_foster_au_28d": _effort_foster_combined(fc28, fs28),
     }
 
 
@@ -258,8 +377,27 @@ def compute_daily_features(
     group / movement splits) are left unset so the column stays ``NULL``.
     """
     features: dict[str, Any] = {"user_id": user_id, "feature_date": feature_date}
-    features.update(_strength_features(strength_events, as_of=feature_date))
-    features.update(_cardio_features(cardio_events, as_of=feature_date))
+    features.update(_strength_training_load(strength_events, as_of=feature_date))
+    features.update(_cardio_training_load(cardio_events, as_of=feature_date))
+    features.update(
+        _effort_features(
+            strength_events,
+            cardio_events,
+            as_of=feature_date,
+            training_load_cardio_minutes_7d=float(
+                features.get("training_load_cardio_minutes_7d") or 0.0
+            ),
+            training_load_cardio_minutes_28d=float(
+                features.get("training_load_cardio_minutes_28d") or 0.0
+            ),
+            training_load_strength_short_tons_7d=float(
+                features.get("training_load_strength_short_tons_7d") or 0.0
+            ),
+            training_load_strength_short_tons_28d=float(
+                features.get("training_load_strength_short_tons_28d") or 0.0
+            ),
+        )
+    )
     features.update(
         _recovery_features(
             daily_metrics,

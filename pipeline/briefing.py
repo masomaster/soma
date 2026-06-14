@@ -38,6 +38,10 @@ SYSTEM_GUIDELINES = (
     "not computed (usually little cardio in the 28-day window) — do not call it a "
     "spike or injury risk from ACWR. If overall_readiness_score is null, say "
     "readiness could not be scored from recovery data and focus on training load. "
+    "When training_load_* or effort_unified_index_* appear in FEATURES, treat "
+    "training_load_* as modality-split external exposure (minutes or US short tons) "
+    "and effort_unified_index_* as a heuristic combined trend—not HR TRIMP or "
+    "clinical stress. "
     "Use plain sentences; at most light Markdown (bold, short bullets). "
     "Keep it under 150 words, warm but direct."
 )
@@ -116,7 +120,13 @@ def build_prompt(
         "- When recovery_hrv_days_7d is 0 but recovery_sleep_days_7d is not, do not "
         "invent HRV recovery narrative.\n"
         "- acute_chronic_ratio null means the 7d vs 28d cardio ratio could not be "
-        "computed (often insufficient chronic minutes); do not describe it as high load.\n\n"
+        "computed (often insufficient chronic minutes); do not describe it as high load.\n"
+        "- training_load_* are modality-split EXTERNAL training exposure (minutes or US short tons); "
+        "they are not HR-derived physiological stress.\n"
+        "- effort_unified_index_* is a HEURISTIC single scale (minutes + short tons × a fixed factor); "
+        "do not equate it to TRIMP or medical stress.\n"
+        "- effort_foster_* uses session/set RPE when logged; NULL components mean RPE was not "
+        "captured — do not invent Foster load.\n\n"
         "Write the morning briefing now."
     )
 

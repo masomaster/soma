@@ -69,7 +69,17 @@ Use [`scripts/smoke_hevy.py`](../../scripts/smoke_hevy.py) after `pip install -e
 3. **`SOMA_RAW_LOCAL_DIR`** (optional) — directory root for `raw-disk` (default `tmp/soma_raw`; `tmp/` is gitignored).  
 4. **`SOMA_DATABASE_URL`** (for `db-upsert` only) — Supabase **Postgres URI** from the project **Connect** button (Dashboard). Prefer **Shared pooler → Session mode** (`aws-<region>.pooler.supabase.com:5432`, user like `postgres.<project-ref>`) for laptops and IPv4-only networks. The **direct** URI (`db.<project-ref>.supabase.co:5432`) is **IPv6-only** unless you add the paid [IPv4 add-on](https://supabase.com/docs/guides/platform/ipv4-address); on many home/office networks you will see DNS errors such as `could not translate host name` or IPv6 “no route to host”. See [Connect to your database](https://supabase.com/docs/guides/database/connecting-to-postgres). Add `?sslmode=require` if the dashboard string omits it and TLS fails. This URI uses the **database password**, not the anon JWT — it bypasses RLS like other privileged DB sessions. Never commit it.
 
-**Before `db-upsert`:** Supabase **never** receives `schema/migrations/0001_initial.sql` from Git by itself — that file exists **only in this repo** until you apply it. In the Supabase **Dashboard** for your project, open **SQL Editor** (left nav), paste the **full contents** of [`schema/migrations/0001_initial.sql`](../../schema/migrations/0001_initial.sql) from your local clone (or GitHub), click **Run**, and fix any errors in the output. Then confirm `public.strength_events` exists (e.g. `select to_regclass('public.strength_events');`). No branching required for this flow.
+**Before Hevy `db-upsert`:** Supabase **never** receives `schema/migrations/0001_initial.sql` from Git by itself — that file exists **only in this repo** until you apply it. In the Supabase **Dashboard** for your project, open **SQL Editor** (left nav), paste the **full contents** of [`schema/migrations/0001_initial.sql`](../../schema/migrations/0001_initial.sql) from your local clone (or GitHub), click **Run**, and fix any errors in the output. Then confirm `public.strength_events` exists (e.g. `select to_regclass('public.strength_events');`). No branching required for this flow.
+
+## Phase 7 smoke (Strava — live, raw to disk, DB upsert)
+
+Use [`scripts/smoke_strava.py`](../../scripts/smoke_strava.py) the same way as Hevy smoke. Strava uses **OAuth** access tokens (short-lived); obtain a token via your Strava API application or Bruno OAuth helpers, then set **`STRAVA_ACCESS_TOKEN`** in `.env` (see [`.env.example`](../../.env.example)). Reuse **`SOMA_USER_ID`** and **`SOMA_DATABASE_URL`** from the Hevy section; the same initial migration creates **`public.cardio_events`**.
+
+| Command | What it proves |
+|---------|----------------|
+| `python scripts/smoke_strava.py live` | Live Strava `GET /athlete/activities` page 1 + normalization to `cardio_events` row dicts (no S3, no DB). |
+| `python scripts/smoke_strava.py raw-disk` | Paginated fetch + **raw JSON** per page under `SOMA_RAW_LOCAL_DIR` (`raw/{user_id}/strava/...`). |
+| `python scripts/smoke_strava.py db-upsert` | Page 1 fetch + normalize + **`upsert_cardio_events`** against Postgres. |
 
 ### `db-upsert`: “could not translate host name” / cannot reach `db.*.supabase.co`
 

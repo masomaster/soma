@@ -59,6 +59,7 @@ CREATE TABLE cardio_events (
     avg_pace_sec_mi INT,
     calories        INT,
     effort_zone     TEXT,               -- 'zone1'–'zone5'
+    session_rpe     FLOAT,              -- optional Foster session RPE (CR10); see pipeline.features
     notes           TEXT,
     created_at      TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE (user_id, source_id)
@@ -149,6 +150,20 @@ CREATE TABLE daily_features (
     strength_sessions_7d    INT,
     strength_hard_sets_7d   INT,
     strength_tonnage_7d     FLOAT,  -- US short tons: sum(reps*weight_lbs)/2000 in 7d window
+    training_load_cardio_minutes_7d   FLOAT,
+    training_load_cardio_minutes_28d  FLOAT,
+    training_load_strength_short_tons_7d   FLOAT,
+    training_load_strength_short_tons_28d  FLOAT,
+    training_load_strength_hard_sets_28d    INT,
+    training_load_strength_sessions_28d     INT,
+    effort_unified_index_7d   FLOAT,
+    effort_unified_index_28d  FLOAT,
+    effort_foster_cardio_au_7d   FLOAT,
+    effort_foster_strength_au_7d FLOAT,
+    effort_foster_au_7d          FLOAT,
+    effort_foster_cardio_au_28d   FLOAT,
+    effort_foster_strength_au_28d FLOAT,
+    effort_foster_au_28d          FLOAT,
     upper_body_sets_7d      INT,
     lower_body_sets_7d      INT,
     push_sets_7d            INT,
