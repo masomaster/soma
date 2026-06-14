@@ -1,10 +1,12 @@
 """Phase 6 briefing synthesis: turn pre-computed signals into a coaching note.
 
-The LLM **narrates conclusions that were already computed** (flags + features) —
-it does not reason over raw events (see ``.cursor/rules/soma.mdc``). The model
-client is injected as a simple ``Callable`` so this module has no hard dependency
-on Anthropic and is fully unit-testable; the Lambda wires in a Haiku-backed
-client. The returned :class:`Briefing` maps onto the ``daily_briefings`` table.
+The LLM **narrates conclusions that were already computed** (flags + features +
+optional **stat_signals** z-score block) — it does not reason over raw events
+(see ``.cursor/rules/soma.mdc``). The model client is injected as a simple
+``Callable`` so this module has no hard dependency on Anthropic and is fully
+unit-testable; the Lambda wires in a Haiku-backed client. The returned
+:class:`Briefing` maps onto the ``daily_briefings`` table; ``stat_signals`` is
+stored inside ``features_json`` for auditability.
 """
 
 from __future__ import annotations
@@ -42,6 +44,9 @@ SYSTEM_GUIDELINES = (
     "training_load_* as modality-split external exposure (minutes or US short tons) "
     "and effort_unified_index_* as a heuristic combined trend—not HR TRIMP or "
     "clinical stress. "
+    "STATISTICAL_SIGNALS lists z-score outliers vs the athlete's prior daily baseline "
+    "(see baseline_n). Do not contradict listed z-scores or directions; if the "
+    "anomalies list is empty, do not invent statistical outliers. "
     "Use plain sentences; at most light Markdown (bold, short bullets). "
     "Keep it under 150 words, warm but direct."
 )
@@ -85,6 +90,7 @@ def build_prompt(
     flags: Sequence[Flag],
     features: Mapping[str, Any],
     daily_metrics: Mapping[str, Any] | None = None,
+    stat_signals: Mapping[str, Any] | None = None,
 ) -> str:
     """Render the user prompt: the pre-computed flags + features the model must narrate."""
     flag_lines = (
@@ -102,11 +108,20 @@ def build_prompt(
         indent=2,
         sort_keys=True,
     )
+    stat_block = stat_signals if stat_signals is not None else {"anomalies": [], "trends": []}
+    stat_blob = json.dumps(stat_block, indent=2, sort_keys=True, default=str)
+    stat_preamble = (
+        "No statistical outliers vs prior baseline for monitored metrics today "
+        "(insufficient history or within normal variation)."
+        if not stat_block.get("anomalies")
+        else "Z-score outliers (do not recompute; narrate briefly if relevant beside flags)."
+    )
     return (
         f"Date: {feature_date.isoformat()}\n\n"
         f"FLAGS (pre-computed, narrate these in priority order):\n{flag_lines}\n\n"
         f"FEATURES (rolling computed metrics):\n{feature_blob}\n\n"
         f"TODAY'S METRICS:\n{metrics_blob}\n\n"
+        f"STATISTICAL_SIGNALS (pre-computed; {stat_preamble}):\n{stat_blob}\n\n"
         "UNITS / INTERPRETATION (do not contradict):\n"
         "- strength_tonnage_7d is US short tons (2000 lb): sum over the window of "
         "(reps x weight_lbs) / 2000. Do not call it \"metric tonnes\" unless you "
@@ -139,6 +154,7 @@ def generate_briefing(
     features: Mapping[str, Any],
     llm: LLMClient,
     daily_metrics: Mapping[str, Any] | None = None,
+    stat_signals: Mapping[str, Any] | None = None,
     model: str = DEFAULT_BRIEFING_MODEL,
 ) -> Briefing:
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
@@ -146,18 +162,25 @@ def generate_briefing(
     Raises:
         ValueError: If the model returns empty text.
     """
+    stat_block = stat_signals if stat_signals is not None else {"anomalies": [], "trends": []}
     prompt = build_prompt(
-        feature_date=feature_date, flags=flags, features=features, daily_metrics=daily_metrics
+        feature_date=feature_date,
+        flags=flags,
+        features=features,
+        daily_metrics=daily_metrics,
+        stat_signals=stat_block,
     )
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
         raise ValueError("LLM returned an empty coaching note")
     logger.info("Generated briefing for %s on %s (%d flags)", user_id, feature_date, len(flags))
+    features_json = {k: _jsonable(v) for k, v in features.items() if v is not None}
+    features_json["stat_signals"] = stat_block
     return Briefing(
         user_id=user_id,
         briefing_date=feature_date,
         coaching_note=note,
         flags=[f.code for f in flags],
-        features_json={k: _jsonable(v) for k, v in features.items() if v is not None},
+        features_json=features_json,
         model_used=model,
     )

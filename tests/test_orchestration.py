@@ -13,10 +13,13 @@ RUN = date(2024, 6, 8)
 
 
 def _window_metrics():
-    return [
-        {"metric_date": RUN - timedelta(days=i), "sleep_hours": 5.0, "hrv_rmssd": 50.0}
-        for i in range(1, 7)
-    ]
+    """20 prior days: sleep 5h + jittered HRV for z-score baseline vs today's low HRV."""
+    rows: list[dict] = []
+    for i in range(1, 21):
+        d = RUN - timedelta(days=i)
+        hrv = 50.0 + (i % 5) * 0.35
+        rows.append({"metric_date": d, "sleep_hours": 5.0, "hrv_rmssd": hrv, "resting_hr": 60})
+    return rows
 
 
 def _io(persisted: dict, *, llm=None) -> DailyPipelineIO:
@@ -24,7 +27,7 @@ def _io(persisted: dict, *, llm=None) -> DailyPipelineIO:
         llm=llm or (lambda system, user: "Rest up — sleep debt is high."),
         load_biometrics_today=lambda u, d: [
             {"metric": "sleep_hours", "value": 5.0},
-            {"metric": "hrv_rmssd", "value": 50.0},
+            {"metric": "hrv_rmssd", "value": 28.0},
         ],
         load_daily_metrics_window=lambda u, d: _window_metrics(),
         load_strength_events=lambda u, d: [
@@ -49,15 +52,21 @@ def test_full_pipeline_runs_steps_in_order_and_persists():
         "rollup_metrics",
         "compute_features",
         "evaluate_rules",
+        "compute_stat_signals",
         "generate_briefing",
         "deliver",
     ]
     assert result.daily_metrics["sleep_hours"] == 5.0
+    assert result.daily_metrics["hrv_rmssd"] == 28.0
+    assert result.stat_signals is not None
+    assert any(a["metric"] == "hrv_rmssd" for a in result.stat_signals["anomalies"])
     assert result.features["strength_sessions_7d"] == 1
     # Sleep debt over the week (target 8h, 7 days at 5h) should flag.
     assert any(f.code == "HIGH_SLEEP_DEBT" for f in result.flags)
     assert isinstance(result.briefing, Briefing)
     assert persisted["briefings"][0]["coaching_note"].startswith("Rest up")
+    assert "stat_signals" in persisted["briefings"][0]["features_json"]
+    assert persisted["briefings"][0]["features_json"]["stat_signals"]["anomalies"]
     assert result.delivery["channel"] == "stdout"
 
 

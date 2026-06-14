@@ -5,7 +5,7 @@ Per ``docs/plans/implementation-plan.md`` Phase 5 we run **one daily pipeline**
 several tight cron jobs:
 
     rollup today's metrics -> compute features -> evaluate rules
-        -> generate briefing -> deliver
+        -> statistical signals -> generate briefing -> deliver
 
 All IO (DB loads/writes, the LLM, email) is injected via :class:`DailyPipelineIO`
 so the orchestrator itself is pure control-flow and fully unit-testable; the
@@ -24,6 +24,7 @@ from typing import Any
 
 from pipeline import features as features_mod
 from pipeline import rules as rules_mod
+from pipeline import stat_anomalies as stat_anomalies_mod
 from pipeline.briefing import Briefing, LLMClient, generate_briefing
 from pipeline.rules import Flag
 
@@ -64,6 +65,7 @@ class PipelineResult:
     daily_metrics: dict[str, Any] | None = None
     features: dict[str, Any] | None = None
     flags: list[Flag] = field(default_factory=list)
+    stat_signals: dict[str, Any] | None = None
     briefing: Briefing | None = None
     delivery: dict[str, Any] | None = None
 
@@ -134,6 +136,18 @@ def run_daily_pipeline(
             thresholds=thresholds,
         )
 
+    def do_stat_signals() -> None:
+        window = list(io.load_daily_metrics_window(user_id, run_date))
+        if result.daily_metrics is not None and not any(
+            features_mod.as_date(m.get("metric_date")) == run_date for m in window
+        ):
+            window.append(result.daily_metrics)
+        result.stat_signals = stat_anomalies_mod.compute_statistical_signals(
+            feature_date=run_date,
+            daily_metrics_history=window,
+            today_metrics=result.daily_metrics or {},
+        )
+
     def do_briefing() -> None:
         result.briefing = generate_briefing(
             user_id=user_id,
@@ -142,6 +156,7 @@ def run_daily_pipeline(
             features=result.features or {},
             llm=io.llm,
             daily_metrics=result.daily_metrics or {},
+            stat_signals=result.stat_signals,
         )
         if io.persist_briefing is not None:
             io.persist_briefing(result.briefing.to_row())
@@ -158,6 +173,8 @@ def run_daily_pipeline(
     # Rules failure is fatal: never send a falsely "all clear" briefing that
     # silently dropped the deterministic flags.
     if not step("evaluate_rules", do_rules):
+        return result
+    if not step("compute_stat_signals", do_stat_signals):
         return result
     if not step("generate_briefing", do_briefing):
         return result

@@ -1,6 +1,6 @@
 # Briefing LLM — known failure modes and mitigations (Phase 6.6)
 
-The daily briefing uses a small model (**Haiku-class**) over a **structured prompt**: pre-computed **flags** + **features** + optional **same-day metrics**. The model’s job is to **narrate**, not to re-derive physiology. Below are common failure modes and how Soma reduces them.
+The daily briefing uses a small model (**Haiku-class**) over a **structured prompt**: pre-computed **flags** + **features** + optional **same-day metrics** + **STATISTICAL_SIGNALS** (z-score outliers when baseline history is sufficient). The model’s job is to **narrate**, not to re-derive physiology. Below are common failure modes and how Soma reduces them.
 
 ## Inventing recovery narrative without data
 
@@ -47,6 +47,15 @@ The daily briefing uses a small model (**Haiku-class**) over a **structured prom
 
 - Prompt bullets for `recovery_sleep_days_7d == 0` or `recovery_hrv_days_7d == 0` cases (`build_prompt`).
 - Same-day `sleep_hours` in **TODAY'S METRICS** may still support **LOW_SLEEP** when last night is short; that is intentional and distinct from weekly debt.
+
+## Contradicting STATISTICAL_SIGNALS (z-scores)
+
+**Symptom:** Model says HRV is “normal” or invents a different deviation when **STATISTICAL_SIGNALS** lists a z-score outlier (or the reverse: claims a big outlier when the anomalies list is empty).
+
+**Mitigations:**
+
+- `SYSTEM_GUIDELINES`: do not contradict listed z-scores or directions; do not invent outliers when the anomalies array is empty (`pipeline/briefing.py`).
+- Treat **baseline_n** as context (“vs ~N prior days”); do not recompute z-scores in prose.
 
 ## Email HTML and client quirks
 

@@ -29,11 +29,21 @@ def test_build_prompt_includes_flags_and_features():
     assert "recovery_sleep_days_7d is 0" in prompt
     assert "training_load_*" in prompt
     assert "effort_unified_index_*" in prompt
+    assert "STATISTICAL_SIGNALS" in prompt
+    assert "anomalies" in prompt
 
 
 def test_build_prompt_handles_no_flags():
     prompt = B.build_prompt(feature_date=RUN, flags=[], features={})
     assert "None. All monitored signals" in prompt
+    assert "STATISTICAL_SIGNALS" in prompt
+
+
+def test_build_prompt_includes_stat_signals_block():
+    stats = {"anomalies": [{"metric": "hrv_rmssd", "z_score": -2.5}], "trends": []}
+    prompt = B.build_prompt(feature_date=RUN, flags=[], features={}, stat_signals=stats)
+    assert '"metric": "hrv_rmssd"' in prompt
+    assert "-2.5" in prompt
 
 
 def test_generate_briefing_uses_llm_and_maps_to_row():
@@ -62,7 +72,9 @@ def test_generate_briefing_uses_llm_and_maps_to_row():
     assert row["briefing_date"] == RUN
     assert row["flags"] == ["LOW_HRV"]
     assert row["coaching_note"].startswith("Take it easy")
-    assert row["features_json"] == {"overall_readiness_score": 44.0}
+    assert row["features_json"]["overall_readiness_score"] == 44.0
+    assert row["features_json"]["stat_signals"]["anomalies"] == []
+    assert row["features_json"]["stat_signals"]["trends"] == []
 
 
 def test_generate_briefing_rejects_empty_note():
