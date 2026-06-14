@@ -4,6 +4,11 @@
 the `pipeline` package and runs `pipeline.orchestration.run_daily_pipeline` for
 each active user (see `docs/plans/implementation-plan.md` Phases 5–6).
 
+The handler upserts **`daily_health_metrics`**, **`daily_features`**, and
+**`daily_briefings`**, and replaces **`anomaly_events`** rows with
+`anomaly_type = 'statistical'` for that user/day (delete prior statistical rows,
+then insert the current z-score flags — see `pipeline.persistence.replace_statistical_anomaly_events`).
+
 ## Packaging (CDK)
 
 The **pipeline** package and **psycopg2-binary** are built into a **Lambda layer**

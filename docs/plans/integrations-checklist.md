@@ -2,7 +2,7 @@
 
 This list is derived from [project-overview.md](./project-overview.md) and the README. **Scope:** ✅ **confirmed** — proceed with Hevy + Apple Health export path as first strength + biometrics sources unless priorities change.
 
-**Phase 7 focus (2026-06):** **Strava is paused** — no Strava (athlete) subscription, so live API / OAuth / pipeline wiring for Strava is deferred; the **in-repo adapter + offline tests** stay for when this unpauses. **Apple Health export (webhook → biometrics)** is the **active** integration track (build with another agent/session as needed).
+**Phase 7 focus (2026-06):** **Strava is paused** — no Strava (athlete) subscription, so live API / OAuth / pipeline wiring for Strava is deferred; the **in-repo adapter + offline tests** stay for when this unpauses. **Apple Health export** is the **active** track: **HAE metrics → `biometrics`**, **HAE workouts → `cardio_events`** (`apple_health`), CDK **HTTP API + Lambda + S3 raw** — see [apple-health-export.md](./apple-health-export.md). **Cardio proxy:** Strava/NRC → Apple Health on-device; HAE POSTs the combined JSON to Soma.
 
 Use it to confirm scope before building adapters. For future changes: edit this file (or an issue) with deltas.
 
@@ -10,7 +10,7 @@ Use it to confirm scope before building adapters. For future changes: edit this 
 |---|---------|----------------------|----------------------------|------------------|
 | 1 | **Hevy** | Lifting — sets, reps, weight, RPE | REST API (API key header) | High — primary strength source |
 | 2 | **Strava** | Runs/rides — GPS, HR, pace, elevation | OAuth2 + REST | **Paused** — Standard Tier needs an **active Strava subscription**; repo has adapter + fixtures only until unpaused (§ Strava API access) |
-| 3 | **Apple Health (export)** | Steps, HRV, sleep, VO2, resting HR | Third-party app (e.g. Health Auto Export) → **webhook** to your HTTP endpoint | High — **active Phase 7 track** (biometric hub); webhook + normalize to `biometrics` |
+| 3 | **Apple Health (export)** | Steps, HRV, sleep, VO2, resting HR + **workouts** (runs/rides mirrored from Strava/NRC into Health) | Health Auto Export → **HTTPS POST** to API Gateway → Lambda → S3 raw + Postgres | High — **active**; `biometrics` + `cardio_events` (`apple_health`); URL in CFN output `AppleHealthIngestUrl` |
 | 4 | **Google Health / Fit** | Sleep, HR, HRV, weight (Fitbit migration path) | Google APIs + OAuth2 | Medium — align with Fitbit sunset / Google Health roadmap |
 | 5 | **Renpho** | Weight, body fat, muscle mass | Unofficial/community APIs (e.g. PyPI clients) | Medium |
 | 6 | **iCloud Calendar** | Busy/free blocks for coaching context | CalDAV + app-specific password | Medium — read-only polling |
@@ -22,7 +22,7 @@ Use it to confirm scope before building adapters. For future changes: edit this 
 
 | Service | Note |
 |---------|------|
-| **Nike Run Club** | Fragile; **one-time historical export** only if needed; Apple Health / Strava carry ongoing runs. |
+| **Nike Run Club** | Fragile API; **one-time historical export** only if needed. **Ongoing runs:** prefer data in **Apple Health** (NRC → Health) while Strava is paused, then HAE → Soma `biometrics`; or Strava → `cardio_events` when unpaused. |
 | **Fitbit legacy API** | Sunsetting — prefer **Google Health** path rather than new Fitbit work. |
 
 ## Not vendor APIs but part of “integration” work
@@ -40,7 +40,7 @@ Implications for Soma:
 
 - **Paused (operator choice, 2026-06):** no Strava subscription → treat **live Strava** as out of scope until you subscribe or take another access path; keep using **fixtures + offline tests** for regression. **Apple Health export** is the active build track instead.
 - **Adapter + tests in repo:** still valid whenever you *do* have a token (paid month for validation, team member with a subscription, etc.); offline tests use fixtures only.
-- **Product sequencing:** treat **Apple Health export / other cardio sources** as the unblock for “cardio in the DB” if Strava stays off the table.
+- **Product sequencing:** treat **Apple Health export** as the unblock for **cardio *signals* in the DB** (metrics / daily rollups) while Strava is paused, because Strava and NRC runs still land in **Apple Health** for many users. **Per-activity `cardio_events`** remains a separate track (Strava when unpaused, or HAE `workouts` normalization later).
 
 Official context (read the current pages; policy dates and details change): [Strava API FAQ](https://communityhub.strava.com/developers-knowledge-base-14/strava-api-faq-12906), [API policy](https://www.strava.com/legal/api_policy), [Developer program updates](https://communityhub.strava.com/insider-journal-9/an-update-to-our-developer-program-13428).
 

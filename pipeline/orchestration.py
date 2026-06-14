@@ -45,6 +45,7 @@ class DailyPipelineIO:
     persist_daily_metrics: Callable[[Row], None] | None = None
     persist_features: Callable[[Row], None] | None = None
     persist_briefing: Callable[[Row], None] | None = None
+    persist_statistical_anomalies: Callable[[str, date, dict[str, Any]], None] | None = None
     deliver: Callable[[Briefing], dict[str, Any]] | None = None
     thresholds: Mapping[str, float] = field(default_factory=dict)
     to_address: str | None = None
@@ -66,6 +67,7 @@ class PipelineResult:
     features: dict[str, Any] | None = None
     flags: list[Flag] = field(default_factory=list)
     stat_signals: dict[str, Any] | None = None
+    daily_metrics_window: list[dict[str, Any]] | None = None
     briefing: Briefing | None = None
     delivery: dict[str, Any] | None = None
 
@@ -128,6 +130,7 @@ def run_daily_pipeline(
         )
         if io.persist_features is not None:
             io.persist_features(result.features)
+        result.daily_metrics_window = window
 
     def do_rules() -> None:
         result.flags = rules_mod.evaluate(
@@ -137,16 +140,20 @@ def run_daily_pipeline(
         )
 
     def do_stat_signals() -> None:
-        window = list(io.load_daily_metrics_window(user_id, run_date))
-        if result.daily_metrics is not None and not any(
-            features_mod.as_date(m.get("metric_date")) == run_date for m in window
-        ):
-            window.append(result.daily_metrics)
+        window = result.daily_metrics_window
+        if window is None:
+            window = list(io.load_daily_metrics_window(user_id, run_date))
+            if result.daily_metrics is not None and not any(
+                features_mod.as_date(m.get("metric_date")) == run_date for m in window
+            ):
+                window.append(result.daily_metrics)
         result.stat_signals = stat_anomalies_mod.compute_statistical_signals(
             feature_date=run_date,
             daily_metrics_history=window,
             today_metrics=result.daily_metrics or {},
         )
+        if io.persist_statistical_anomalies is not None:
+            io.persist_statistical_anomalies(user_id, run_date, result.stat_signals)
 
     def do_briefing() -> None:
         result.briefing = generate_briefing(

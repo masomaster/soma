@@ -61,3 +61,48 @@ def test_upsert_rejects_unknown_table():
     cur = FakeCursor()
     with pytest.raises(KeyError, match="Unsupported table"):
         P.upsert_row(cur, "robots", {"user_id": "u1"})
+
+
+def test_replace_statistical_anomaly_events_deletes_then_inserts():
+    cur = FakeCursor()
+    row = {
+        "user_id": "u1",
+        "detected_date": RUN,
+        "metric": "hrv_rmssd",
+        "anomaly_type": "statistical",
+        "description": "hrv_rmssd z-score -2.5 vs prior baseline (mean 50.0, n=20)",
+        "severity": "info",
+        "context_json": {"z_score": -2.5, "method": "z_score"},
+    }
+    P.replace_statistical_anomaly_events(cur, user_id="u1", detected_date=RUN, rows=[row])
+    assert len(cur.calls) == 2
+    del_stmt, del_vals = cur.calls[0]
+    assert "DELETE FROM anomaly_events" in str(del_stmt)
+    assert del_vals == ("u1", RUN, "statistical")
+    ins_stmt, ins_vals = cur.calls[1]
+    assert "INSERT INTO anomaly_events" in str(ins_stmt)
+    assert ins_vals[0] == "u1"
+    assert ins_vals[3] == "statistical"
+    assert json.loads(ins_vals[-1])["z_score"] == -2.5
+
+
+def test_replace_statistical_anomaly_events_empty_rows_still_deletes():
+    cur = FakeCursor()
+    P.replace_statistical_anomaly_events(cur, user_id="u1", detected_date=RUN, rows=[])
+    assert len(cur.calls) == 1
+    assert "DELETE" in str(cur.calls[0][0])
+
+
+def test_replace_statistical_anomaly_events_rejects_wrong_type():
+    cur = FakeCursor()
+    bad = {
+        "user_id": "u1",
+        "detected_date": RUN,
+        "metric": "x",
+        "anomaly_type": "llm_pattern",
+        "description": "nope",
+        "severity": "info",
+        "context_json": {},
+    }
+    with pytest.raises(KeyError, match="statistical"):
+        P.replace_statistical_anomaly_events(cur, user_id="u1", detected_date=RUN, rows=[bad])

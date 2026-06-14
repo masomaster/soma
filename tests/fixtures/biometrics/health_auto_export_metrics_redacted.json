@@ -1,0 +1,25 @@
+{
+  "data": {
+    "metrics": [
+      {
+        "name": "step_count",
+        "units": "count",
+        "data": [
+          { "qty": 100, "date": "2024-06-01 08:00:00 +0000" },
+          { "qty": 200, "date": "2024-06-01 12:00:00 +0000" },
+          { "qty": 150, "date": "2024-06-02 09:00:00 +0000" }
+        ]
+      },
+      {
+        "name": "active_energy",
+        "units": "kcal",
+        "data": [{ "qty": 400, "date": "2024-06-01 14:00:00 +0000" }]
+      },
+      {
+        "name": "sleep_analysis",
+        "units": "hr",
+        "data": [{ "date": "2024-06-02", "totalSleep": 28800 }]
+      }
+    ]
+  }
+}

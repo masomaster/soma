@@ -7,7 +7,9 @@ from typing import Any
 from aws_cdk import Stack, Tags
 from constructs import Construct
 
+from soma_cdk.apple_health_ingest import AppleHealthIngestApi
 from soma_cdk.daily_pipeline import DailyBriefingPipeline
+from soma_cdk.pipeline_layer import build_pipeline_deps_layer
 
 
 class SomaProdStack(Stack):
@@ -20,4 +22,14 @@ class SomaProdStack(Stack):
 
         # Use "prod" (not "production") to match pipeline.settings.Environment and
         # the rules SSM prefix /soma/prod/{user_id}/rules/.
-        DailyBriefingPipeline(self, "DailyBriefing", env_name="prod")
+        pipeline_layer = build_pipeline_deps_layer(self, construct_id="PipelineDeps")
+        briefing = DailyBriefingPipeline(
+            self, "DailyBriefing", env_name="prod", deps_layer=pipeline_layer
+        )
+        AppleHealthIngestApi(
+            self,
+            "AppleHealthIngest",
+            env_name="prod",
+            deps_layer=pipeline_layer,
+            runtime_secret_ref=briefing.runtime_secret_ref,
+        )

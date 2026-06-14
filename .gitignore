@@ -12,6 +12,7 @@ token.json
 .bruno/environments/soma.bru
 .bruno/environments/*.local.bru
 .bruno/.env
+local_data/
 
 # --- Python ---
 __pycache__/

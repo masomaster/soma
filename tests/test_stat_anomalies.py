@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-from pipeline.stat_anomalies import compute_statistical_signals
+from pipeline.stat_anomalies import build_statistical_anomaly_rows, compute_statistical_signals
 
 RUN = date(2024, 6, 15)
 
@@ -84,3 +84,43 @@ def test_excludes_run_date_from_baseline():
     hrv = [a for a in out["anomalies"] if a["metric"] == "hrv_rmssd"]
     assert len(hrv) == 1
     assert abs(hrv[0]["baseline_mean"] - 50.0) < 3.0
+
+
+def test_build_statistical_anomaly_rows_maps_context_and_severity():
+    signals = {
+        "anomalies": [
+            {
+                "metric": "hrv_rmssd",
+                "value": 28.0,
+                "baseline_mean": 50.2,
+                "baseline_stdev": 1.1,
+                "baseline_n": 20,
+                "z_score": -2.1,
+                "method": "z_score",
+                "direction": "below_baseline",
+            }
+        ],
+        "trends": [],
+    }
+    rows = build_statistical_anomaly_rows(
+        user_id="550e8400-e29b-41d4-a716-446655440000",
+        detected_date=RUN,
+        stat_signals=signals,
+    )
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["anomaly_type"] == "statistical"
+    assert r["severity"] == "info"
+    assert r["context_json"]["z_score"] == -2.1
+    assert "hrv_rmssd" in r["description"]
+
+    signals_alert = {
+        "anomalies": [{**signals["anomalies"][0], "z_score": -3.5}],
+        "trends": [],
+    }
+    rows2 = build_statistical_anomaly_rows(
+        user_id="550e8400-e29b-41d4-a716-446655440000",
+        detected_date=RUN,
+        stat_signals=signals_alert,
+    )
+    assert rows2[0]["severity"] == "alert"

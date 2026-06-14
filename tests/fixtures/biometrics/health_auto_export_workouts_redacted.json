@@ -1,0 +1,27 @@
+{
+  "data": {
+    "metrics": [],
+    "workouts": [
+      {
+        "id": "workout-redacted-uuid-0001",
+        "name": "Outdoor Run",
+        "start": "2024-06-01 07:30:00 +0000",
+        "end": "2024-06-01 08:05:00 +0000",
+        "duration": 2100,
+        "distance": { "qty": 5.2, "units": "mi" },
+        "elevationUp": { "qty": 120, "units": "m" },
+        "avgHeartRate": { "qty": 152, "units": "bpm" },
+        "maxHeartRate": { "qty": 178, "units": "bpm" },
+        "activeEnergyBurned": { "qty": 520, "units": "kcal" }
+      },
+      {
+        "name": "Morning Ride",
+        "start": "2024-06-02 06:00:00 +0000",
+        "end": "2024-06-02 07:15:00 +0000",
+        "distance": { "qty": 25.0, "units": "km" },
+        "avgHeartRate": { "qty": 138, "units": "bpm" },
+        "activeEnergy": { "qty": 800, "units": "kcal" }
+      }
+    ]
+  }
+}

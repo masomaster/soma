@@ -83,7 +83,7 @@ Actual keys evolve with `daily_features` / rules enums; the contract is **signal
 | **IQR** (e.g. 1.5× fence) | Skewed counts/volumes: `steps`, `active_cal`, `training_load_*`, session counts. |
 | **EWMA / residual** | Slow **drift** (e.g. sleep creeping down) where no single day crosses a Z threshold; emit `trend` records as well as or instead of hard “anomaly” rows. |
 
-**Persistence:** Use existing **`anomaly_events`** (`0001_initial.sql`): `anomaly_type` = `'statistical'`, `metric`, `description` (human-readable one-liner), **`context_json`** for `{ "z_score", "baseline", "value", "method", "window_days" }`. Idempotent **`ON CONFLICT`** or delete-and-insert for `(user_id, detected_date, metric, anomaly_type, method)` if you add a uniqueness migration — avoid duplicate rows on pipeline retries.
+**Persistence:** Use existing **`anomaly_events`** (`0001_initial.sql`): `anomaly_type` = `'statistical'`, `metric`, `description` (human-readable one-liner), **`context_json`** for numeric detail. **Implemented:** `pipeline.persistence.replace_statistical_anomaly_events` — **delete** same user/day/`statistical` rows then **insert** (idempotent retries without a uniqueness migration). Optional later: partial unique index + `ON CONFLICT` if you prefer upserts over delete.
 
 **Orchestration:** Extend `run_daily_pipeline` (see `pipeline/orchestration.py`) with an explicit step **after** rules (or after features if rules depend only on same-day features): e.g. `statistical_anomalies` → then `generate_briefing` so the prompt includes today's statistical rows.
 
@@ -212,7 +212,7 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 **Intent:** Keep **one live environment** (staging + your AWS staging stack) while integrations and schema still churn. Avoid operating **staging and prod** in parallel until you deliberately cut over in **Phase 11**.
 
 - **Strava (repo slice) — PAUSED:** `pipeline/adapters/strava.py`, `pipeline/cardio_upsert.py`, `scripts/smoke_strava.py`, Bruno `.bruno/strava/list-athlete-activities.bru` are **in repo**; **live API work, OAuth refresh, and daily-pipeline wiring are deferred** until an **active Strava subscription** (Standard Tier) exists — see [integrations-checklist.md](./integrations-checklist.md) § Strava API access. Until then: **offline tests + fixtures only**. **Multi-user note:** when unpaused, Strava OAuth belongs in **per-user** token storage — Phase 9 **Multi-user rollout — provider connections**.
-- **Apple Health (export) — active track:** webhook (e.g. Health Auto Export) → raw → **`biometrics`** / rollup is the **current** Phase 7 vendor priority (parallel agent/session OK). With **Strava paused**, **Strava and Nike Run Club are expected to sync into Apple Health** on-device so HAE can still surface **cardio-adjacent metrics** (active energy, steps, etc.); **`cardio_events`** (per-run summaries) still wants Strava live or a future **HAE `workouts` → `cardio_events`** normalizer. **Repo slice (in progress):** `pipeline/adapters/apple_health_export.py`, `pipeline/biometrics_upsert.py`, `scripts/smoke_apple_health.py`, [apple-health-export.md](./apple-health-export.md); **API Gateway + ingest Lambda** still follow-up.
+- **Apple Health (export) — active track:** webhook (e.g. Health Auto Export) → raw → **`biometrics`** / rollup and **`cardio_events`** from HAE **`data.workouts`** is implemented: shared pipeline Lambda layer, **`AppleHealthIngestApi`** (API Gateway HTTP API + ingest Lambda + S3 raw bucket), `pipeline/adapters/apple_health_workouts.py`, [apple-health-export.md](./apple-health-export.md). Operator wiring (HAE URL, headers, optional webhook secret) is **post-deploy** in that doc.
 - Add further sources in order of **dependency / risk** (e.g. Renpho, Google Health before Fitbit sunset) after Apple Health is moving.
 - For **every new source**, ship **historical backfill** alongside incremental sync (see **Historical ingestion & backfill** above) so the DB is not “empty until the first cron day.”
 - **Deduplication / source priority** as in overview — implement explicitly in code or small config table.
@@ -222,7 +222,7 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 
 **Normative spec:** [Signal pipeline: where intelligence lives](#signal-pipeline-where-intelligence-lives). This phase implements **Layers 1–3** (and wires **Layer 4** prompts); it does not change the “one daily pipeline” edge architecture.
 
-**Repo (slices 1–3, shipped):** `pipeline/stat_anomalies.py` — z-scores for `hrv_rmssd`, `sleep_hours`, and `resting_hr` vs at least **14** prior calendar days of `daily_health_metrics` (stdlib `statistics` only; no SciPy in this slice). `pipeline/orchestration.py` runs **`compute_stat_signals`** after rules and before briefing; `pipeline/briefing.py` injects **STATISTICAL_SIGNALS** into the user prompt and stores **`stat_signals`** inside **`daily_briefings.features_json`**. **Still open:** persist to `anomaly_events`, IQR/EWMA, optional NumPy/SciPy layer, Layer 1 SQL/MVs, **`metric_patterns`**, weekly job.
+**Repo (slices 1–4, shipped):** `pipeline/stat_anomalies.py` — z-scores for `hrv_rmssd`, `sleep_hours`, and `resting_hr` vs at least **14** prior calendar days (stdlib `statistics`). `run_daily_pipeline` caches **`daily_metrics_window`** after features (one window read per run), runs **`compute_stat_signals`** after rules, calls optional **`persist_statistical_anomalies`** (Lambda: delete-then-insert **`anomaly_events`** rows with `anomaly_type = 'statistical'` via `pipeline.persistence.replace_statistical_anomaly_events`). Briefing still gets **`STATISTICAL_SIGNALS`** and **`features_json.stat_signals`**. **Still open:** IQR/EWMA, optional NumPy/SciPy, Layer 1 SQL/MVs, **`metric_patterns`**, weekly job, partial unique index (delete-today suffices for idempotency today).
 
 **8a — Layer 1 (Postgres aggregates, incremental)**
 
@@ -232,12 +232,12 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 
 **8b — Layer 2 (deterministic statistics in Lambda)**
 
-- ✅ **Partial (slices 1–3):** `pipeline/stat_anomalies.py` + pipeline step **`compute_stat_signals`** + briefing **`STATISTICAL_SIGNALS`** / **`features_json.stat_signals`** (z-score only for three recovery metrics; in-memory, not yet `anomaly_events`).
+- ✅ **Partial (slices 1–4):** z-score stats + **`compute_stat_signals`** + briefing **`STATISTICAL_SIGNALS`** / **`features_json.stat_signals`** + **`anomaly_events`** persistence (delete statistical rows for `(user_id, detected_date)` then insert; **`build_statistical_anomaly_rows`**). **`daily_metrics_window`** cached after features to avoid a second metrics query.
 - **Next:** **IQR** / **EWMA** (or drift) and optional **NumPy/SciPy**; incorporate Layer 1 SQL aggregates when present.
-- **Persist** to **`anomaly_events`** with `anomaly_type = 'statistical'` and numeric detail in **`context_json`**; add a **dedupe** story (partial unique index or pre-delete for `(user_id, detected_date, metric, method)`).
-- **Orchestration:** ✅ stats step after rules, before briefing. **Next:** optional `persist_anomaly_events` on `DailyPipelineIO` (no second metrics load required today — window is re-read for clarity).
+- **Optional hardening:** partial unique index on `(user_id, detected_date, metric)` for `anomaly_type = 'statistical'` if you prefer `ON CONFLICT` over delete-today.
+- **Orchestration:** ✅ `persist_statistical_anomalies` on `DailyPipelineIO` (wired in briefing Lambda handler).
 - **Lambda layer:** add **NumPy** / **SciPy** only if a future method needs them; document cold-start / unzip size in `infrastructure/lambda/briefing/README.md` or a sibling doc.
-- **Tests:** ✅ `tests/test_stat_anomalies.py`; **Next:** assert row shapes written to `anomaly_events`.
+- **Tests:** ✅ `tests/test_stat_anomalies.py`, `tests/test_persistence.py` (`replace_statistical_anomaly_events`); integration smoke against real DB optional.
 
 **8c — Layer 3 (pattern library + optional weekly LLM)**
 

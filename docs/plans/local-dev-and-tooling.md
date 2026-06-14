@@ -71,7 +71,19 @@ Use [`scripts/smoke_hevy.py`](../../scripts/smoke_hevy.py) after `pip install -e
 
 **Before Hevy `db-upsert`:** Supabase **never** receives `schema/migrations/0001_initial.sql` from Git by itself — that file exists **only in this repo** until you apply it. In the Supabase **Dashboard** for your project, open **SQL Editor** (left nav), paste the **full contents** of [`schema/migrations/0001_initial.sql`](../../schema/migrations/0001_initial.sql) from your local clone (or GitHub), click **Run**, and fix any errors in the output. Then confirm `public.strength_events` exists (e.g. `select to_regclass('public.strength_events');`). No branching required for this flow.
 
-## Phase 7 smoke (Strava — live, raw to disk, DB upsert)
+## Phase 7 smoke (Apple Health export — normalize, raw disk, DB upsert)
+
+Use [`scripts/smoke_apple_health.py`](../../scripts/smoke_apple_health.py) with JSON fixtures under `tests/fixtures/biometrics/` (Soma daily envelope or Health Auto Export `data.metrics` shape). Full operator notes: [apple-health-export.md](./apple-health-export.md).
+
+| Command | What it proves |
+|---------|----------------|
+| `python scripts/smoke_apple_health.py normalize` | Parse default (or given) JSON file → normalized `biometrics` row dicts (no disk, no DB). |
+| `python scripts/smoke_apple_health.py raw-disk` | Same + **raw JSON** under `SOMA_RAW_LOCAL_DIR` (`raw/{user_id}/apple_health_export/...`). Requires **`SOMA_USER_ID`**. |
+| `python scripts/smoke_apple_health.py db-upsert` | Normalize + **`upsert_biometrics`** against Postgres (needs **`SOMA_USER_ID`** + **`SOMA_DATABASE_URL`**). |
+
+**Deployed ingest URL:** after `cdk deploy`, CloudFormation output **`AppleHealthIngestUrl`** is the `POST` target for Health Auto Export (headers and optional webhook secret: [apple-health-export.md](./apple-health-export.md)).
+
+## Phase 7 smoke (Strava — live, raw to disk, DB upsert) **paused**
 
 Use [`scripts/smoke_strava.py`](../../scripts/smoke_strava.py) the same way as Hevy smoke. Strava uses **OAuth** access tokens (short-lived); obtain a token via your Strava API application or Bruno OAuth helpers, then set **`STRAVA_ACCESS_TOKEN`** in `.env` (see [`.env.example`](../../.env.example)). Reuse **`SOMA_USER_ID`** and **`SOMA_DATABASE_URL`** from the Hevy section; the same initial migration creates **`public.cardio_events`**.
 

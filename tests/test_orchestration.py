@@ -23,13 +23,20 @@ def _window_metrics():
 
 
 def _io(persisted: dict, *, llm=None) -> DailyPipelineIO:
+    def load_metrics_window(u: str, d: date) -> list[dict]:
+        persisted["metric_loads"] = persisted.get("metric_loads", 0) + 1
+        return _window_metrics()
+
+    def persist_statistical_anomalies(uid: str, d: date, signals: dict) -> None:
+        persisted.setdefault("stat_persist", []).append((uid, d, dict(signals)))
+
     return DailyPipelineIO(
         llm=llm or (lambda system, user: "Rest up — sleep debt is high."),
         load_biometrics_today=lambda u, d: [
             {"metric": "sleep_hours", "value": 5.0},
             {"metric": "hrv_rmssd", "value": 28.0},
         ],
-        load_daily_metrics_window=lambda u, d: _window_metrics(),
+        load_daily_metrics_window=load_metrics_window,
         load_strength_events=lambda u, d: [
             {"event_date": RUN, "set_type": "working", "reps": 5, "weight_lbs": 100}
         ],
@@ -37,6 +44,7 @@ def _io(persisted: dict, *, llm=None) -> DailyPipelineIO:
         persist_daily_metrics=lambda row: persisted.setdefault("metrics", []).append(row),
         persist_features=lambda row: persisted.setdefault("features", []).append(row),
         persist_briefing=lambda row: persisted.setdefault("briefings", []).append(row),
+        persist_statistical_anomalies=persist_statistical_anomalies,
         deliver=lambda b: deliver_briefing(b, env=Environment.LOCAL, stream=persisted["out"]),
     )
 
@@ -60,6 +68,12 @@ def test_full_pipeline_runs_steps_in_order_and_persists():
     assert result.daily_metrics["hrv_rmssd"] == 28.0
     assert result.stat_signals is not None
     assert any(a["metric"] == "hrv_rmssd" for a in result.stat_signals["anomalies"])
+    assert result.daily_metrics_window is not None
+    assert persisted["metric_loads"] == 1
+    assert len(persisted["stat_persist"]) == 1
+    assert persisted["stat_persist"][0][0] == "u1"
+    assert persisted["stat_persist"][0][1] == RUN
+    assert persisted["stat_persist"][0][2]["anomalies"]
     assert result.features["strength_sessions_7d"] == 1
     # Sleep debt over the week (target 8h, 7 days at 5h) should flag.
     assert any(f.code == "HIGH_SLEEP_DEBT" for f in result.flags)
@@ -86,8 +100,9 @@ def test_pipeline_stops_cleanly_when_llm_fails():
     # Delivery must not run after a failed briefing.
     assert all(s.name != "deliver" for s in result.steps)
     assert result.delivery is None
-    # Earlier steps still succeeded and persisted.
+    # Earlier steps still succeeded and persisted; statistical persist ran before LLM.
     assert "features" in persisted
+    assert "stat_persist" in persisted
 
 
 if __name__ == "__main__":

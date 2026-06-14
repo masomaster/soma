@@ -7,6 +7,8 @@ Stable stack IDs (use these in docs, GitHub Actions, and CLI):
 | **`SomaStagingStack`** | Staging Lambdas, buckets, rules, … |
 | **`SomaProdStack`** | Production |
 
+**Apple Health ingest:** each stack also deploys an **HTTP API** (`POST …/ingest/apple-health`), **access logs** in CloudWatch (`AppleHealthHttpApiAccessLogGroup` output → `/aws/apigateway/soma-{env}-apple-health-access`), an **S3 raw bucket**, and Lambda `soma-{env}-apple-health-webhook` (see [apple-health-export.md](../docs/plans/apple-health-export.md) and `infrastructure/lambda/apple_health_webhook/README.md`). CloudFormation output **`AppleHealthIngestUrl`** is the URL for Health Auto Export.
+
 ## Prereqs
 
 - Python **3.14+** (same as repo `pyproject.toml`)

@@ -30,6 +30,7 @@ import psycopg2
 
 from pipeline import clients
 from pipeline import persistence
+from pipeline import stat_anomalies as stat_anomalies_mod
 from pipeline.lambda_secrets import resolve_lambda_secrets
 from pipeline.briefing import DEFAULT_BRIEFING_MODEL
 from pipeline.delivery import deliver_briefing
@@ -66,6 +67,15 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
 
         return _persist
 
+    def _persist_statistical_anomalies(uid: str, d: date, signals: dict[str, Any]) -> None:
+        rows = stat_anomalies_mod.build_statistical_anomaly_rows(
+            user_id=uid, detected_date=d, stat_signals=signals
+        )
+        with conn.cursor() as cur:
+            persistence.replace_statistical_anomaly_events(
+                cur, user_id=uid, detected_date=d, rows=rows
+            )
+
     try:
         loaders = clients.build_db_loaders(conn)
         with conn.cursor() as cur:
@@ -88,6 +98,7 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
                     persist_daily_metrics=_persister("daily_health_metrics"),
                     persist_features=_persister("daily_features"),
                     persist_briefing=_persister("daily_briefings"),
+                    persist_statistical_anomalies=_persist_statistical_anomalies,
                     **loaders,
                 )
                 result = run_daily_pipeline(user_id=str(user_id), run_date=run_date, io=io)

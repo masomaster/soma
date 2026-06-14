@@ -7,7 +7,9 @@ from typing import Any
 from aws_cdk import Stack, Tags
 from constructs import Construct
 
+from soma_cdk.apple_health_ingest import AppleHealthIngestApi
 from soma_cdk.daily_pipeline import DailyBriefingPipeline
+from soma_cdk.pipeline_layer import build_pipeline_deps_layer
 
 
 class SomaStagingStack(Stack):
@@ -18,4 +20,14 @@ class SomaStagingStack(Stack):
         Tags.of(self).add("Project", "Soma")
         Tags.of(self).add("Environment", "staging")
 
-        DailyBriefingPipeline(self, "DailyBriefing", env_name="staging")
+        pipeline_layer = build_pipeline_deps_layer(self, construct_id="PipelineDeps")
+        briefing = DailyBriefingPipeline(
+            self, "DailyBriefing", env_name="staging", deps_layer=pipeline_layer
+        )
+        AppleHealthIngestApi(
+            self,
+            "AppleHealthIngest",
+            env_name="staging",
+            deps_layer=pipeline_layer,
+            runtime_secret_ref=briefing.runtime_secret_ref,
+        )

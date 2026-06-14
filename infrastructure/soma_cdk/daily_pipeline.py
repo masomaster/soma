@@ -44,6 +44,7 @@ _RUNTIME_SECRET_PLACEHOLDER = json.dumps(
         "DB_CONNECT_STRING": "update_me",
         "ANTHROPIC_API_KEY": "update_me",
         "SES_SENDER": "update_me",
+        "APPLE_HEALTH_WEBHOOK_SECRET": "update_me",
     }
 )
 
@@ -58,10 +59,14 @@ class DailyBriefingPipeline(Construct):
         *,
         env_name: str,
         schedule_hour_utc: int = 11,
+        deps_layer: lambda_.ILayerVersion | None = None,
     ) -> None:
         super().__init__(scope, construct_id)
 
-        deps_layer = build_pipeline_deps_layer(self, construct_id="PipelineDepsLayer")
+        if deps_layer is not None:
+            layer: lambda_.ILayerVersion = deps_layer
+        else:
+            layer = build_pipeline_deps_layer(self, construct_id="PipelineDepsLayer")
 
         stack = Stack.of(self)
         seed_runtime_secret = CfnParameter(
@@ -86,7 +91,7 @@ class DailyBriefingPipeline(Construct):
             self,
             "LambdaRuntimeSecret",
             name=f"soma-{env_name}-lambda-runtime",
-            description="DB URI, Anthropic key, SES From (JSON) for daily briefing Lambda",
+            description="DB URI, Anthropic key, SES From, optional Apple Health webhook HMAC (JSON) for Lambdas",
         )
         runtime_secret.add_property_override(
             "SecretString",
@@ -104,7 +109,7 @@ class DailyBriefingPipeline(Construct):
             architecture=lambda_.Architecture.X86_64,
             handler="handler.handler",
             code=lambda_.Code.from_asset(_LAMBDA_ASSET),
-            layers=[deps_layer],
+            layers=[layer],
             timeout=Duration.minutes(5),
             memory_size=512,
             log_retention=logs.RetentionDays.ONE_MONTH,
@@ -232,3 +237,5 @@ class DailyBriefingPipeline(Construct):
                 "(handler caught DB/LLM/etc. errors for that tenant)."
             ),
         ).add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        self.runtime_secret_ref = runtime_secret.ref

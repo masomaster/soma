@@ -6,6 +6,10 @@ to :func:`pipeline.briefing.build_prompt` and stored in briefing ``features_json
 under ``stat_signals`` for auditability.
 
 The LLM must narrate these pre-computed rows; it does not derive them.
+
+Rows for ``anomaly_events`` (``anomaly_type = 'statistical'``) are built via
+:func:`build_statistical_anomaly_rows` and written with
+:func:`pipeline.persistence.replace_statistical_anomaly_events`.
 """
 
 from __future__ import annotations
@@ -26,6 +30,9 @@ MIN_BASELINE_DAYS = 14
 
 # Flag when |z| exceeds this threshold (two-tailed).
 DEFAULT_Z_THRESHOLD = 2.0
+
+# Persisted ``anomaly_events.severity`` when |z| is at or above this magnitude.
+Z_SEVERITY_ALERT_THRESHOLD = 3.0
 
 
 def _num(value: Any) -> float | None:
@@ -105,3 +112,53 @@ def compute_statistical_signals(
             }
         )
     return {"anomalies": anomalies, "trends": []}
+
+
+def build_statistical_anomaly_rows(
+    *,
+    user_id: str,
+    detected_date: date,
+    stat_signals: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    """Shape ``stat_signals["anomalies"]`` into ``anomaly_events`` insert dicts.
+
+    Each row includes a short ``description`` for operators and full numeric
+    detail in ``context_json`` (mirrors the in-memory anomaly dict).
+    """
+    rows: list[dict[str, Any]] = []
+    raw = stat_signals.get("anomalies")
+    if not isinstance(raw, list):
+        return rows
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        metric = item.get("metric")
+        if not isinstance(metric, str) or not metric:
+            continue
+        z = item.get("z_score")
+        z_val = _num(z) if z is not None else None
+        mean_v = item.get("baseline_mean")
+        n = item.get("baseline_n")
+        desc = (
+            f"{metric} z-score {z} vs prior baseline "
+            f"(mean {mean_v}, n={n})"
+        )
+        if len(desc) > 500:
+            desc = desc[:497] + "..."
+        severity = (
+            "alert"
+            if z_val is not None and abs(z_val) >= Z_SEVERITY_ALERT_THRESHOLD
+            else "info"
+        )
+        rows.append(
+            {
+                "user_id": user_id,
+                "detected_date": detected_date,
+                "metric": metric,
+                "anomaly_type": "statistical",
+                "description": desc,
+                "severity": severity,
+                "context_json": dict(item),
+            }
+        )
+    return rows

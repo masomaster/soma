@@ -1,5 +1,6 @@
 """Upserts for the Phase 6 analysis tables (``daily_health_metrics``,
-``daily_features``, ``daily_briefings``).
+``daily_features``, ``daily_briefings``) plus **append-style** writes for
+``anomaly_events`` statistical rows (Phase 8).
 
 These tables are **recomputed** each run, so the conflict action is
 ``DO UPDATE`` (idempotent overwrite) rather than the ``DO NOTHING`` used for
@@ -11,13 +12,17 @@ leave stale values within that pass. Every column name is validated against an
 allow-list, so identifiers are never taken from untrusted input. Expects a
 psycopg2 cursor on a ``service_role`` connection (RLS bypassed; caller supplies
 ``user_id``).
+
+``replace_statistical_anomaly_events`` deletes prior **statistical** rows for the
+user/day (idempotent pipeline retries) then inserts the new set.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import date
 from typing import Any
 
 from psycopg2 import sql
@@ -169,3 +174,74 @@ def upsert_row(cur: Any, table: str, row: Mapping[str, Any]) -> None:
     )
     cur.execute(statement, values)
     logger.debug("Upserted row into %s (%d cols)", table, len(cols))
+
+
+_STATISTICAL_ANOMALY_COLUMNS: frozenset[str] = frozenset(
+    {
+        "user_id",
+        "detected_date",
+        "metric",
+        "anomaly_type",
+        "description",
+        "severity",
+        "context_json",
+    }
+)
+
+
+def replace_statistical_anomaly_events(
+    cur: Any,
+    *,
+    user_id: str,
+    detected_date: date,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Remove statistical anomalies for ``(user_id, detected_date)``, then insert ``rows``.
+
+    Uses ``DELETE`` + ``INSERT`` so pipeline retries do not duplicate rows. Only
+    ``anomaly_type = 'statistical'`` rows for that day are removed; LLM or other
+    anomaly types are left untouched.
+
+    Raises:
+        KeyError: Unknown column, missing required field, or wrong ``anomaly_type``.
+    """
+    for row in rows:
+        unknown = set(row) - _STATISTICAL_ANOMALY_COLUMNS
+        if unknown:
+            raise KeyError(f"anomaly_events row has unknown column(s): {sorted(unknown)}")
+        for key in ("user_id", "detected_date", "anomaly_type", "description"):
+            if row.get(key) is None:
+                raise KeyError(f"anomaly_events row missing required field {key!r}")
+        if row.get("anomaly_type") != "statistical":
+            raise KeyError("replace_statistical_anomaly_events only accepts anomaly_type 'statistical'")
+
+    cur.execute(
+        "DELETE FROM anomaly_events WHERE user_id = %s AND detected_date = %s AND anomaly_type = %s",
+        (user_id, detected_date, "statistical"),
+    )
+    insert_sql = (
+        "INSERT INTO anomaly_events "
+        "(user_id, detected_date, metric, anomaly_type, description, severity, context_json) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    )
+    for row in rows:
+        ctx = row.get("context_json")
+        ctx_bound: str | None = json.dumps(ctx) if ctx is not None else None
+        cur.execute(
+            insert_sql,
+            (
+                row["user_id"],
+                row["detected_date"],
+                row.get("metric"),
+                row["anomaly_type"],
+                row["description"],
+                row.get("severity"),
+                ctx_bound,
+            ),
+        )
+    logger.debug(
+        "Replaced statistical anomaly_events for user %s on %s (%d row(s))",
+        user_id,
+        detected_date,
+        len(rows),
+    )
