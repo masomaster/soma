@@ -9,6 +9,8 @@ Stable stack IDs (use these in docs, GitHub Actions, and CLI):
 
 **Apple Health ingest:** each stack also deploys an **HTTP API** (`POST …/ingest/apple-health`), **access logs** in CloudWatch (`AppleHealthHttpApiAccessLogGroup` output → `/aws/apigateway/soma-{env}-apple-health-access`), an **S3 raw bucket**, and Lambda `soma-{env}-apple-health-webhook` (see [apple-health-export.md](../docs/plans/apple-health-export.md) and `infrastructure/lambda/apple_health_webhook/README.md`). CloudFormation output **`AppleHealthIngestUrl`** is the URL for Health Auto Export.
 
+**Hevy scheduled ingest:** EventBridge rule `soma-{env}-hevy-ingest` (default **09:00 UTC**) invokes Lambda `soma-{env}-hevy-ingest`, which writes raw pages to the **same** S3 bucket as Apple (`RAW_BUCKET`) and upserts **`strength_events`**. Set **`HEVY_API_KEY`** and **`SOMA_USER_ID`** in Secrets Manager `soma-{env}-lambda-runtime` (or as Lambda env overrides). See `infrastructure/lambda/hevy_ingest/README.md`.
+
 ## Prereqs
 
 - Python **3.14+** (same as repo `pyproject.toml`)

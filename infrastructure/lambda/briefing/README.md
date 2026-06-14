@@ -27,9 +27,17 @@ JSON object:
 {
   "DB_CONNECT_STRING": "update_me",
   "ANTHROPIC_API_KEY": "update_me",
-  "SES_SENDER": "update_me"
+  "SES_SENDER": "update_me",
+  "APPLE_HEALTH_WEBHOOK_SECRET": "update_me",
+  "HEVY_API_KEY": "update_me",
+  "SOMA_USER_ID": "update_me"
 }
 ```
+
+`APPLE_HEALTH_WEBHOOK_SECRET` is optional for the briefing Lambda (Apple webhook
+auth). `HEVY_API_KEY` and `SOMA_USER_ID` are for scheduled Hevy ingest (see
+[`../hevy_ingest/README.md`](../hevy_ingest/README.md)); placeholders stay `update_me`
+until you set real values.
 
 The Lambda receives `SOMA_LAMBDA_SECRET_ARN` and calls `GetSecretValue`.
 

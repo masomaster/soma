@@ -45,6 +45,8 @@ _RUNTIME_SECRET_PLACEHOLDER = json.dumps(
         "ANTHROPIC_API_KEY": "update_me",
         "SES_SENDER": "update_me",
         "APPLE_HEALTH_WEBHOOK_SECRET": "update_me",
+        "HEVY_API_KEY": "update_me",
+        "SOMA_USER_ID": "update_me",
     }
 )
 
@@ -91,7 +93,7 @@ class DailyBriefingPipeline(Construct):
             self,
             "LambdaRuntimeSecret",
             name=f"soma-{env_name}-lambda-runtime",
-            description="DB URI, Anthropic key, SES From, optional Apple Health webhook HMAC (JSON) for Lambdas",
+            description="DB URI, Anthropic key, SES From, optional Apple webhook HMAC, Hevy key + SOMA_USER_ID (JSON) for Lambdas",
         )
         runtime_secret.add_property_override(
             "SecretString",
