@@ -54,6 +54,35 @@ live in Secrets Manager (`soma-{env}-lambda-runtime`); see
 `infrastructure/lambda/briefing/README.md` for the seed parameter and how to avoid
 overwrites after you edit the secret in the console.
 
+## Pipeline alarms (operator email)
+
+Each stack creates an SNS topic `soma-{staging|prod}-daily-pipeline-alarms` and
+CloudWatch alarms that publish to it:
+
+| Alarm | What it catches |
+|-------|-----------------|
+| `soma-{env}-daily-pipeline-rule-failures` | EventBridge **FailedInvocations** (rule could not invoke Lambda). |
+| `soma-{env}-daily-briefing-lambda-errors` | Lambda **Errors** (unhandled exception, timeout, etc.). |
+| `soma-{env}-daily-briefing-lambda-throttles` | Lambda **Throttles**. |
+| `soma-{env}-daily-briefing-user-pipeline-failures` | Log lines matching the per-user catch in `handler.py` (`Daily pipeline failed for user`). |
+
+**Subscribe your inbox** by passing CDK context at synth/deploy (same value for both stacks if you deploy together):
+
+```bash
+cdk deploy SomaStagingStack -c soma:pipelineAlarmEmail=you@example.com
+```
+
+AWS sends a **subscription confirmation** email; you must click **Confirm** before
+alarms are delivered.
+
+If you omit `soma:pipelineAlarmEmail`, the topic is still created so you can add
+subscriptions manually (SMS, Slack via Chatbot, another email, etc.).
+
+**Log group note:** The Lambda uses `log_retention` so CDK owns the CloudWatch log
+group for metric filters. If deploy fails with “log group already exists” (you
+ran the function before this change), delete the **empty** auto-created
+`/aws/lambda/soma-{env}-daily-briefing` log group in the console, then redeploy once.
+
 ## Continuous deployment (GitHub Actions → AWS)
 
 CI and deploys are wired via GitHub Actions using **OIDC → AWS IAM role** (no stored keys):

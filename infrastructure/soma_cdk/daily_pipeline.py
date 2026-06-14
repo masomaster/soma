@@ -6,6 +6,11 @@ the Lambda runs the ordered steps in :mod:`pipeline.orchestration`. Least-priv
 IAM grants SSM rule-threshold reads, Secrets Manager read for runtime config,
 and SES send.
 
+Also wires **SNS + CloudWatch alarms** for EventBridge failed invocations, Lambda
+errors/throttles, and per-user pipeline failures (log metric filter on the
+handler's ``Daily pipeline failed for user`` line). Set CDK context
+``soma:pipelineAlarmEmail`` to subscribe an operator inbox (confirm in SNS).
+
 The ``pipeline`` package and ``psycopg2-binary`` are bundled into a **Lambda
 layer** at synth/deploy time via **local** ``pip`` (no Docker) — see
 :mod:`soma_cdk.pipeline_layer`. The handler asset (``infrastructure/lambda/briefing/``)
@@ -18,11 +23,16 @@ import json
 import os
 
 from aws_cdk import Aws, CfnCondition, CfnDeletionPolicy, CfnParameter, Duration, Fn, Stack
+from aws_cdk import aws_cloudwatch as cloudwatch
+from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_events as events
 from aws_cdk import aws_events_targets as targets
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_secretsmanager as secretsmanager
+from aws_cdk import aws_sns as sns
+from aws_cdk import aws_sns_subscriptions as sns_subs
 from constructs import Construct
 
 from soma_cdk.pipeline_layer import build_pipeline_deps_layer
@@ -85,10 +95,11 @@ class DailyBriefingPipeline(Construct):
         runtime_secret.cfn_options.deletion_policy = CfnDeletionPolicy.RETAIN
         runtime_secret.cfn_options.update_replace_policy = CfnDeletionPolicy.RETAIN
 
+        fn_name = f"soma-{env_name}-daily-briefing"
         self.function = lambda_.Function(
             self,
             "BriefingFunction",
-            function_name=f"soma-{env_name}-daily-briefing",
+            function_name=fn_name,
             runtime=lambda_.Runtime.PYTHON_3_14,
             architecture=lambda_.Architecture.X86_64,
             handler="handler.handler",
@@ -96,6 +107,7 @@ class DailyBriefingPipeline(Construct):
             layers=[deps_layer],
             timeout=Duration.minutes(5),
             memory_size=512,
+            log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
                 "ENV": env_name,
                 "SOMA_RULES_PREFIX": f"/soma/{env_name}/",
@@ -128,3 +140,95 @@ class DailyBriefingPipeline(Construct):
             schedule=events.Schedule.cron(minute="0", hour=str(schedule_hour_utc)),
         )
         self.rule.add_target(targets.LambdaFunction(self.function))
+
+        # --- Operator alerts (Phase 6): SNS + CloudWatch alarms ---
+        alarm_topic = sns.Topic(
+            self,
+            "PipelineAlarmTopic",
+            topic_name=f"soma-{env_name}-daily-pipeline-alarms",
+            display_name=f"Soma {env_name} daily pipeline alarms",
+        )
+        alarm_email = stack.node.try_get_context("soma:pipelineAlarmEmail")
+        if isinstance(alarm_email, str) and alarm_email.strip():
+            alarm_topic.add_subscription(sns_subs.EmailSubscription(alarm_email.strip()))
+
+        failed_invocations = cloudwatch.Metric(
+            namespace="AWS/Events",
+            metric_name="FailedInvocations",
+            dimensions_map={"RuleName": self.rule.rule_name},
+            statistic=cloudwatch.Stats.SUM,
+            period=Duration.minutes(5),
+        )
+        cloudwatch.Alarm(
+            self,
+            "EventRuleFailedInvocations",
+            alarm_name=f"soma-{env_name}-daily-pipeline-rule-failures",
+            metric=failed_invocations,
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="EventBridge could not invoke the daily briefing Lambda (permissions, DLQ, or target errors).",
+        ).add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        cloudwatch.Alarm(
+            self,
+            "BriefingLambdaErrors",
+            alarm_name=f"soma-{env_name}-daily-briefing-lambda-errors",
+            metric=self.function.metric_errors(
+                statistic=cloudwatch.Stats.SUM,
+                period=Duration.minutes(5),
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="Lambda runtime reported at least one failed invocation (uncaught exception, timeout, etc.).",
+        ).add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        cloudwatch.Alarm(
+            self,
+            "BriefingLambdaThrottles",
+            alarm_name=f"soma-{env_name}-daily-briefing-lambda-throttles",
+            metric=self.function.metric_throttles(
+                statistic=cloudwatch.Stats.SUM,
+                period=Duration.minutes(5),
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description="Daily briefing Lambda was throttled (concurrency or account limits).",
+        ).add_alarm_action(cw_actions.SnsAction(alarm_topic))
+
+        # Per-user pipeline failures are caught in the handler (Lambda still succeeds):
+        # match the handler log line from infrastructure/lambda/briefing/handler.py
+        user_pipeline_failures = logs.MetricFilter(
+            self,
+            "UserPipelineFailureMetric",
+            log_group=self.function.log_group,
+            filter_pattern=logs.FilterPattern.all_terms(
+                "Daily", "pipeline", "failed", "for", "user"
+            ),
+            metric_namespace="Soma/DailyBriefing",
+            metric_name="user_pipeline_failures",
+            metric_value="1",
+            default_value=0,
+        )
+        cloudwatch.Alarm(
+            self,
+            "BriefingUserPipelineFailures",
+            alarm_name=f"soma-{env_name}-daily-briefing-user-pipeline-failures",
+            metric=user_pipeline_failures.metric(
+                statistic=cloudwatch.Stats.SUM,
+                period=Duration.minutes(5),
+            ),
+            threshold=1,
+            evaluation_periods=1,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                "At least one user run logged 'Daily pipeline failed for user' "
+                "(handler caught DB/LLM/etc. errors for that tenant)."
+            ),
+        ).add_alarm_action(cw_actions.SnsAction(alarm_topic))

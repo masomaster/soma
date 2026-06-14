@@ -17,7 +17,6 @@ class SomaProdStack(Stack):
         super().__init__(scope, construct_id, **kwargs)
         Tags.of(self).add("Project", "Soma")
         Tags.of(self).add("Environment", "prod")
-   
 
         # Use "prod" (not "production") to match pipeline.settings.Environment and
         # the rules SSM prefix /soma/prod/{user_id}/rules/.

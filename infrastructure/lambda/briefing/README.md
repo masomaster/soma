@@ -62,3 +62,9 @@ See `pipeline.lambda_secrets.resolve_lambda_secrets`.
 
 IAM for SSM rule reads, Secrets Manager read on that secret, and SES send is
 granted by `DailyBriefingPipeline`.
+
+## Failures and alarms
+
+Per-user errors are logged with `Daily pipeline failed for user` (Lambda may
+still return success). CDK wires CloudWatch metric filters and SNS alarms; see
+**Pipeline alarms** in [`infrastructure/README.md`](../../README.md).
