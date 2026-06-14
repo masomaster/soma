@@ -52,6 +52,17 @@ def test_event_date_camel_case_envelope() -> None:
     assert rows[0]["metric"] == "steps"
 
 
+def test_weight_body_mass_maps_to_body_weight_lbs() -> None:
+    body = {
+        "event_date": "2024-06-01",
+        "metrics": [{"metric": "weight_body_mass", "value": 180, "unit": "lb"}],
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    assert len(rows) == 1
+    assert rows[0]["metric"] == "body_weight_lbs"
+    assert rows[0]["value"] == pytest.approx(180.0)
+
+
 def test_rollup_daily_health_metrics_accepts_normalized_rows() -> None:
     from pipeline import features
 

@@ -13,6 +13,8 @@ import logging
 from datetime import date
 from typing import Any
 
+from pipeline.features import as_date
+
 logger = logging.getLogger(__name__)
 
 # HealthKit / HAE workout ``name`` values (normalized to lower case) that usually
@@ -80,7 +82,11 @@ def filter_apple_strength_cardio_when_hevy_present(
     if not candidates:
         return cardio_rows, 0
 
-    day_set = {r["event_date"] for r in candidates if isinstance(r.get("event_date"), date)}
+    day_set: set[date] = set()
+    for r in candidates:
+        d = as_date(r.get("event_date"))
+        if d is not None:
+            day_set.add(d)
     if not day_set:
         return cardio_rows, 0
 
@@ -91,11 +97,8 @@ def filter_apple_strength_cardio_when_hevy_present(
     kept: list[dict[str, Any]] = []
     dropped = 0
     for row in cardio_rows:
-        if (
-            is_apple_strength_cardio_hevy_dup_candidate(row)
-            and isinstance(row.get("event_date"), date)
-            and row["event_date"] in hevy_days
-        ):
+        ed = as_date(row.get("event_date"))
+        if is_apple_strength_cardio_hevy_dup_candidate(row) and ed is not None and ed in hevy_days:
             dropped += 1
             continue
         kept.append(row)

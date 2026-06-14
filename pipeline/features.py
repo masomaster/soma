@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping, Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 # Canonical biometric metric names that map 1:1 onto ``daily_health_metrics``
@@ -60,7 +60,9 @@ EFFORT_STRENGTH_MINUTES_PER_HARD_SET = 3.0
 
 
 def _as_date(value: Any) -> date | None:
-    """Coerce a ``date`` / ISO ``YYYY-MM-DD`` (date-or-datetime) string to ``date``."""
+    """Coerce ``datetime``, plain ``date``, or ISO ``YYYY-MM-DD[...]`` string to ``date``."""
+    if isinstance(value, datetime):
+        return value.date()
     if isinstance(value, date):
         return value
     if isinstance(value, str) and value:
@@ -72,7 +74,7 @@ def _as_date(value: Any) -> date | None:
 
 
 def as_date(value: Any) -> date | None:
-    """Public coercion to ``date`` (``date`` or ISO ``YYYY-MM-DD[...]`` string)."""
+    """Public coercion to calendar ``date`` (``datetime``, ``date``, or ISO string prefix)."""
     return _as_date(value)
 
 

@@ -37,7 +37,9 @@ from pipeline.apple_hevy_cardio_dedup import filter_apple_strength_cardio_when_h
 from pipeline.apple_health_webhook_event import (
     HINT_EMPTY_BODY,
     HINT_INVALID_JSON,
+    HINT_INVALID_USER_ID,
     HINT_MISSING_USER,
+    canonical_auth_user_uuid,
     header_first,
     merge_api_gateway_headers,
     parse_json_body,
@@ -85,9 +87,12 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             logger.warning("Webhook secret mismatch or missing")
             return _response(401, {"ok": False, "error": "unauthorized"})
 
-    user_id = header_first(headers, "x-soma-user-id")
-    if not user_id:
+    user_id_raw = header_first(headers, "x-soma-user-id")
+    if not user_id_raw:
         return _bad_request("missing_header_x_soma_user_id", HINT_MISSING_USER)
+    user_id = canonical_auth_user_uuid(user_id_raw)
+    if not user_id:
+        return _bad_request("invalid_x_soma_user_id", HINT_INVALID_USER_ID)
 
     raw_bytes = raw_body_bytes(event)
     logger.info(

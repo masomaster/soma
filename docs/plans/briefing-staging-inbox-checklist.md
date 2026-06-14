@@ -28,10 +28,19 @@ Use after the first **SES** smoke send from staging (`ENV=staging`). Goal: confi
 - [ ] **`acute_chronic_ratio` null:** no “ACWR spike” narrative; model should treat ratio as not computed.
 - [ ] **`overall_readiness_score` null:** copy says readiness was not scored (or equivalent), not a fake numeric score.
 - [ ] Flags in the email narrative align with **rules** output for that run (severity order: worst first).
+- [ ] **STATISTICAL_SIGNALS (Phase 8):** if the prompt block lists z-score outliers, the note does not contradict listed **z_score** / **direction**; if the anomalies array is empty, the model does not invent statistical outliers (see [briefing-llm-failure-modes.md](./briefing-llm-failure-modes.md) § Contradicting STATISTICAL_SIGNALS).
+- [ ] **`anomaly_events`:** for the same `user_id` + run date, any `anomaly_type = 'statistical'` rows match what you expect from recovery metrics (optional SQL spot-check in Supabase).
+
+## Preconditions (Hevy + Apple on staging)
+
+The briefing Lambda **reads Postgres only** — it does not call Hevy or Apple. Before expecting strength + recovery in the email:
+
+- [ ] **Apple:** Health Auto Export (or your ingest path) has landed rows in **`biometrics`** so the daily rollup can fill **`daily_health_metrics`** for today; prior days should exist in **`daily_health_metrics`** if you want rolling features and z-score baselines (≥14 prior days with values for a metric before z-score flags).
+- [ ] **Hevy:** **`strength_events`** populated for your user (e.g. **`scripts/smoke_hevy.py db-upsert`**, historical backfill, or scheduled ingest once wired — see [implementation-plan.md](./implementation-plan.md) § *Integration slices*).
 
 ## Operational
 
-- [ ] `daily_briefings` row exists for the run date with `model_used` and `flags` JSON matching expectations.
+- [ ] `daily_briefings` row exists for the run date with `model_used` and `flags` JSON matching expectations; **`features_json.stat_signals`** is present (may show empty `anomalies` if baseline history is short).
 - [ ] CloudWatch shows no unexpected errors for that invocation; per-user failures are isolated in the handler summary.
 
 ## Sign-off

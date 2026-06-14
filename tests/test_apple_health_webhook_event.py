@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from pipeline.apple_health_webhook_event import (
+    canonical_auth_user_uuid,
     header_first,
     merge_api_gateway_headers,
     parse_json_body,
@@ -50,3 +53,16 @@ def test_parse_json_body_bom() -> None:
 
 def test_parse_json_body_empty() -> None:
     assert parse_json_body(b"  ") == (None, "empty_body")
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000001"),
+        ("  00000000-0000-0000-0000-000000000001  ", "00000000-0000-0000-0000-000000000001"),
+        ("not-a-uuid", None),
+        ("", None),
+    ],
+)
+def test_canonical_auth_user_uuid(raw: str, expected: str | None) -> None:
+    assert canonical_auth_user_uuid(raw) == expected

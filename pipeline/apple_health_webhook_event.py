@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import uuid
 from typing import Any, Mapping
 
 logger = logging.getLogger(__name__)
@@ -13,6 +14,10 @@ logger = logging.getLogger(__name__)
 HINT_MISSING_USER = (
     "Add HTTP header X-Soma-User-Id with your Supabase auth.users id (UUID). "
     "In Health Auto Export custom headers: Key = X-Soma-User-Id, Value = <uuid>."
+)
+HINT_INVALID_USER_ID = (
+    "X-Soma-User-Id must be a valid UUID (your Supabase auth.users id). "
+    "Copy the UUID exactly; no extra spaces or characters."
 )
 HINT_EMPTY_BODY = (
     "POST body was empty. Use POST with JSON body (HAE export format). "
@@ -56,6 +61,14 @@ def merge_api_gateway_headers(event: Mapping[str, Any]) -> dict[str, Any]:
             elif isinstance(vals, str):
                 out[k] = vals
     return out
+
+
+def canonical_auth_user_uuid(raw: str) -> str | None:
+    """Return normalized UUID string for ``auth.users.id``, or ``None`` if invalid."""
+    try:
+        return str(uuid.UUID(raw.strip()))
+    except ValueError:
+        return None
 
 
 def header_first(headers: Mapping[str, Any] | None, name: str) -> str | None:

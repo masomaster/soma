@@ -54,6 +54,7 @@ _HAE_NAME_TO_CANONICAL: dict[str, str] = {
     "respiratory_rate": "respiratory_rate",
     "vo2_max": "vo2_max",
     "body_mass": "body_weight_lbs",
+    "weight_body_mass": "body_weight_lbs",
     "body_fat_percentage": "body_fat_pct",
     "sleep_analysis": "sleep_hours",
     "sleepanalysis": "sleep_hours",
@@ -277,8 +278,12 @@ def normalize_soma_daily_envelope(
     for item in metrics:
         if not isinstance(item, dict):
             continue
-        name = item.get("metric")
-        if not isinstance(name, str) or name not in DAILY_HEALTH_METRIC_COLUMNS:
+        name_raw = item.get("metric")
+        if not isinstance(name_raw, str):
+            continue
+        # Envelope ``metric`` may be canonical or HAE-style vendor keys (e.g. weight_body_mass).
+        name = _canonical_for_hae_name(name_raw) or name_raw.strip()
+        if name not in DAILY_HEALTH_METRIC_COLUMNS:
             continue
         v = _num(item.get("value"))
         if v is None:

@@ -5,12 +5,34 @@ tests). In AWS, CDK sets ``SOMA_LAMBDA_SECRET_ARN`` to a Secrets Manager secret
 whose ``SecretString`` is JSON with keys ``DB_CONNECT_STRING``, ``ANTHROPIC_API_KEY``,
 ``SES_SENDER``, and optionally ``APPLE_HEALTH_WEBHOOK_SECRET`` (see
 :func:`resolve_apple_health_webhook_secret_optional`).
+
+Secrets Manager JSON is fetched at most **once per process per ARN** (see
+:func:`clear_runtime_secret_json_cache` for tests).
 """
 
 from __future__ import annotations
 
 import json
 import os
+from functools import lru_cache
+from typing import Any
+
+
+def clear_runtime_secret_json_cache() -> None:
+    """Clear the in-memory Secrets Manager JSON cache (call between tests if mocks change)."""
+    _runtime_secret_json_raw.cache_clear()
+
+
+@lru_cache(maxsize=8)
+def _runtime_secret_json_raw(arn: str) -> str:
+    import boto3
+
+    sm = boto3.client("secretsmanager")
+    return str(sm.get_secret_value(SecretId=arn)["SecretString"])
+
+
+def _runtime_secret_dict(arn: str) -> dict[str, Any]:
+    return json.loads(_runtime_secret_json_raw(arn))
 
 
 def resolve_lambda_secrets() -> tuple[str, str, str]:
@@ -30,11 +52,7 @@ def resolve_lambda_secrets() -> tuple[str, str, str]:
         )
         raise OSError(msg)
 
-    import boto3
-
-    sm = boto3.client("secretsmanager")
-    raw = sm.get_secret_value(SecretId=arn)["SecretString"]
-    data = json.loads(raw)
+    data = _runtime_secret_dict(arn)
     db_v = str(data.get("DB_CONNECT_STRING", "")).strip()
     key_v = str(data.get("ANTHROPIC_API_KEY", "")).strip()
     ses_v = str(data.get("SES_SENDER", "")).strip()
@@ -64,11 +82,7 @@ def resolve_db_connect_string() -> str:
             "that includes DB_CONNECT_STRING."
         )
 
-    import boto3
-
-    sm = boto3.client("secretsmanager")
-    raw = sm.get_secret_value(SecretId=arn)["SecretString"]
-    data = json.loads(raw)
+    data = _runtime_secret_dict(arn)
     db_v = str(data.get("DB_CONNECT_STRING", "")).strip()
     if not db_v:
         raise OSError(f"Secret {arn!r} must include non-empty DB_CONNECT_STRING.")
@@ -101,11 +115,7 @@ def resolve_apple_health_webhook_secret_optional() -> str:
     if not arn:
         return ""
 
-    import boto3
-
-    sm = boto3.client("secretsmanager")
-    raw = sm.get_secret_value(SecretId=arn)["SecretString"]
-    data = json.loads(raw)
+    data = _runtime_secret_dict(arn)
     v = str(data.get("APPLE_HEALTH_WEBHOOK_SECRET", "")).strip()
     if not v or _is_webhook_secret_placeholder(v):
         return ""

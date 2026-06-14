@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from pipeline import features as F
 
@@ -11,6 +11,10 @@ RUN = date(2024, 6, 8)
 
 def _d(days_ago: int) -> date:
     return RUN - timedelta(days=days_ago)
+
+
+def test_as_date_normalizes_datetime_to_calendar_date() -> None:
+    assert F.as_date(datetime(2024, 6, 1, 15, 30, 0)) == date(2024, 6, 1)
 
 
 def test_rollup_pivots_known_metrics_and_ignores_unknown():

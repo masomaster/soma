@@ -98,3 +98,29 @@ def test_resolve_apple_health_webhook_secret_missing_key_empty() -> None:
         with patch("boto3.client", return_value=mock_sm):
             out = lambda_secrets.resolve_apple_health_webhook_secret_optional()
     assert out == ""
+
+
+def test_runtime_secret_json_single_sm_fetch_for_db_and_webhook() -> None:
+    """Same ARN: resolve DB string and webhook secret must not double-fetch SM."""
+    fake = {
+        "DB_CONNECT_STRING": "postgresql://pooler/example",
+        "APPLE_HEALTH_WEBHOOK_SECRET": "hunter2",
+    }
+    mock_sm = MagicMock()
+    mock_sm.get_secret_value.return_value = {"SecretString": json.dumps(fake)}
+    arn = "arn:aws:secretsmanager:us-west-2:1:secret:soma/y"
+    with patch.dict(
+        "os.environ",
+        {
+            "DB_CONNECT_STRING": "",
+            "APPLE_HEALTH_WEBHOOK_SECRET": "",
+            "SOMA_LAMBDA_SECRET_ARN": arn,
+        },
+        clear=False,
+    ):
+        with patch("boto3.client", return_value=mock_sm):
+            db = lambda_secrets.resolve_db_connect_string()
+            wh = lambda_secrets.resolve_apple_health_webhook_secret_optional()
+    assert db == "postgresql://pooler/example"
+    assert wh == "hunter2"
+    mock_sm.get_secret_value.assert_called_once()
