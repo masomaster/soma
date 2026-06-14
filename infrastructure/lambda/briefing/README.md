@@ -59,6 +59,7 @@ See `pipeline.lambda_secrets.resolve_lambda_secrets`.
 | `ENV` | `staging` / `prod` (set by CDK) |
 | `SOMA_RULES_PREFIX` | SSM tree for thresholds, set by CDK (`/soma/{env}/`) |
 | `BRIEFING_MODEL` | optional; default `claude-haiku-4-5-20251001` (see `pipeline/briefing.py`) |
+| `BRIEFING_EMAIL_DASHBOARD_URL` | optional; full `http://` or `https://` URL shown in the HTML briefing footer (`pipeline/settings.py` + `pipeline/delivery.py`) |
 
 IAM for SSM rule reads, Secrets Manager read on that secret, and SES send is
 granted by `DailyBriefingPipeline`.

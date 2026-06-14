@@ -57,14 +57,42 @@ def test_prod_env_sends_email_without_prefix():
     assert sent["to"] == "user@example.com"
     assert not sent["subject"].startswith("[")
     assert sent["body"] == "Easy day."
-    assert isinstance(sent["html"], str) and "Easy day." in sent["html"] and "<html>" in sent["html"]
+    assert isinstance(sent["html"], str) and "Easy day." in sent["html"] and "<html" in sent["html"]
+
+
+def test_prod_email_html_includes_dashboard_when_env_set(monkeypatch):
+    monkeypatch.setenv("BRIEFING_EMAIL_DASHBOARD_URL", "https://dash.example/home")
+    sent: dict[str, str | None] = {}
+
+    def send_email(to: str, subject: str, body: str, html_body: str | None = None) -> str:
+        sent["html"] = html_body
+        return "id"
+
+    D.deliver_briefing(
+        _briefing(),
+        to_address="user@example.com",
+        env=Environment.PROD,
+        send_email=send_email,
+    )
+    assert sent["html"] is not None
+    assert "Open your dashboard" in sent["html"]
+    assert "https://dash.example/home" in sent["html"]
 
 
 def test_coaching_note_to_html_wraps_bold_and_headings():
     html = D.coaching_note_to_html("# Title\n\n**Bold** line\n\n- one\n- two")
+    assert 'lang="en"' in html
     assert "<h1" in html and "Title" in html
     assert "<strong>Bold</strong>" in html
     assert "<ul" in html and "<li>one</li>" in html
+    assert "Soma</p>" in html or "Soma" in html
+
+
+def test_coaching_note_to_html_optional_dashboard_link():
+    html = D.coaching_note_to_html("**Hi**", dashboard_url="https://dash.example/home")
+    assert "Open your dashboard" in html
+    assert "https://dash.example/home" in html
+    assert 'href="https://dash.example/home"' in html
 
 
 def test_staging_without_address_falls_back_to_stdout():

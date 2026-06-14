@@ -1,32 +1,22 @@
-"""Tests for pipeline environment resolution."""
+"""Settings helpers (environment, optional briefing URL)."""
+
+from __future__ import annotations
 
 import pytest
 
-from pipeline.settings import Environment, get_environment
+from pipeline.settings import get_briefing_email_dashboard_url
 
 
-def test_get_environment_defaults_to_local(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ENV", raising=False)
-    assert get_environment() is Environment.LOCAL
+def test_get_briefing_email_dashboard_url_none_when_unset(monkeypatch):
+    monkeypatch.delenv("BRIEFING_EMAIL_DASHBOARD_URL", raising=False)
+    assert get_briefing_email_dashboard_url() is None
 
 
-@pytest.mark.parametrize(
-    ("raw", "expected"),
-    [
-        ("local", Environment.LOCAL),
-        ("LOCAL", Environment.LOCAL),
-        (" staging ", Environment.STAGING),
-        ("prod", Environment.PROD),
-    ],
-)
-def test_get_environment_accepts_valid_values(
-    monkeypatch: pytest.MonkeyPatch, raw: str, expected: Environment
-) -> None:
-    monkeypatch.setenv("ENV", raw)
-    assert get_environment() is expected
+def test_get_briefing_email_dashboard_url_accepts_http_https(monkeypatch):
+    monkeypatch.setenv("BRIEFING_EMAIL_DASHBOARD_URL", "https://dash.example/path")
+    assert get_briefing_email_dashboard_url() == "https://dash.example/path"
 
 
-def test_get_environment_rejects_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("ENV", "production")
-    with pytest.raises(ValueError, match="Invalid ENV"):
-        get_environment()
+def test_get_briefing_email_dashboard_url_rejects_non_http_scheme(monkeypatch):
+    monkeypatch.setenv("BRIEFING_EMAIL_DASHBOARD_URL", "javascript:alert(1)")
+    assert get_briefing_email_dashboard_url() is None

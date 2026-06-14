@@ -88,7 +88,8 @@ delivery callback, etc.). There is **no** dedicated CLI in-repo yet.
   (forwards to pytest) or **`pytest tests/test_orchestration.py -q`**.
 - **Production-shaped wiring:** `infrastructure/lambda/briefing/handler.py` —
   psycopg2, boto3 (Secrets Manager for DB/Anthropic/SES, SSM for rule thresholds),
-  then `run_daily_pipeline` per user.
+  then `run_daily_pipeline` per user. Optional **`BRIEFING_EMAIL_DASHBOARD_URL`**
+  (http/https) adds a footer link in the HTML part of the briefing email (Phase 6.6).
 
 After `pip install -e ".[dev]"`, you can exercise the orchestrator from a small
 script or `python -c` by copying the `DailyPipelineIO` construction pattern from

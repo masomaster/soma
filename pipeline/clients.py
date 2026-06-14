@@ -100,8 +100,8 @@ def ses_email_sender(
     *,
     region: str | None = None,
     client: Any = None,
-) -> Callable[[str, str, str], str]:
-    """Return an email sender (to, subject, body) -> message id, backed by SES."""
+) -> Callable[..., str]:
+    """Return ``(to, subject, body, *, html_body=...) -> message_id`` backed by SES."""
     if client is None:
         import boto3  # lazy: Lambda-provided, not a package dependency
 

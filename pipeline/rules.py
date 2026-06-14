@@ -86,6 +86,13 @@ def _f(mapping: Mapping[str, Any], key: str) -> float | None:
     return None
 
 
+def _int_cov(mapping: Mapping[str, Any], key: str) -> int | None:
+    """Return 7-day observation count, or ``None`` if the column was not provided."""
+    if key not in mapping:
+        return None
+    return int(mapping.get(key) or 0)
+
+
 def evaluate(
     *,
     features: Mapping[str, Any],
@@ -96,17 +103,19 @@ def evaluate(
 
     Returns flags sorted worst-severity first. ``daily_metrics`` is the wide row
     for ``feature_date`` (used for same-day signals like last night's sleep).
+
+    Sleep-debt and HRV-suppression weekly flags are suppressed when the matching
+    7-day **observation count** is explicitly zero (sparse recovery). If coverage
+    columns are absent (pre-migration rows), weekly flags still run from numeric
+    features alone (Phase 6.6).
     """
     th = {**DEFAULT_THRESHOLDS, **(thresholds or {})}
     metrics = daily_metrics or {}
     flags: list[Flag] = []
+    sleep_cov = _int_cov(features, "recovery_sleep_days_7d")
+    hrv_cov = _int_cov(features, "recovery_hrv_days_7d")
 
-    if (
-        "recovery_sleep_days_7d" in features
-        and "recovery_hrv_days_7d" in features
-        and int(features.get("recovery_sleep_days_7d") or 0) == 0
-        and int(features.get("recovery_hrv_days_7d") or 0) == 0
-    ):
+    if sleep_cov is not None and hrv_cov is not None and sleep_cov == 0 and hrv_cov == 0:
         flags.append(
             Flag(
                 code="SPARSE_RECOVERY_DATA",
@@ -115,10 +124,7 @@ def evaluate(
                     "No sleep or HRV rows in the last 7 days — recovery signals are unavailable; "
                     "do not infer sleep debt or HRV trends."
                 ),
-                evidence={
-                    "recovery_sleep_days_7d": int(features.get("recovery_sleep_days_7d") or 0),
-                    "recovery_hrv_days_7d": int(features.get("recovery_hrv_days_7d") or 0),
-                },
+                evidence={"recovery_sleep_days_7d": sleep_cov, "recovery_hrv_days_7d": hrv_cov},
             )
         )
 
@@ -138,34 +144,36 @@ def evaluate(
 
     sleep_debt = _f(features, "sleep_debt_7d")
     if sleep_debt is not None and sleep_debt > th["max_sleep_debt_7d"]:
-        flags.append(
-            Flag(
-                code="HIGH_SLEEP_DEBT",
-                severity="warning",
-                message=(
-                    f"7-day sleep debt is {sleep_debt:.1f}h "
-                    f"(over the {th['max_sleep_debt_7d']:.0f}h limit)."
-                ),
-                evidence={"sleep_debt_7d": sleep_debt, "max_sleep_debt_7d": th["max_sleep_debt_7d"]},
+        if sleep_cov is None or sleep_cov > 0:
+            flags.append(
+                Flag(
+                    code="HIGH_SLEEP_DEBT",
+                    severity="warning",
+                    message=(
+                        f"7-day sleep debt is {sleep_debt:.1f}h "
+                        f"(over the {th['max_sleep_debt_7d']:.0f}h limit)."
+                    ),
+                    evidence={"sleep_debt_7d": sleep_debt, "max_sleep_debt_7d": th["max_sleep_debt_7d"]},
+                )
             )
-        )
 
     suppressed = _f(features, "hrv_suppressed_days")
     if suppressed is not None and suppressed > th["max_hrv_suppressed_days"]:
-        flags.append(
-            Flag(
-                code="LOW_HRV",
-                severity="alert",
-                message=(
-                    f"HRV has been suppressed on {int(suppressed)} of the last 7 days "
-                    "— recovery is lagging."
-                ),
-                evidence={
-                    "hrv_suppressed_days": suppressed,
-                    "max_hrv_suppressed_days": th["max_hrv_suppressed_days"],
-                },
+        if hrv_cov is None or hrv_cov > 0:
+            flags.append(
+                Flag(
+                    code="LOW_HRV",
+                    severity="alert",
+                    message=(
+                        f"HRV has been suppressed on {int(suppressed)} of the last 7 days "
+                        "— recovery is lagging."
+                    ),
+                    evidence={
+                        "hrv_suppressed_days": suppressed,
+                        "max_hrv_suppressed_days": th["max_hrv_suppressed_days"],
+                    },
+                )
             )
-        )
 
     acwr = _f(features, "acute_chronic_ratio")
     if acwr is not None and acwr > th["max_acute_chronic_ratio"]:

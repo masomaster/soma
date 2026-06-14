@@ -15,6 +15,7 @@ Environment variables:
                             env vars (local dev / overrides).
 
     BRIEFING_MODEL          (optional) override briefing model id
+    BRIEFING_EMAIL_DASHBOARD_URL  (optional) https?://... link appended to HTML email
 """
 
 from __future__ import annotations

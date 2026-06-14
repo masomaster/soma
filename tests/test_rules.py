@@ -69,3 +69,41 @@ def test_evaluate_sparse_recovery_emits_info_flag():
     assert len(flags) == 1
     assert flags[0].code == "SPARSE_RECOVERY_DATA"
     assert flags[0].severity == "info"
+
+
+def test_evaluate_skips_weekly_sleep_debt_when_sleep_coverage_zero():
+    features = {
+        "recovery_sleep_days_7d": 0,
+        "recovery_hrv_days_7d": 4,
+        "sleep_debt_7d": 99.0,
+        "hrv_suppressed_days": 0,
+        "acute_chronic_ratio": 1.0,
+        "overall_readiness_score": 80.0,
+    }
+    codes = [f.code for f in R.evaluate(features=features, daily_metrics={})]
+    assert "HIGH_SLEEP_DEBT" not in codes
+
+
+def test_evaluate_skips_low_hrv_when_hrv_coverage_zero():
+    features = {
+        "recovery_sleep_days_7d": 5,
+        "recovery_hrv_days_7d": 0,
+        "sleep_debt_7d": 0.0,
+        "hrv_suppressed_days": 5,
+        "overall_readiness_score": 90.0,
+    }
+    codes = [f.code for f in R.evaluate(features=features, daily_metrics={})]
+    assert "LOW_HRV" not in codes
+
+
+def test_evaluate_legacy_rows_without_coverage_columns_keep_weekly_flags():
+    """Pre-0002 rows may omit recovery_*; weekly debt/HRV flags still apply."""
+    features = {
+        "sleep_debt_7d": 7.0,
+        "hrv_suppressed_days": 3,
+        "acute_chronic_ratio": 2.0,
+        "overall_readiness_score": 44.0,
+    }
+    codes = [f.code for f in R.evaluate(features=features, daily_metrics={"sleep_hours": 5.0})]
+    assert "HIGH_SLEEP_DEBT" in codes
+    assert "LOW_HRV" in codes

@@ -14,7 +14,7 @@ import sys
 from typing import Any, Protocol, TextIO
 
 from pipeline.briefing import Briefing
-from pipeline.settings import Environment, get_environment
+from pipeline.settings import Environment, get_briefing_email_dashboard_url, get_environment
 
 logger = logging.getLogger(__name__)
 
@@ -40,18 +40,31 @@ def _inline_emphasis(text: str) -> str:
     return "".join(out)
 
 
-def coaching_note_to_html(note: str) -> str:
-    """Convert a short Markdown-ish coaching note into a minimal HTML body for SES."""
+def coaching_note_to_html(note: str, *, dashboard_url: str | None = None) -> str:
+    """Convert a short Markdown-ish coaching note into HTML for SES (Phase 6.6).
+
+    ``dashboard_url`` must already be validated (e.g. via
+    :func:`pipeline.settings.get_briefing_email_dashboard_url`).
+    """
     text = note.replace("\r\n", "\n").strip()
     if not text:
         return (
-            '<!DOCTYPE html><html><body style="font-family:system-ui,Segoe UI,sans-serif">'
+            '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>'
+            '<title>Soma briefing</title></head>'
+            '<body style="font-family:system-ui,Segoe UI,sans-serif">'
             "</body></html>"
         )
     blocks = re.split(r"\n\n+", text)
     chunks: list[str] = [
-        '<!DOCTYPE html><html><body style="font-family:system-ui,Segoe UI,sans-serif;'
-        'max-width:36rem;line-height:1.45">'
+        '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"/>'
+        '<title>Soma briefing</title></head>'
+        '<body style="font-family:system-ui,Segoe UI,sans-serif;'
+        'max-width:36rem;line-height:1.45;color:#111">'
+        '<header style="border-bottom:1px solid #ddd;padding-bottom:0.5rem;margin-bottom:1rem">'
+        '<p style="margin:0;font-size:0.85rem;letter-spacing:0.04em;text-transform:uppercase">'
+        "Soma</p>"
+        '<p style="margin:0.25rem 0 0;font-size:0.95rem;color:#444">Daily briefing</p>'
+        "</header>"
     ]
     for raw in blocks:
         block = raw.strip()
@@ -79,6 +92,15 @@ def coaching_note_to_html(note: str) -> str:
         else:
             inner = "<br/>".join(_inline_emphasis(ln) for ln in lines)
             chunks.append(f'<p style="margin:0 0 0.75rem">{inner}</p>')
+    if dashboard_url:
+        safe_href = html.escape(dashboard_url, quote=True)
+        chunks.append(
+            '<footer style="margin-top:1.25rem;padding-top:0.75rem;border-top:1px solid #ddd">'
+            f'<p style="margin:0;font-size:0.9rem">'
+            f'<a href="{safe_href}" style="color:#0b57d0">Open your dashboard</a>'
+            f" <span style=\"color:#555\">({html.escape(dashboard_url)})</span>"
+            f"</p></footer>"
+        )
     chunks.append("</body></html>")
     return "".join(chunks)
 
@@ -118,7 +140,8 @@ def deliver_briefing(
         return {"channel": "stdout", "subject": subject}
 
     assert send_email is not None and to_address is not None  # narrowed by can_email
-    html_body = coaching_note_to_html(briefing.coaching_note)
+    dashboard_url = get_briefing_email_dashboard_url()
+    html_body = coaching_note_to_html(briefing.coaching_note, dashboard_url=dashboard_url)
     message_id = send_email(
         to_address, subject, briefing.coaching_note, html_body=html_body
     )

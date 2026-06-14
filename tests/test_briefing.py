@@ -25,6 +25,8 @@ def test_build_prompt_includes_flags_and_features():
     assert "missing" not in prompt  # None values are dropped
     assert "2024-06-08" in prompt
     assert "US short tons" in prompt
+    assert "acute_chronic_ratio null" in prompt
+    assert "recovery_sleep_days_7d is 0" in prompt
 
 
 def test_build_prompt_handles_no_flags():
