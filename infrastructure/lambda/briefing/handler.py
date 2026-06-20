@@ -102,6 +102,8 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
                     persist_daily_metrics=_persister("daily_health_metrics"),
                     persist_features=_persister("daily_features"),
                     persist_briefing=_persister("daily_briefings"),
+                    persist_goal_snapshot=_persister("daily_goal_snapshot"),
+                    persist_weekly_summary=_persister("weekly_activity_summary"),
                     persist_statistical_anomalies=_persist_statistical_anomalies,
                     persist_metric_baselines=_persist_metric_baselines,
                     **loaders,

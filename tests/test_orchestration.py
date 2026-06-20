@@ -60,6 +60,7 @@ def test_full_pipeline_runs_steps_in_order_and_persists():
         "rollup_metrics",
         "compute_features",
         "evaluate_rules",
+        "goal_snapshot",
         "compute_stat_signals",
         "generate_briefing",
         "deliver",

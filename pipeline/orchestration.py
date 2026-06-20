@@ -5,7 +5,7 @@ Per ``docs/plans/implementation-plan.md`` Phase 5 we run **one daily pipeline**
 several tight cron jobs:
 
     rollup today's metrics -> compute features -> evaluate rules
-        -> statistical signals -> generate briefing -> deliver
+        -> goal snapshot -> statistical signals -> generate briefing -> deliver
 
 All IO (DB loads/writes, the LLM, email) is injected via :class:`DailyPipelineIO`
 so the orchestrator itself is pure control-flow and fully unit-testable; the
@@ -26,8 +26,10 @@ from pipeline import features as features_mod
 from pipeline import metric_baselines as metric_baselines_mod
 from pipeline import metric_patterns as metric_patterns_mod
 from pipeline import rules as rules_mod
+from pipeline import goal_progress as goal_progress_mod
 from pipeline import stat_anomalies as stat_anomalies_mod
 from pipeline.briefing import Briefing, LLMClient, generate_briefing
+from pipeline.mileage_ramp import iso_week_start
 from pipeline.rules import Flag
 
 logger = logging.getLogger(__name__)
@@ -50,6 +52,12 @@ class DailyPipelineIO:
     persist_statistical_anomalies: Callable[[str, date, dict[str, Any]], None] | None = None
     persist_metric_baselines: Callable[[Sequence[Row]], None] | None = None
     load_active_patterns: Callable[[str, date], Sequence[Row]] | None = None
+    load_goals: Callable[[str, date], Sequence[Row]] | None = None
+    load_running_sessions: Callable[[str, date], Sequence[Row]] | None = None
+    load_schedule_exceptions: Callable[[str, date], Sequence[Row]] | None = None
+    load_interventions: Callable[[str, date], Sequence[Row]] | None = None
+    persist_goal_snapshot: Callable[[Row], None] | None = None
+    persist_weekly_summary: Callable[[Row], None] | None = None
     deliver: Callable[[Briefing], dict[str, Any]] | None = None
     thresholds: Mapping[str, float] = field(default_factory=dict)
     to_address: str | None = None
@@ -71,6 +79,7 @@ class PipelineResult:
     features: dict[str, Any] | None = None
     flags: list[Flag] = field(default_factory=list)
     stat_signals: dict[str, Any] | None = None
+    goal_snapshot: dict[str, Any] | None = None
     daily_metrics_window: list[dict[str, Any]] | None = None
     briefing: Briefing | None = None
     delivery: dict[str, Any] | None = None
@@ -143,6 +152,50 @@ def run_daily_pipeline(
             thresholds=thresholds,
         )
 
+    def do_goal_snapshot() -> None:
+        if io.load_goals is None:
+            return
+        goals = list(io.load_goals(user_id, run_date))
+        running = (
+            list(io.load_running_sessions(user_id, run_date))
+            if io.load_running_sessions is not None
+            else []
+        )
+        exceptions = (
+            list(io.load_schedule_exceptions(user_id, run_date))
+            if io.load_schedule_exceptions is not None
+            else []
+        )
+        interventions = (
+            list(io.load_interventions(user_id, run_date))
+            if io.load_interventions is not None
+            else []
+        )
+        strength = io.load_strength_events(user_id, run_date)
+        cardio = io.load_cardio_events(user_id, run_date)
+        result.goal_snapshot = goal_progress_mod.build_daily_goal_snapshot(
+            user_id=user_id,
+            run_date=run_date,
+            goals=goals,
+            strength_events=strength,
+            running_sessions=running,
+            cardio_events=cardio,
+            exceptions=exceptions,
+            interventions=interventions,
+        )
+        if io.persist_goal_snapshot is not None:
+            io.persist_goal_snapshot(result.goal_snapshot)
+        if io.persist_weekly_summary is not None:
+            week_start = iso_week_start(run_date)
+            summary = goal_progress_mod.compute_weekly_activity_summary(
+                user_id=user_id,
+                week_start=week_start,
+                strength_events=strength,
+                running_sessions=running,
+                cardio_events=cardio,
+            )
+            io.persist_weekly_summary(summary)
+
     def do_stat_signals() -> None:
         window = result.daily_metrics_window
         if window is None:
@@ -181,6 +234,7 @@ def run_daily_pipeline(
             daily_metrics=result.daily_metrics or {},
             stat_signals=result.stat_signals,
             active_patterns=active_patterns,
+            goal_snapshot=result.goal_snapshot,
         )
         if io.persist_briefing is not None:
             io.persist_briefing(result.briefing.to_row())
@@ -198,6 +252,7 @@ def run_daily_pipeline(
     # silently dropped the deterministic flags.
     if not step("evaluate_rules", do_rules):
         return result
+    step("goal_snapshot", do_goal_snapshot)
     if not step("compute_stat_signals", do_stat_signals):
         return result
     if not step("generate_briefing", do_briefing):

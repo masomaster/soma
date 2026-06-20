@@ -95,6 +95,19 @@ def _dedupe_batch(cardio_rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any
     return kept, dropped
 
 
+def apple_cardio_rows_to_drop(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return ``apple_health`` cardio rows to delete (keep richest per near-dup cluster).
+
+    Uses the same rules as :func:`_dedupe_batch` / ingest-time dedup. Safe for
+    retroactive DB cleanup — callers delete by ``source_id`` or row ``id``.
+    """
+    kept, dropped = _dedupe_batch(rows)
+    if dropped == 0:
+        return []
+    kept_ids = {id(r) for r in kept}
+    return [r for r in rows if id(r) not in kept_ids]
+
+
 def _load_existing_apple_cardio(
     cur: Any,
     *,

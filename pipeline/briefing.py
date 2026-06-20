@@ -49,6 +49,7 @@ SYSTEM_GUIDELINES = (
     "anomalies list is empty, do not invent statistical outliers. "
     "TRENDS lists EWMA drift signals — narrate only if present. "
     "ACTIVE_PATTERNS lists confirmed cross-metric correlations — cite briefly, do not invent new ones. "
+    "GOALS_STATUS and TODAYS_FOCUS are pre-computed weekly goal progress — narrate; do not invent counts. "
     "Use plain sentences; at most light Markdown (bold, short bullets). "
     "Keep it under 150 words, warm but direct."
 )
@@ -94,6 +95,7 @@ def build_prompt(
     daily_metrics: Mapping[str, Any] | None = None,
     stat_signals: Mapping[str, Any] | None = None,
     active_patterns: Sequence[str] | None = None,
+    goal_snapshot: Mapping[str, Any] | None = None,
 ) -> str:
     """Render the user prompt: the pre-computed flags + features the model must narrate."""
     flag_lines = (
@@ -125,6 +127,18 @@ def build_prompt(
         if not stat_block.get("anomalies")
         else "Z-score outliers (do not recompute; narrate briefly if relevant beside flags)."
     )
+    goal_block = ""
+    if goal_snapshot:
+        gs = goal_snapshot.get("goals_status") or {}
+        mc = goal_snapshot.get("mileage_check")
+        focus = goal_snapshot.get("todays_focus")
+        goal_block = (
+            f"GOALS_STATUS (pre-computed weekly progress):\n"
+            f"{json.dumps(gs, indent=2, sort_keys=True, default=str)}\n\n"
+            f"MILEAGE_CHECK:\n"
+            f"{json.dumps(mc, indent=2, sort_keys=True, default=str)}\n\n"
+            f"TODAYS_FOCUS (deterministic — narrate, do not replan):\n{focus}\n\n"
+        )
     return (
         f"Date: {feature_date.isoformat()}\n\n"
         f"FLAGS (pre-computed, narrate these in priority order):\n{flag_lines}\n\n"
@@ -134,6 +148,7 @@ def build_prompt(
         f"TRENDS (EWMA drift; narrate only if non-empty):\n"
         f"{json.dumps(trends, indent=2, sort_keys=True, default=str)}\n\n"
         f"ACTIVE_PATTERNS (stored correlations; do not invent):\n{patterns_lines}\n\n"
+        f"{goal_block}"
         "UNITS / INTERPRETATION (do not contradict):\n"
         "- strength_tonnage_7d is US short tons (2000 lb): sum over the window of "
         "(reps x weight_lbs) / 2000. Do not call it \"metric tonnes\" unless you "
@@ -168,6 +183,7 @@ def generate_briefing(
     daily_metrics: Mapping[str, Any] | None = None,
     stat_signals: Mapping[str, Any] | None = None,
     active_patterns: Sequence[str] | None = None,
+    goal_snapshot: Mapping[str, Any] | None = None,
     model: str = DEFAULT_BRIEFING_MODEL,
 ) -> Briefing:
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
@@ -183,6 +199,7 @@ def generate_briefing(
         daily_metrics=daily_metrics,
         stat_signals=stat_block,
         active_patterns=active_patterns,
+        goal_snapshot=goal_snapshot,
     )
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
@@ -192,6 +209,10 @@ def generate_briefing(
     features_json["stat_signals"] = stat_block
     if active_patterns:
         features_json["active_patterns"] = list(active_patterns)
+    if goal_snapshot:
+        features_json["goals_status"] = goal_snapshot.get("goals_status")
+        features_json["mileage_check"] = goal_snapshot.get("mileage_check")
+        features_json["todays_focus"] = goal_snapshot.get("todays_focus")
     return Briefing(
         user_id=user_id,
         briefing_date=feature_date,

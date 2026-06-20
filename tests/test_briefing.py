@@ -46,6 +46,18 @@ def test_build_prompt_includes_stat_signals_block():
     assert "-2.5" in prompt
 
 
+def test_build_prompt_includes_goal_snapshot():
+    snap = {
+        "goals_status": {"strength": {"completed": 1, "target": "3-4x", "status": "behind"}},
+        "mileage_check": {"this_week_km": 5.0},
+        "todays_focus": "Strength session needed",
+    }
+    prompt = B.build_prompt(feature_date=RUN, flags=[], features={}, goal_snapshot=snap)
+    assert "GOALS_STATUS" in prompt
+    assert "TODAYS_FOCUS" in prompt
+    assert "Strength session needed" in prompt
+
+
 def test_generate_briefing_uses_llm_and_maps_to_row():
     captured = {}
 
