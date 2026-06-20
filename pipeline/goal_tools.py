@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from typing import Any
@@ -294,11 +294,12 @@ def apply_tool_call(
 def apply_coaching_writes(
     cur: Any,
     pending_writes: Sequence[Mapping[str, Any]],
+    *,
+    append_note: Callable[[str], str] | None = None,
 ) -> list[str]:
-    """Persist validated coaching chat tool results to Postgres.
+    """Persist validated coaching chat tool results to Postgres / guidelines.
 
-    Returns human-readable summaries of applied actions. ``append_goal_note``
-    is accepted but not written until Phase 10 narrative storage exists.
+    ``append_note`` handles ``append_goal_note`` when Phase 10 storage is wired.
     """
     from pipeline import persistence
 
@@ -328,5 +329,7 @@ def apply_coaching_writes(
                 f"Schedule exception {row.get('start_date')}–{row.get('end_date')}"
             )
         elif action == "append_goal_note":
-            continue
+            text = write.get("text")
+            if isinstance(text, str) and append_note is not None:
+                applied.append(append_note(text))
     return applied

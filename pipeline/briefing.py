@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from pipeline.guidelines import GuidelinesContext, format_guidelines_for_prompt
 from pipeline.rules import Flag
 
 logger = logging.getLogger(__name__)
@@ -50,6 +51,8 @@ SYSTEM_GUIDELINES = (
     "TRENDS lists EWMA drift signals — narrate only if present. "
     "ACTIVE_PATTERNS lists confirmed cross-metric correlations — cite briefly, do not invent new ones. "
     "GOALS_STATUS and TODAYS_FOCUS are pre-computed weekly goal progress — narrate; do not invent counts. "
+    "PERSONAL GOALS and INJURY HISTORY blocks are athlete-provided context — respect injury constraints "
+    "and do not invent injuries or goals beyond what is stated. "
     "Use plain sentences; at most light Markdown (bold, short bullets). "
     "Keep it under 150 words, warm but direct."
 )
@@ -96,6 +99,7 @@ def build_prompt(
     stat_signals: Mapping[str, Any] | None = None,
     active_patterns: Sequence[str] | None = None,
     goal_snapshot: Mapping[str, Any] | None = None,
+    guidelines: GuidelinesContext | None = None,
 ) -> str:
     """Render the user prompt: the pre-computed flags + features the model must narrate."""
     flag_lines = (
@@ -139,7 +143,9 @@ def build_prompt(
             f"{json.dumps(mc, indent=2, sort_keys=True, default=str)}\n\n"
             f"TODAYS_FOCUS (deterministic — narrate, do not replan):\n{focus}\n\n"
         )
+    guidelines_block = format_guidelines_for_prompt(guidelines)
     return (
+        f"{guidelines_block}"
         f"Date: {feature_date.isoformat()}\n\n"
         f"FLAGS (pre-computed, narrate these in priority order):\n{flag_lines}\n\n"
         f"FEATURES (rolling computed metrics):\n{feature_blob}\n\n"
@@ -184,6 +190,7 @@ def generate_briefing(
     stat_signals: Mapping[str, Any] | None = None,
     active_patterns: Sequence[str] | None = None,
     goal_snapshot: Mapping[str, Any] | None = None,
+    guidelines: GuidelinesContext | None = None,
     model: str = DEFAULT_BRIEFING_MODEL,
 ) -> Briefing:
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
@@ -200,6 +207,7 @@ def generate_briefing(
         stat_signals=stat_block,
         active_patterns=active_patterns,
         goal_snapshot=goal_snapshot,
+        guidelines=guidelines,
     )
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:

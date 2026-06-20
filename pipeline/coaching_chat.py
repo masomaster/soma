@@ -12,10 +12,12 @@ from typing import Any
 
 from pipeline.briefing import LLMClient, SYSTEM_GUIDELINES
 from pipeline.goal_tools import COACHING_TOOL_SCHEMAS, apply_tool_call
+from pipeline.guidelines import GuidelinesContext, format_guidelines_for_prompt
 
 CHAT_SYSTEM = (
     f"{SYSTEM_GUIDELINES}\n\n"
-    "You are also in a coaching chat. Answer using the DASHBOARD_CONTEXT JSON. "
+    "You are also in a coaching chat. Answer using the DASHBOARD_CONTEXT JSON and any "
+    "PERSONAL GOALS / INJURY HISTORY blocks above it. Respect injury constraints. "
     "For goal or run changes, respond with a JSON block on its own line: "
     '{"tool_calls": [{"name": "...", "arguments": {...}}]}. '
     "Use tools from the fixed list only. Confirm material changes briefly."
@@ -27,6 +29,7 @@ def format_chat_prompt(
     dashboard_context: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]],
     user_message: str,
+    guidelines: GuidelinesContext | None = None,
 ) -> str:
     """Build the user prompt for one chat turn."""
     history_lines: list[str] = []
@@ -37,7 +40,9 @@ def format_chat_prompt(
     ctx_blob = json.dumps(dashboard_context, indent=2, sort_keys=True, default=str)
     tools_blob = json.dumps(COACHING_TOOL_SCHEMAS, indent=2)
     history = "\n".join(history_lines) if history_lines else "(no prior messages)"
+    guidelines_block = format_guidelines_for_prompt(guidelines)
     return (
+        f"{guidelines_block}"
         f"DASHBOARD_CONTEXT:\n{ctx_blob}\n\n"
         f"AVAILABLE_TOOLS:\n{tools_blob}\n\n"
         f"CHAT_HISTORY:\n{history}\n\n"
@@ -68,12 +73,14 @@ def run_coaching_turn(
     dashboard_context: Mapping[str, Any],
     messages: Sequence[Mapping[str, Any]],
     llm: LLMClient,
+    guidelines: GuidelinesContext | None = None,
 ) -> dict[str, Any]:
     """One chat turn: LLM reply + optional validated tool invocations."""
     prompt = format_chat_prompt(
         dashboard_context=dashboard_context,
         messages=messages,
         user_message=user_message,
+        guidelines=guidelines,
     )
     reply = llm(CHAT_SYSTEM, prompt).strip()
     tool_calls_raw = extract_tool_calls(reply)
@@ -99,3 +106,41 @@ def run_coaching_turn(
         "tool_results": tool_results,
         "pending_writes": pending_writes,
     }
+
+
+def load_chat_messages(
+    conn: Any,
+    *,
+    user_id: str,
+    limit: int = 50,
+) -> list[dict[str, str]]:
+    """Load recent coaching chat rows for one user."""
+    from psycopg2.extras import RealDictCursor
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            "SELECT role, content FROM coaching_chat_messages "
+            "WHERE user_id = %s ORDER BY created_at DESC LIMIT %s",
+            (user_id, limit),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+    rows.reverse()
+    return [{"role": r["role"], "content": r["content"]} for r in rows]
+
+
+def save_chat_messages(
+    conn: Any,
+    *,
+    user_id: str,
+    messages: Sequence[tuple[str, str]],
+) -> None:
+    """Persist new chat messages (role, content pairs)."""
+    if not messages:
+        return
+    with conn.cursor() as cur:
+        for role, content in messages:
+            cur.execute(
+                "INSERT INTO coaching_chat_messages (user_id, role, content) "
+                "VALUES (%s, %s, %s)",
+                (user_id, role, content),
+            )

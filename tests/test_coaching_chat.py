@@ -12,6 +12,20 @@ def test_extract_tool_calls():
     assert calls[0]["name"] == "log_run"
 
 
+def test_run_coaching_turn_includes_guidelines_in_prompt():
+    from pipeline.coaching_chat import format_chat_prompt
+    from pipeline.guidelines import GuidelinesContext
+
+    prompt = format_chat_prompt(
+        dashboard_context={"user_id": "u1"},
+        messages=[],
+        user_message="Hello",
+        guidelines=GuidelinesContext(injury_history="Avoid overhead press."),
+    )
+    assert "INJURY HISTORY" in prompt
+    assert "overhead" in prompt.lower()
+
+
 def test_run_coaching_turn_mock_llm():
     ctx = {"user_id": "u1", "todays_focus": "Rest day"}
     turn = run_coaching_turn(

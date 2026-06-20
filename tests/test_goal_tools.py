@@ -63,6 +63,26 @@ def test_apply_tool_schedule_exception():
     assert out["row"]["start_date"] == date(2024, 6, 10)
 
 
+def test_apply_coaching_writes_append_note():
+    notes: list[str] = []
+
+    def append_note(text: str) -> str:
+        notes.append(text)
+        return "noted"
+
+    pending = [
+        apply_tool_call("append_goal_note", {"text": "Easy week ahead."}, user_id="u1")
+    ]
+
+    class _Cur:
+        def execute(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    applied = apply_coaching_writes(_Cur(), pending, append_note=append_note)
+    assert applied == ["noted"]
+    assert notes == ["Easy week ahead."]
+
+
 def test_apply_coaching_writes_upsert_goal():
     class _Cur:
         def execute(self, *args: object, **kwargs: object) -> None:

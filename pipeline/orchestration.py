@@ -52,6 +52,7 @@ class DailyPipelineIO:
     persist_statistical_anomalies: Callable[[str, date, dict[str, Any]], None] | None = None
     persist_metric_baselines: Callable[[Sequence[Row]], None] | None = None
     load_active_patterns: Callable[[str, date], Sequence[Row]] | None = None
+    load_guidelines: Callable[[str], Any] | None = None
     load_goals: Callable[[str, date], Sequence[Row]] | None = None
     load_running_sessions: Callable[[str, date], Sequence[Row]] | None = None
     load_schedule_exceptions: Callable[[str, date], Sequence[Row]] | None = None
@@ -225,6 +226,7 @@ def run_daily_pipeline(
             active_patterns = metric_patterns_mod.active_pattern_summaries(
                 io.load_active_patterns(user_id, run_date)
             )
+        guidelines = io.load_guidelines(user_id) if io.load_guidelines is not None else None
         result.briefing = generate_briefing(
             user_id=user_id,
             feature_date=run_date,
@@ -235,6 +237,7 @@ def run_daily_pipeline(
             stat_signals=result.stat_signals,
             active_patterns=active_patterns,
             goal_snapshot=result.goal_snapshot,
+            guidelines=guidelines,
         )
         if io.persist_briefing is not None:
             io.persist_briefing(result.briefing.to_row())
