@@ -140,7 +140,7 @@ This means the API endpoint, the query frontend, and the natural language query 
 ### User-Specific Configuration
 
 Each user has their own:
-- Guidelines files in S3, keyed by `user_id`: `s3://bucket/users/{user_id}/guidelines/my-goals.md`
+- Guidelines files in S3, keyed by `user_id`: `s3://bucket/users/{user_id}/guidelines/my-goals.md`, `injury-history.md`, `expert-principles.md`
 - SSM parameters scoped per user: `/soma/{user_id}/rules/cardio_weekly_min`
 - ETL credentials in Secrets Manager: `soma/{user_id}/hevy-api-key`
 - Delivery preferences (email address, notification time) in a `user_settings` table
@@ -1184,6 +1184,9 @@ Statistical anomalies detected:
 --- PERSONAL GOALS (my-goals.md) ---
 {goals}
 
+--- INJURY HISTORY (injury-history.md) ---
+{injury_history}
+
 --- EXPERT PRINCIPLES (expert-principles.md) ---
 {principles}
 
@@ -1199,7 +1202,7 @@ Reference the calendar if relevant. Narrate — don't restate all the numbers.
 
 ## Guidelines Files
 
-Two markdown files in S3, both injected into every LLM prompt. LLM cites the source when drawing on either.
+Three markdown files in S3, all injected into every LLM prompt (briefing and, when wired, coaching chat). LLM cites the source when drawing on any of them.
 
 ### `guidelines/{user_id}/my-goals.md` — Personal Goals & Context
 
@@ -1225,10 +1228,33 @@ Your goals, schedule, health flags, upcoming events. Edit whenever goals change 
 
 ## Current Health Context
 - Elevated LDL — aerobic exercise is a primary intervention
-- [Medications, injuries, or flags]
+- [Medications or non-injury health flags — see injury-history.md for injuries]
 
 ## Upcoming Events
 - Mountain Viking biking trip: September 2026
+```
+
+### `guidelines/{user_id}/injury-history.md` — Injury History & Movement Constraints
+
+Past and current injuries the coach must respect. Edit when status changes (flare, cleared, new limitation) — re-upload to S3, no deployment needed. The LLM should **not** recommend loading patterns that conflict with active entries here.
+
+```markdown
+# Injury History
+
+## Active / limiting (as of YYYY-MM-DD)
+- **Left shoulder impingement** (since 2025-11): avoid overhead pressing > moderate load; prefer neutral-grip pressing; stop if sharp pain in bottom third of ROM.
+- **Right Achilles tendinopathy** (since 2026-03): cap weekly running volume increases at 10%; no hill sprints until cleared.
+
+## Resolved / watch list
+- **Lumbar strain** (2024-08, resolved): deadlift from blocks if morning stiffness > usual.
+
+## General constraints
+- No max-effort singles on lower back within 48h of long bike days.
+- Deload upper push if shoulder symptoms return for 2+ sessions.
+
+## Notes for the coach
+- Prefer substituting movements over pushing through joint pain.
+- When ACWR or load flags fire, cross-check against active injuries before recommending intensity increases.
 ```
 
 ### `guidelines/{user_id}/expert-principles.md` — Expert Training Principles
@@ -1394,7 +1420,7 @@ Create a bot via BotFather. Store token + chat ID in Secrets Manager. One `reque
 - Promote to production; set up Supabase prod project
 - Add Apple Health Auto Export → webhook → Lambda ETL
 - Expand Rules Engine to full rule set
-- Populate `my-goals.md` + `expert-principles.md`, upload to S3
+- Populate `my-goals.md`, `injury-history.md`, and `expert-principles.md`, upload to S3
 - First real production briefing
 
 ### Phase 3 — Full Data Sources (Weekend 3)
@@ -1652,6 +1678,7 @@ Monitor the first week of production briefings. Tune SSM thresholds as needed. U
 - Briefing tone wrong → edit prompt in Lambda (requires deploy)
 - Wrong principles cited → edit `expert-principles.md` in S3 (no deploy)
 - Goal changes → edit `my-goals.md` in S3 (no deploy)
+- Injury/limitation updates → edit `injury-history.md` in S3 (no deploy)
 
 ---
 
@@ -1668,7 +1695,7 @@ AWS
                    briefing, text-to-SQL API
   SES            — outbound email
   S3             — /raw/{user_id}/{source}/{date}/ (permanent raw JSON)
-                   /guidelines/{user_id}/ (my-goals.md, expert-principles.md)
+                   /guidelines/{user_id}/ (my-goals.md, injury-history.md, expert-principles.md)
                    Lambda deployment packages
   Secrets Manager — API keys, tokens, passwords
   SSM Parameter   — rule thresholds (per env, per user)
