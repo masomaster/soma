@@ -114,10 +114,61 @@ _TABLES: dict[str, dict[str, Any]] = {
             }
         ),
     },
+    "daily_goal_snapshot": {
+        "conflict": ("user_id", "snapshot_date"),
+        "columns": frozenset(
+            {
+                "user_id",
+                "snapshot_date",
+                "goals_status",
+                "mileage_check",
+                "todays_focus",
+            }
+        ),
+    },
+    "weekly_activity_summary": {
+        "conflict": ("user_id", "week_start"),
+        "columns": frozenset(
+            {
+                "user_id",
+                "week_start",
+                "strength_sessions",
+                "running_km",
+                "cardio_minutes",
+                "summary_json",
+            }
+        ),
+    },
+    "goals": {
+        "conflict": ("user_id", "goal_type"),
+        "columns": frozenset(
+            {
+                "user_id",
+                "goal_type",
+                "target_min",
+                "target_max",
+                "target_label",
+                "period",
+                "is_active",
+                "effective_from",
+                "effective_until",
+                "notes",
+            }
+        ),
+    },
 }
 
 # JSONB columns are serialized before binding so callers can pass plain dicts.
-_JSONB_COLUMNS = frozenset({"recommendations", "features_json", "anomalies"})
+_JSONB_COLUMNS = frozenset(
+    {
+        "recommendations",
+        "features_json",
+        "anomalies",
+        "goals_status",
+        "mileage_check",
+        "summary_json",
+    }
+)
 
 
 def _prepare(table: str, row: Mapping[str, Any]) -> tuple[list[str], list[Any]]:
@@ -386,3 +437,72 @@ def replace_metric_patterns(cur: Any, *, user_id: str, rows: Sequence[Mapping[st
                 row.get("description"),
             ),
         )
+
+
+_RUNNING_SESSION_COLUMNS: frozenset[str] = frozenset(
+    {
+        "user_id",
+        "session_date",
+        "run_type",
+        "distance_km",
+        "duration_min",
+        "notes",
+        "source",
+        "source_id",
+    }
+)
+
+
+def insert_running_session(cur: Any, row: Mapping[str, Any]) -> None:
+    """Insert one running session (ON CONFLICT DO NOTHING)."""
+    unknown = set(row) - _RUNNING_SESSION_COLUMNS
+    if unknown:
+        raise KeyError(f"running_sessions row has unknown column(s): {sorted(unknown)}")
+    for key in ("user_id", "session_date", "run_type", "source", "source_id"):
+        if row.get(key) is None:
+            raise KeyError(f"running_sessions row missing required field {key!r}")
+    cols = list(row.keys())
+    values = [row[c] for c in cols]
+    statement = sql.SQL(
+        "INSERT INTO running_sessions ({cols}) VALUES ({ph}) "
+        "ON CONFLICT (user_id, source, source_id) DO NOTHING"
+    ).format(
+        cols=sql.SQL(", ").join(sql.Identifier(c) for c in cols),
+        ph=sql.SQL(", ").join(sql.Placeholder() * len(cols)),
+    )
+    cur.execute(statement, values)
+
+
+_SCHEDULE_EXCEPTION_COLUMNS: frozenset[str] = frozenset(
+    {
+        "user_id",
+        "start_date",
+        "end_date",
+        "affected_goal_types",
+        "override_hint",
+        "reason",
+    }
+)
+
+
+def insert_schedule_exception(cur: Any, row: Mapping[str, Any]) -> None:
+    """Insert a schedule exception row."""
+    unknown = set(row) - _SCHEDULE_EXCEPTION_COLUMNS
+    if unknown:
+        raise KeyError(f"schedule_exceptions row has unknown column(s): {sorted(unknown)}")
+    for key in ("user_id", "start_date", "end_date", "affected_goal_types"):
+        if row.get(key) is None:
+            raise KeyError(f"schedule_exceptions row missing required field {key!r}")
+    cur.execute(
+        "INSERT INTO schedule_exceptions "
+        "(user_id, start_date, end_date, affected_goal_types, override_hint, reason) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (
+            row["user_id"],
+            row["start_date"],
+            row["end_date"],
+            row["affected_goal_types"],
+            row.get("override_hint"),
+            row.get("reason"),
+        ),
+    )

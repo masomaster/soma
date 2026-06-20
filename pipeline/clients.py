@@ -192,10 +192,44 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
             (user_id, "active"),
         )
 
+    def load_goals(user_id: str, d: date) -> list[dict[str, Any]]:
+        del d
+        return _query(
+            "SELECT goal_type, target_min, target_max, target_label, period, is_active, "
+            "effective_from, effective_until, notes FROM goals "
+            "WHERE user_id = %s AND is_active = TRUE",
+            (user_id,),
+        )
+
+    def load_running_sessions(user_id: str, d: date) -> list[dict[str, Any]]:
+        return _query(
+            "SELECT session_date, run_type, distance_km, duration_min, source "
+            "FROM running_sessions WHERE user_id = %s AND session_date BETWEEN %s AND %s",
+            (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
+        )
+
+    def load_schedule_exceptions(user_id: str, d: date) -> list[dict[str, Any]]:
+        return _query(
+            "SELECT start_date, end_date, affected_goal_types, override_hint, reason "
+            "FROM schedule_exceptions WHERE user_id = %s AND end_date >= %s",
+            (user_id, d - timedelta(days=14)),
+        )
+
+    def load_interventions(user_id: str, d: date) -> list[dict[str, Any]]:
+        return _query(
+            "SELECT event_date, category, description FROM interventions "
+            "WHERE user_id = %s AND event_date BETWEEN %s AND %s",
+            (user_id, d - timedelta(days=7), d + timedelta(days=7)),
+        )
+
     return {
         "load_biometrics_today": load_biometrics_today,
         "load_daily_metrics_window": load_daily_metrics_window,
         "load_strength_events": load_strength_events,
         "load_cardio_events": load_cardio_events,
         "load_active_patterns": load_active_patterns,
+        "load_goals": load_goals,
+        "load_running_sessions": load_running_sessions,
+        "load_schedule_exceptions": load_schedule_exceptions,
+        "load_interventions": load_interventions,
     }

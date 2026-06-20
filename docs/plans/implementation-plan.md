@@ -310,7 +310,7 @@ User (chat / dashboard / email)
 
 #### Slice A — Structured goals & daily plan (build first)
 
-**Status:** Planned — not yet in repo (`pipeline/goal_progress.py`, goals migration, edge functions).
+**Status:** **Repo slice complete (2026-06):** migration `0005_goals_and_product.sql`, `pipeline/goal_progress.py`, `pipeline/mileage_ramp.py`, orchestration `goal_snapshot` step, briefing injection; offline tests. Operator: apply `0005` to staging; seed `goals` rows. Supabase Edge Functions (`log-run`, `update-goal`) deferred — use `pipeline/goal_tools.py` + dashboard instead.
 
 Ship Slice A deliverables (full schema SQL can live in a future `docs/plans/goals-running-daily-planning.md` or migration comments):
 
@@ -324,7 +324,7 @@ Ship Slice A deliverables (full schema SQL can live in a future `docs/plans/goal
 
 #### Slice B — Natural-language goal updates (control plane)
 
-**Status:** Planned — depends on Slice A.
+**Status:** **Repo slice complete (2026-06):** `pipeline/goal_tools.py` (parse → `GoalPatch`, tool schemas, `apply_tool_call`); shared with Slice C chat. NL parse uses injected LLM; narrative `my-goals.md` writes deferred to Phase 10.
 
 Let the user say “drop intervals this week” or “I’m targeting 2 strength days until September” in chat or a simple form:
 
@@ -339,7 +339,7 @@ Let the user say “drop intervals this week” or “I’m targeting 2 strength
 
 #### Slice C — Dashboard, bounded queries, and coaching chat
 
-**Status:** Planned — **Phase 9** product shape; extends Phase 9 below.
+**Status:** **Repo slice complete (2026-06):** `pipeline/dashboard_queries.py`, `pipeline/coaching_chat.py`, bounded SQL guard; Streamlit spike at `dashboard/app.py` (`pip install -e '.[dashboard]'`). Next.js PWA + live Supabase auth deferred.
 
 Two surfaces on the same auth + RLS (or read-only SQL) path:
 
@@ -352,7 +352,7 @@ Two surfaces on the same auth + RLS (or read-only SQL) path:
 
 #### Slice D — Calendar-aware schedule adaptation (optional)
 
-**Status:** Optional — after Slice C.
+**Status:** **Repo slice complete (2026-06):** `schedule_exceptions` table + `pipeline/schedule_context.py`; integrated into `suggest_todays_focus`. CalDAV on-demand fetch remains optional (busy blocks already in `interventions`).
 
 Go beyond week-level `suggest_todays_focus` when life interrupts the plan:
 
@@ -365,6 +365,8 @@ Go beyond week-level `suggest_todays_focus` when life interrupts the plan:
 ---
 
 ### Phase 9 — User app: homepage / dashboard + bounded queries (optional stack)
+
+**Repo status (2026-06):** Streamlit dashboard spike (`dashboard/app.py`) with fixture mode + coaching chat wired to `pipeline/coaching_chat.py`. `provider_connections` table for sync health. **Operator next:** apply `0005`, connect live Supabase + auth; multi-user provider OAuth still manual (see below).
 
 **Product shape:** Not only an NL-query playground — ship a **homepage / dashboard** the user actually opens: key **daily features** and trends, **latest briefing** (link, excerpt, or light embed), **integration / sync health** (connected sources, last successful pull), **weekly / monthly training load** (modality-split external load first — see [workload-indicators.md](./workload-indicators.md) and the **Weekly / monthly workload** section above), **weekly goal progress** ([Slice A](#slice-a--structured-goals--daily-plan-build-first)), and simple tables or charts where they add clarity. Layer **[Slice C](#slice-c--dashboard-bounded-queries--coaching-chat)** on top: bounded natural-language history queries **and** multi-turn coaching chat with validated write tools — same auth and RLS-backed or read-only DB path, not instead of the dashboard shell.
 
