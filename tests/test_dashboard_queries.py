@@ -6,7 +6,11 @@ from datetime import date
 
 import pytest
 
-from pipeline.dashboard_queries import build_dashboard_context, validate_bounded_sql
+from pipeline.dashboard_queries import (
+    build_dashboard_context,
+    fetch_dashboard_source_rows,
+    validate_bounded_sql,
+)
 
 
 def test_build_dashboard_context_keys():
@@ -35,3 +39,36 @@ def test_validate_bounded_sql_accepts_select_with_user():
         user_id="abc-123",
     )
     assert sql.startswith("SELECT")
+
+
+def test_fetch_dashboard_source_rows_from_injected_queries():
+    def query_one(sql: str, params: tuple) -> dict | None:
+        if "daily_briefings" in sql:
+            return {
+                "briefing_date": date(2024, 6, 8),
+                "coaching_note": "Go easy",
+                "flags": ["LOW_HRV"],
+            }
+        if "daily_goal_snapshot" in sql:
+            return {
+                "snapshot_date": date(2024, 6, 8),
+                "goals_status": {"strength": {"status": "on_track"}},
+                "mileage_check": {"flag": None},
+                "todays_focus": "Easy run",
+            }
+        return None
+
+    def query_all(sql: str, params: tuple) -> list[dict]:
+        if "provider_connections" in sql:
+            return [{"provider": "hevy", "status": "connected", "last_sync_at": None, "last_error": None}]
+        return []
+
+    ctx = fetch_dashboard_source_rows(
+        user_id="u1",
+        as_of=date(2024, 6, 8),
+        query_one=query_one,
+        query_all=query_all,
+    )
+    assert ctx["briefing"]["coaching_note"] == "Go easy"
+    assert ctx["todays_focus"] == "Easy run"
+    assert ctx["sync_health"][0]["provider"] == "hevy"

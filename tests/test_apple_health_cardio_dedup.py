@@ -111,3 +111,19 @@ def test_filter_drops_incoming_when_db_has_near_match() -> None:
     )
     assert dropped == 1
     assert kept == []
+
+
+def test_apple_cardio_rows_to_drop_matches_batch_dedup() -> None:
+    d = date(2024, 6, 2)
+    from pipeline.apple_health_cardio_dedup import apple_cardio_rows_to_drop
+
+    sparse = _row(source_id="apple_health:sparse", event_date=d, distance_miles=None)
+    rich = _row(
+        source_id="apple_health:rich",
+        event_date=d,
+        distance_miles=3.1,
+        avg_hr=150,
+    )
+    drops = apple_cardio_rows_to_drop([sparse, rich])
+    assert len(drops) == 1
+    assert drops[0]["source_id"] == "apple_health:sparse"

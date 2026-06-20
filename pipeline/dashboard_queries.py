@@ -8,9 +8,14 @@ explicit user filter.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from datetime import date
+from collections.abc import Callable, Mapping, Sequence
+from datetime import date, timedelta
 from typing import Any
+
+from pipeline.features import ACUTE_WINDOW_DAYS
+
+QueryOne = Callable[[str, tuple[Any, ...]], Mapping[str, Any] | None]
+QueryAll = Callable[[str, tuple[Any, ...]], Sequence[Mapping[str, Any]]]
 
 # Tables the bounded NL query layer may reference (Slice C).
 ALLOWED_QUERY_TABLES = frozenset(
@@ -123,9 +128,139 @@ def build_dashboard_context(
                 "description": a.get("description"),
                 "severity": a.get("severity"),
             }
-            for a in recent_anomalies[:8]
+            for a in recent_anomalies
         ]
     return ctx
+
+
+def fetch_dashboard_source_rows(
+    *,
+    user_id: str,
+    as_of: date,
+    query_one: QueryOne,
+    query_all: QueryAll,
+) -> dict[str, Any]:
+    """Load latest dashboard rows via injected read-only queries."""
+    latest_briefing = query_one(
+        "SELECT briefing_date, coaching_note, flags FROM daily_briefings "
+        "WHERE user_id = %s AND briefing_date <= %s "
+        "ORDER BY briefing_date DESC LIMIT 1",
+        (user_id, as_of),
+    )
+    latest_features = query_one(
+        "SELECT feature_date, strength_sessions_7d, cardio_minutes_7d, "
+        "training_load_cardio_minutes_7d, training_load_cardio_minutes_28d, "
+        "training_load_strength_short_tons_7d, effort_unified_index_7d, "
+        "overall_readiness_score FROM daily_features "
+        "WHERE user_id = %s AND feature_date <= %s "
+        "ORDER BY feature_date DESC LIMIT 1",
+        (user_id, as_of),
+    )
+    latest_metrics = query_one(
+        "SELECT metric_date, hrv_rmssd, sleep_hours, resting_hr "
+        "FROM daily_health_metrics "
+        "WHERE user_id = %s AND metric_date <= %s "
+        "ORDER BY metric_date DESC LIMIT 1",
+        (user_id, as_of),
+    )
+    snapshot_row = query_one(
+        "SELECT snapshot_date, goals_status, mileage_check, todays_focus "
+        "FROM daily_goal_snapshot "
+        "WHERE user_id = %s AND snapshot_date <= %s "
+        "ORDER BY snapshot_date DESC LIMIT 1",
+        (user_id, as_of),
+    )
+    weekly_summary = query_one(
+        "SELECT week_start, strength_sessions, running_km, cardio_minutes "
+        "FROM weekly_activity_summary "
+        "WHERE user_id = %s AND week_start <= %s "
+        "ORDER BY week_start DESC LIMIT 1",
+        (user_id, as_of),
+    )
+    provider_connections = list(
+        query_all(
+            "SELECT provider, status, last_sync_at, last_error "
+            "FROM provider_connections WHERE user_id = %s ORDER BY provider",
+            (user_id,),
+        )
+    )
+    recent_anomalies = list(
+        query_all(
+            "SELECT detected_date, metric, description, severity "
+            "FROM anomaly_events "
+            "WHERE user_id = %s AND detected_date <= %s "
+            "ORDER BY detected_date DESC LIMIT 8",
+            (user_id, as_of),
+        )
+    )
+    return build_dashboard_context(
+        user_id=user_id,
+        as_of=as_of,
+        latest_briefing=latest_briefing,
+        latest_features=latest_features,
+        latest_metrics=latest_metrics,
+        goal_snapshot=snapshot_row,
+        weekly_summary=weekly_summary,
+        provider_connections=provider_connections,
+        recent_anomalies=recent_anomalies,
+    )
+
+
+def load_dashboard_context_from_db(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+) -> dict[str, Any]:
+    """Load dashboard context from Postgres using a psycopg2 connection.
+
+    Uses a service-role or pooler URI (same as smoke scripts / briefing Lambda).
+    """
+    from psycopg2.extras import RealDictCursor
+
+    effective = as_of or date.today()
+
+    def query_one(sql: str, params: tuple[Any, ...]) -> Mapping[str, Any] | None:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, params)
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def query_all(sql: str, params: tuple[Any, ...]) -> Sequence[Mapping[str, Any]]:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+    return fetch_dashboard_source_rows(
+        user_id=user_id,
+        as_of=effective,
+        query_one=query_one,
+        query_all=query_all,
+    )
+
+
+def fetch_cardio_breakdown_7d(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+) -> list[dict[str, Any]]:
+    """Per-day cardio totals by source + activity (rolling 7d, matches features window)."""
+    from psycopg2.extras import RealDictCursor
+
+    effective = as_of or date.today()
+    window_start = effective - timedelta(days=ACUTE_WINDOW_DAYS - 1)
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            "SELECT event_date, source, activity_type, "
+            "COUNT(*) AS row_count, ROUND(SUM(duration_min)::numeric, 1) AS minutes "
+            "FROM cardio_events "
+            "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
+            "GROUP BY event_date, source, activity_type "
+            "ORDER BY event_date DESC, minutes DESC",
+            (user_id, window_start, effective),
+        )
+        return [dict(r) for r in cur.fetchall()]
 
 
 def _iso(val: Any) -> str | None:

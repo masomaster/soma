@@ -289,3 +289,44 @@ def apply_tool_call(
             },
         }
     raise ValueError(f"Unknown tool: {tool_name!r}")
+
+
+def apply_coaching_writes(
+    cur: Any,
+    pending_writes: Sequence[Mapping[str, Any]],
+) -> list[str]:
+    """Persist validated coaching chat tool results to Postgres.
+
+    Returns human-readable summaries of applied actions. ``append_goal_note``
+    is accepted but not written until Phase 10 narrative storage exists.
+    """
+    from pipeline import persistence
+
+    applied: list[str] = []
+    for write in pending_writes:
+        action = write.get("action")
+        if action == "upsert_goal":
+            row = write.get("row")
+            if not isinstance(row, Mapping):
+                continue
+            persistence.upsert_row(cur, "goals", row)
+            applied.append(f"Updated goal: {row.get('goal_type')}")
+        elif action == "insert_running_session":
+            row = write.get("row")
+            if not isinstance(row, Mapping):
+                continue
+            persistence.insert_running_session(cur, row)
+            applied.append(
+                f"Logged run: {row.get('run_type')} on {row.get('session_date')}"
+            )
+        elif action == "insert_schedule_exception":
+            row = write.get("row")
+            if not isinstance(row, Mapping):
+                continue
+            persistence.insert_schedule_exception(cur, row)
+            applied.append(
+                f"Schedule exception {row.get('start_date')}–{row.get('end_date')}"
+            )
+        elif action == "append_goal_note":
+            continue
+    return applied

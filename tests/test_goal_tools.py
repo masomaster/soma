@@ -8,6 +8,7 @@ from datetime import date
 import pytest
 
 from pipeline.goal_tools import (
+    apply_coaching_writes,
     apply_tool_call,
     parse_goal_patches_from_json,
     validate_patch,
@@ -60,3 +61,24 @@ def test_apply_tool_schedule_exception():
     )
     assert out["action"] == "insert_schedule_exception"
     assert out["row"]["start_date"] == date(2024, 6, 10)
+
+
+def test_apply_coaching_writes_upsert_goal():
+    class _Cur:
+        def execute(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    from unittest.mock import patch
+
+    cur = _Cur()
+    pending = [
+        apply_tool_call(
+            "update_goal",
+            {"goal_type": "strength", "target_min": 2, "target_max": 3},
+            user_id="u1",
+        )
+    ]
+    with patch("pipeline.persistence.upsert_row") as upsert:
+        applied = apply_coaching_writes(cur, pending)
+        upsert.assert_called_once()
+        assert applied == ["Updated goal: strength"]
