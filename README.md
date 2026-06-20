@@ -4,7 +4,7 @@
 
 ## What it does
 
-- **Ingest** from sources such as Hevy, Apple Health (via webhooks), Strava, Google Health, Renpho, and iCloud Calendar (read-only).
+- **Ingest** from **Hevy** (strength API), **Apple Health hub** (HAE webhook — Watch, Renpho body comp, Google/Fitbit via Health Sync, workouts), **Strava** (paused), and **iCloud Calendar** (CalDAV).
 - **Persist raw responses** to object storage before normalization so you can replay and recover from bugs.
 - **Normalize** into a user-scoped event store (planned: Supabase PostgreSQL with Row-Level Security).
 - **Compute** daily features, run a rules engine and anomaly layer, then **synthesize** coaching copy with an LLM (the model narrates pre-computed signals; it does not replace the logic layer).

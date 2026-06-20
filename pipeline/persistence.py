@@ -245,3 +245,144 @@ def replace_statistical_anomaly_events(
         detected_date,
         len(rows),
     )
+
+
+def replace_llm_pattern_anomaly_events(
+    cur: Any,
+    *,
+    user_id: str,
+    detected_date: date,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """Remove prior ``llm_pattern`` rows for ``(user_id, detected_date)``, then insert ``rows``."""
+    for row in rows:
+        unknown = set(row) - _STATISTICAL_ANOMALY_COLUMNS
+        if unknown:
+            raise KeyError(f"anomaly_events row has unknown column(s): {sorted(unknown)}")
+        for key in ("user_id", "detected_date", "anomaly_type", "description"):
+            if row.get(key) is None:
+                raise KeyError(f"anomaly_events row missing required field {key!r}")
+        if row.get("anomaly_type") != "llm_pattern":
+            raise KeyError("replace_llm_pattern_anomaly_events only accepts anomaly_type 'llm_pattern'")
+
+    cur.execute(
+        "DELETE FROM anomaly_events WHERE user_id = %s AND detected_date = %s AND anomaly_type = %s",
+        (user_id, detected_date, "llm_pattern"),
+    )
+    insert_sql = (
+        "INSERT INTO anomaly_events "
+        "(user_id, detected_date, metric, anomaly_type, description, severity, context_json) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s)"
+    )
+    for row in rows:
+        ctx = row.get("context_json")
+        ctx_bound: str | None = json.dumps(ctx) if ctx is not None else None
+        cur.execute(
+            insert_sql,
+            (
+                row["user_id"],
+                row["detected_date"],
+                row.get("metric"),
+                row["anomaly_type"],
+                row["description"],
+                row.get("severity"),
+                ctx_bound,
+            ),
+        )
+    logger.debug(
+        "Replaced llm_pattern anomaly_events for user %s on %s (%d row(s))",
+        user_id,
+        detected_date,
+        len(rows),
+    )
+
+
+_BASELINE_COLUMNS: frozenset[str] = frozenset(
+    {
+        "user_id",
+        "metric_date",
+        "metric",
+        "window_days",
+        "mean_value",
+        "stdev_value",
+        "sample_n",
+    }
+)
+
+
+def upsert_metric_baselines(cur: Any, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Upsert ``metric_baselines`` rows (ON CONFLICT update means)."""
+    if not rows:
+        return
+    insert_sql = (
+        "INSERT INTO metric_baselines "
+        "(user_id, metric_date, metric, window_days, mean_value, stdev_value, sample_n) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (user_id, metric_date, metric, window_days) DO UPDATE SET "
+        "mean_value = EXCLUDED.mean_value, stdev_value = EXCLUDED.stdev_value, "
+        "sample_n = EXCLUDED.sample_n, updated_at = NOW()"
+    )
+    for row in rows:
+        unknown = set(row) - _BASELINE_COLUMNS
+        if unknown:
+            raise KeyError(f"metric_baselines row has unknown column(s): {sorted(unknown)}")
+        cur.execute(
+            insert_sql,
+            (
+                row["user_id"],
+                row["metric_date"],
+                row["metric"],
+                row["window_days"],
+                row.get("mean_value"),
+                row.get("stdev_value"),
+                row.get("sample_n"),
+            ),
+        )
+
+
+_PATTERN_COLUMNS: frozenset[str] = frozenset(
+    {
+        "user_id",
+        "metric_a",
+        "metric_b",
+        "lag_days",
+        "correlation",
+        "sample_n",
+        "status",
+        "description",
+    }
+)
+
+
+def replace_metric_patterns(cur: Any, *, user_id: str, rows: Sequence[Mapping[str, Any]]) -> None:
+    """Replace all ``active`` patterns for a user with freshly computed rows."""
+    cur.execute(
+        "DELETE FROM metric_patterns WHERE user_id = %s AND status = %s",
+        (user_id, "active"),
+    )
+    insert_sql = (
+        "INSERT INTO metric_patterns "
+        "(user_id, metric_a, metric_b, lag_days, correlation, sample_n, status, description) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+        "ON CONFLICT (user_id, metric_a, metric_b, lag_days) DO UPDATE SET "
+        "correlation = EXCLUDED.correlation, sample_n = EXCLUDED.sample_n, "
+        "status = EXCLUDED.status, description = EXCLUDED.description, "
+        "last_confirmed_at = NOW()"
+    )
+    for row in rows:
+        unknown = set(row) - _PATTERN_COLUMNS
+        if unknown:
+            raise KeyError(f"metric_patterns row has unknown column(s): {sorted(unknown)}")
+        cur.execute(
+            insert_sql,
+            (
+                row["user_id"],
+                row["metric_a"],
+                row["metric_b"],
+                row["lag_days"],
+                row.get("correlation"),
+                row.get("sample_n"),
+                row.get("status", "active"),
+                row.get("description"),
+            ),
+        )

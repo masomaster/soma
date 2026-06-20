@@ -19,10 +19,9 @@ stays handler-only.
 
 from __future__ import annotations
 
-import json
 import os
 
-from aws_cdk import Aws, CfnCondition, CfnDeletionPolicy, CfnParameter, Duration, Fn, Stack, TimeZone
+from aws_cdk import Duration, Stack, TimeZone
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_iam as iam
@@ -30,25 +29,14 @@ from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_scheduler as scheduler
 from aws_cdk import aws_scheduler_targets as scheduler_targets
-from aws_cdk import aws_secretsmanager as secretsmanager
 from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as sns_subs
 from constructs import Construct
 
 from soma_cdk.pipeline_layer import build_pipeline_deps_layer
+from soma_cdk.runtime_secrets import RuntimeSecrets
 
 _LAMBDA_ASSET = os.path.join(os.path.dirname(__file__), "..", "lambda", "briefing")
-
-_RUNTIME_SECRET_PLACEHOLDER = json.dumps(
-    {
-        "DB_CONNECT_STRING": "update_me",
-        "ANTHROPIC_API_KEY": "update_me",
-        "SES_SENDER": "update_me",
-        "APPLE_HEALTH_WEBHOOK_SECRET": "update_me",
-        "HEVY_API_KEY": "update_me",
-        "SOMA_USER_ID": "update_me",
-    }
-)
 
 
 class DailyBriefingPipeline(Construct):
@@ -60,6 +48,7 @@ class DailyBriefingPipeline(Construct):
         construct_id: str,
         *,
         env_name: str,
+        runtime_secrets: RuntimeSecrets,
         schedule_hour_utc: int = 11,
         deps_layer: lambda_.ILayerVersion | None = None,
     ) -> None:
@@ -69,38 +58,6 @@ class DailyBriefingPipeline(Construct):
             layer: lambda_.ILayerVersion = deps_layer
         else:
             layer = build_pipeline_deps_layer(self, construct_id="PipelineDepsLayer")
-
-        stack = Stack.of(self)
-        seed_runtime_secret = CfnParameter(
-            stack,
-            f"{env_name.capitalize()}SeedLambdaRuntimeSecret",
-            type="String",
-            default="Yes",
-            allowed_values=["Yes", "No"],
-            description=(
-                "Yes: CloudFormation may set/reset the runtime secret JSON to update_me. "
-                "After replacing values in Secrets Manager, deploy with No so updates stop "
-                "sending SecretString (your console values are kept)."
-            ),
-        )
-        seed_yes = CfnCondition(
-            self,
-            f"{env_name.capitalize()}SeedLambdaRuntimeSecretYes",
-            expression=Fn.condition_equals(seed_runtime_secret.value_as_string, "Yes"),
-        )
-
-        runtime_secret = secretsmanager.CfnSecret(
-            self,
-            "LambdaRuntimeSecret",
-            name=f"soma-{env_name}-lambda-runtime",
-            description="DB URI, Anthropic key, SES From, optional Apple webhook HMAC, Hevy key + SOMA_USER_ID (JSON) for Lambdas",
-        )
-        runtime_secret.add_property_override(
-            "SecretString",
-            Fn.condition_if(seed_yes.logical_id, _RUNTIME_SECRET_PLACEHOLDER, Aws.NO_VALUE),
-        )
-        runtime_secret.cfn_options.deletion_policy = CfnDeletionPolicy.RETAIN
-        runtime_secret.cfn_options.update_replace_policy = CfnDeletionPolicy.RETAIN
 
         fn_name = f"soma-{env_name}-daily-briefing"
         self.function = lambda_.Function(
@@ -118,7 +75,7 @@ class DailyBriefingPipeline(Construct):
             environment={
                 "ENV": env_name,
                 "SOMA_RULES_PREFIX": f"/soma/{env_name}/",
-                "SOMA_LAMBDA_SECRET_ARN": runtime_secret.ref,
+                **runtime_secrets.env_briefing(),
             },
         )
 
@@ -130,12 +87,7 @@ class DailyBriefingPipeline(Construct):
                 resources=[f"arn:aws:ssm:{region}:{account}:parameter/soma/{env_name}/*"],
             )
         )
-        self.function.add_to_role_policy(
-            iam.PolicyStatement(
-                actions=["secretsmanager:GetSecretValue"],
-                resources=[runtime_secret.ref],
-            )
-        )
+        runtime_secrets.grant_briefing(self.function)
         self.function.add_to_role_policy(
             iam.PolicyStatement(actions=["ses:SendEmail"], resources=["*"])
         )
@@ -156,6 +108,7 @@ class DailyBriefingPipeline(Construct):
         )
 
         # --- Operator alerts (Phase 6): SNS + CloudWatch alarms ---
+        stack = Stack.of(self)
         alarm_topic = sns.Topic(
             self,
             "PipelineAlarmTopic",
@@ -276,4 +229,3 @@ class DailyBriefingPipeline(Construct):
         ).add_alarm_action(cw_actions.SnsAction(alarm_topic))
 
         self.alarm_topic = alarm_topic
-        self.runtime_secret_ref = runtime_secret.ref

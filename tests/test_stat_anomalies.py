@@ -124,3 +124,40 @@ def test_build_statistical_anomaly_rows_maps_context_and_severity():
         stat_signals=signals_alert,
     )
     assert rows2[0]["severity"] == "alert"
+
+
+def test_iqr_flags_extreme_steps():
+    history = []
+    for i in range(1, 21):
+        d = RUN - timedelta(days=i)
+        history.append({"metric_date": d, "steps": 8000.0 + (i % 4) * 100})
+    out = compute_statistical_signals(
+        feature_date=RUN,
+        daily_metrics_history=history,
+        today_metrics={"steps": 25000.0},
+        min_baseline_days=14,
+    )
+    steps = [a for a in out["anomalies"] if a["metric"] == "steps"]
+    assert len(steps) == 1
+    assert steps[0]["method"] == "iqr"
+    assert steps[0]["direction"] == "above_baseline"
+
+
+def test_ewma_trend_detects_declining_sleep():
+    history = []
+    for i in range(1, 31):
+        d = RUN - timedelta(days=i)
+        # Earlier days slept more; recent days trend down.
+        sleep = 8.0 - (30 - i) * 0.08
+        history.append({"metric_date": d, "sleep_hours": sleep, "hrv_rmssd": 50.0})
+    out = compute_statistical_signals(
+        feature_date=RUN,
+        daily_metrics_history=history,
+        today_metrics={"sleep_hours": 5.5, "hrv_rmssd": 50.0},
+        min_baseline_days=14,
+    )
+    sleep_trends = [t for t in out["trends"] if t["metric"] == "sleep_hours"]
+    assert sleep_trends
+    assert sleep_trends[0]["direction"] == "declining"
+    assert sleep_trends[0]["method"] == "ewma_drift"
+

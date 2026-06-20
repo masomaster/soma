@@ -9,7 +9,15 @@ Stable stack IDs (use these in docs, GitHub Actions, and CLI):
 
 **Apple Health ingest:** each stack also deploys an **HTTP API** (`POST …/ingest/apple-health`), **access logs** in CloudWatch (`AppleHealthHttpApiAccessLogGroup` output → `/aws/apigateway/soma-{env}-apple-health-access`), an **S3 raw bucket**, and Lambda `soma-{env}-apple-health-webhook` (see [apple-health-export.md](../docs/plans/apple-health-export.md) and `infrastructure/lambda/apple_health_webhook/README.md`). CloudFormation output **`AppleHealthIngestUrl`** is the URL for Health Auto Export.
 
-**Hevy scheduled ingest:** EventBridge **Scheduler** schedule `soma-{env}-hevy-ingest` (default **09:00 UTC**) invokes Lambda `soma-{env}-hevy-ingest`, which writes raw pages to the **same** S3 bucket as Apple (`RAW_BUCKET`) and upserts **`strength_events`**. Set **`HEVY_API_KEY`** and **`SOMA_USER_ID`** in Secrets Manager `soma-{env}-lambda-runtime` (or as Lambda env overrides). See `infrastructure/lambda/hevy_ingest/README.md`.
+**Hevy scheduled ingest:** EventBridge **Scheduler** schedule `soma-{env}-hevy-ingest` (default **09:00 UTC** on **staging**) invokes Lambda `soma-{env}-hevy-ingest`, which writes raw pages to the **same** S3 bucket as Apple (`RAW_BUCKET`) and upserts **`strength_events`**. Secrets: **`soma-db`**, **`soma-hevy`**, **`soma-tenant`**. **Prod:** Lambda manual invoke; **no Scheduler** until Phase 11 (`schedule_enabled=False`). **Backfill (history):** [staging-validation-checklist.md](../docs/plans/staging-validation-checklist.md) § Hevy backfill — `python scripts/smoke_hevy.py backfill`. See `infrastructure/lambda/hevy_ingest/README.md`.
+
+**Apple Health hub ingest:** HTTP API (`POST …/ingest/apple-health`, output **`AppleHealthIngestUrl`**) → raw S3 → **`biometrics`** + **`cardio_events`**. All HealthKit data — Watch, **Renpho** body comp, **Google/Fitbit via Health Sync**, mirrored workouts — uses this **one** endpoint. See [apple-health-export.md](../docs/plans/apple-health-export.md).
+
+**CalDAV scheduled ingest:** Scheduler `soma-{env}-caldav-ingest` (**08:00 UTC** staging) → Lambda `soma-{env}-caldav-ingest` → **`interventions`** (`calendar_busy`). Secrets: **`soma-caldav`**, **`soma-db`**, **`soma-tenant`**. **`caldav`** is bundled in the shared Lambda layer (`pipeline_layer.py`).
+
+**Strava scheduled ingest:** Lambda `soma-{env}-strava-ingest` deployed; **no Scheduler** until Strava API subscription is active (`schedule_enabled=False`). Secret **`soma-strava`** when unpaused.
+
+**Weekly signal job:** Scheduler `soma-{env}-weekly-signal` (**Sunday 12:00 UTC** on staging) recomputes **`metric_patterns`** and optional Sonnet **`llm_pattern`** rows (`ENABLE_WEEKLY_PATTERN_LLM` on weekly Lambda only). **Prod:** Lambda manual invoke; schedule off until Phase 11.
 
 ## Prereqs
 
@@ -58,9 +66,19 @@ cdk deploy SomaStagingStack
 If you previously deployed a failed hybrid template, fix drift (remove orphaned rules or failed stacks) and deploy again.
 
 Stacks define the **daily briefing** EventBridge **Scheduler** → Lambda pipeline. Runtime secrets
-live in Secrets Manager (`soma-{env}-lambda-runtime`); see
-`infrastructure/lambda/briefing/README.md` for the seed parameter and how to avoid
-overwrites after you edit the secret in the console.
+live in **per-concern** Secrets Manager resources (`soma-db`, `soma-briefing`, …);
+see `infrastructure/lambda/briefing/README.md` for the seed parameter and how to avoid
+overwrites after you edit secrets in the console. **`SomaStagingStack`** creates them;
+**`SomaProdStack`** imports the same names (deploy staging first, or create secrets manually).
+
+### Migrating from `soma-{env}-lambda-runtime`
+
+If staging/prod already has the old monolithic JSON secret:
+
+1. Deploy this stack (creates new secret names; Lambdas switch to new ARNs).
+2. Copy values from `soma-{env}-lambda-runtime` into the new secrets (see briefing README mapping table).
+3. Redeploy with **`SeedRuntimeSecrets=No`** so placeholders are not reapplied.
+4. The old secret can remain (RETAIN policy); delete manually when no longer needed.
 
 ## Pipeline alarms (operator email)
 

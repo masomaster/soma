@@ -183,9 +183,19 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
             (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
         )
 
+    def load_active_patterns(user_id: str, d: date) -> list[dict[str, Any]]:
+        del d  # patterns are user-scoped; ``last_confirmed_at`` orders recency
+        return _query(
+            "SELECT metric_a, metric_b, lag_days, correlation, sample_n, status, description "
+            "FROM metric_patterns WHERE user_id = %s AND status = %s "
+            "ORDER BY last_confirmed_at DESC NULLS LAST LIMIT 12",
+            (user_id, "active"),
+        )
+
     return {
         "load_biometrics_today": load_biometrics_today,
         "load_daily_metrics_window": load_daily_metrics_window,
         "load_strength_events": load_strength_events,
         "load_cardio_events": load_cardio_events,
+        "load_active_patterns": load_active_patterns,
     }

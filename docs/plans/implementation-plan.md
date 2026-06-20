@@ -2,7 +2,7 @@
 
 **Status:** Phase 0 scaffold complete (`pipeline/`, `pyproject.toml`, tests, `AGENTS.md`, `schema/migrations/` convention). **Phase 1 complete:** Hevy `GET /v1/workouts` validated against live API + [Swagger docs](https://api.hevyapp.com/docs/); redacted fixtures and shape tests under `tests/fixtures/`; Bruno `hevy/list-workouts`; [integrations checklist](./integrations-checklist.md) signed off for ship-first strength + biometrics rollup. **Phase 2 (repo deliverables) complete:** `schema/migrations/0001_initial.sql` (RLS + grants + Hevy `superset_id`), [db-access-patterns.md](./db-access-patterns.md), migration RLS contract tests. **Phase 3 (repo slice) complete:** `pipeline/raw_storage.py` (raw key layout), `pipeline/adapters/hevy.py` (fetch / raw callback / normalize), `pipeline/strength_upsert.py` (`ON CONFLICT DO NOTHING`), `tests/test_hevy_adapter.py`. **Phase 4 (repo deliverables) complete:** `.github/workflows/ci.yml` (reusable: `pytest` 3.14 + `cdk synth`), `deploy-staging.yml` (push to `main` → `cdk deploy SomaStagingStack`), `deploy-prod.yml` (tag/dispatch + environment approval → `cdk deploy SomaProdStack`), all via **GitHub OIDC → AWS** (no stored keys); setup runbook [ci-aws.md](./ci-aws.md). **Phase 5 (repo deliverables) complete:** `pipeline/orchestration.py` (single daily pipeline, ordered isolated steps) + CDK `DailyBriefingPipeline` (EventBridge **Scheduler** daily UTC cron → briefing Lambda) wired into both stacks. **Phase 6 (repo deliverables) complete:** `pipeline/features.py` (biometrics rollup + deterministic `daily_features`), `pipeline/rules.py` (Option A rules, thresholds from SSM `/soma/{env}/{user_id}/rules/`), `pipeline/briefing.py` (prompt + injected LLM, narrates pre-computed signals), `pipeline/delivery.py` (stdout local / SES otherwise), `pipeline/persistence.py` (allow-listed `DO UPDATE` upserts), `pipeline/clients.py` (Anthropic/SES/SSM/Postgres adapters), thin `infrastructure/lambda/briefing/handler.py`; offline unit tests for all. **Phase 6.6 complete:** briefing quality bar (rules vs sparse recovery, prompt guardrails, HTML email + optional `BRIEFING_EMAIL_DASHBOARD_URL`, [briefing-staging-inbox-checklist.md](./briefing-staging-inbox-checklist.md), [briefing-llm-failure-modes.md](./briefing-llm-failure-modes.md)) — see § Phase 6.6. **Phase 10 (scheduled):** training guidelines + expert corpus, SES/HTML tuning, and prompt templating **after Phase 7** (additional sources on staging) and **Phase 8** (anomalies in prompt)—see Phase 10. **Production cutover and staging cost posture** are explicitly **Phase 11** so Phase 7 can stay a single-environment integration track. **Operator next:** apply `0001` to **Supabase staging** if not already; run the [ci-aws.md](./ci-aws.md) one-time AWS/GitHub setup (OIDC provider, `soma-github-deploy` role, `cdk bootstrap`, `staging`/`production` environments) to enable live deploys; build the briefing Lambda layer/container (`pipeline` + `psycopg2`) and set its secrets (`DB_CONNECT_STRING`, `ANTHROPIC_API_KEY`, `SES_SENDER`, verify SES sender). **Next build (staging data-plane):** **Hevy scheduled ingest** — EventBridge **Scheduler** → Lambda → same raw S3 bucket layout as Apple → `upsert_strength_events` (see § *Integration slices* and Phase 7 Hevy bullet). **Repo wiring complete:** `HevyScheduledIngest` + `soma-{env}-hevy-ingest` Lambda (`infrastructure/soma_cdk/hevy_scheduled_ingest.py`); operator must set `HEVY_API_KEY` + `SOMA_USER_ID` in `soma-{env}-lambda-runtime` and deploy.  
 
-**Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [integrations-checklist.md](./integrations-checklist.md) (scope + Phase 1 payload notes), [apple-health-export.md](./apple-health-export.md) (Phase 7 Apple Health / HAE → `biometrics`), [db-access-patterns.md](./db-access-patterns.md) (keys, RLS vs service role, migration apply order), [workload-indicators.md](./workload-indicators.md) (weekly/monthly training load — evidence-backed v0/v1). **Aggregation + change detection:** [§ Signal pipeline](#signal-pipeline-where-intelligence-lives) below (tiers 1–4; aligns with `.cursor/rules/soma.mdc` — LLM narrates pre-computed signals).  
+**Companion docs:** [project-overview-supplement.md](./project-overview-supplement.md) (timing, doc validation, agents/plugins), [local-dev-and-tooling.md](./local-dev-and-tooling.md) (no-Docker workflow, Bruno, Supabase REST), [staging-validation-checklist.md](./staging-validation-checklist.md) (Phase 7–8 operator soak), [integrations-checklist.md](./integrations-checklist.md) (scope + Phase 1 payload notes), [apple-health-export.md](./apple-health-export.md) (Phase 7 Apple Health / HAE → `biometrics`), [db-access-patterns.md](./db-access-patterns.md) (keys, RLS vs service role, migration apply order), [workload-indicators.md](./workload-indicators.md) (weekly/monthly training load — evidence-backed v0/v1). **Goals / running / daily focus (schema + pipeline):** [§ Interactive product track — Slice A](#slice-a--structured-goals--daily-plan-build-first). **Aggregation + change detection:** [§ Signal pipeline](#signal-pipeline-where-intelligence-lives) below (tiers 1–4; aligns with `.cursor/rules/soma.mdc` — LLM narrates pre-computed signals). **Interactive product (goals, chat, schedule):** [§ Interactive product track](#interactive-product-track-slices-ad) below — **does not** require OpenClaw or an always-on agent runtime.  
 **Historical / detailed vision:** [project-overview.md](./project-overview.md) (unchanged source conversation).
 
 ### How we work (agents / humans)
@@ -21,11 +21,13 @@ Build a **multi-tenant-ready**, **environment-isolated** pipeline that:
 
 1. **Ingests** fitness/health data from external APIs and webhooks, **writes raw JSON to S3 first**, then normalizes into **Supabase Postgres** tables with **RLS** and `user_id` on every domain table — including **historical / backfill** loads (as far back as each vendor allows), not only “from today onward,” so the DB and features layer can warm up correctly.
 2. **Derives signals in tiers** (see [Signal pipeline](#signal-pipeline-where-intelligence-lives)): **Postgres-first aggregates** where they pay off, **deterministic statistics** (Z-score / IQR / EWMA-style drift) in Python on Lambda, optional **learned cross-metric patterns** persisted in Postgres, then **hand-coded rules** (SSM thresholds) — all before the LLM. Optional **weekly** Sonnet pass only for narrative pattern hints behind a flag, not as the primary numeric anomaly engine.
-3. **Synthesizes** a daily coaching note via LLM that **narrates pre-computed signals** — structured **today + flags + trends + anomalies + active patterns**, not raw event dumps or “do the math in prose.”
-4. **Delivers** the briefing (e.g. SES email in cloud envs; stdout/local log when `ENV=local`).
-5. Supports **local development without Docker** (Bruno + hosted Supabase for schema/API validation), plus **staging** and **production** with promotion discipline. See [local-dev-and-tooling.md](./local-dev-and-tooling.md).
+3. **Synthesizes** a daily coaching note via LLM that **narrates pre-computed signals** — structured **today + flags + trends + anomalies + active patterns + weekly goal progress + running safety + `todays_focus`**, not raw event dumps or “do the math in prose.”
+4. **Tracks configurable weekly workout goals** and surfaces behind-schedule / urgent status plus a deterministic **`todays_focus`** before the LLM call — [Slice A](#slice-a--structured-goals--daily-plan-build-first).
+5. **Supports interactive goal updates and coaching conversation** via a thin control plane (bounded reads + validated writes) — [Slices B–C](#interactive-product-track-slices-ad) — not a persistent agent runtime or OpenClaw pivot.
+6. **Delivers** the briefing (e.g. SES email in cloud envs; stdout/local log when `ENV=local`).
+7. Supports **local development without Docker** (Bruno + hosted Supabase for schema/API validation), plus **staging** and **production** with promotion discipline. See [local-dev-and-tooling.md](./local-dev-and-tooling.md).
 
-Non-goals for initial phases: unconstrained natural-language query over raw tables without schema binding and a hardened read path (Phase 9 targets a **small dashboard + bounded queries** instead); native iOS app (optional later); replacing the whole stack with a persistent “agent runtime.”
+Non-goals for initial phases: unconstrained natural-language query over raw tables without schema binding and a hardened read path (Phase 9 / [Slice C](#slice-c--dashboard-bounded-queries--coaching-chat) targets a **small dashboard + bounded queries + tool-backed chat** instead); native iOS app (optional later); replacing the whole stack with a persistent “agent runtime” (OpenClaw or similar).
 
 ---
 
@@ -55,11 +57,21 @@ Non-goals for initial phases: unconstrained natural-language query over raw tabl
     }
   ],
   "trends": [{"metric": "sleep_hours", "direction": "declining", "window_days": 5}],
-  "active_patterns": ["sleep < 6h → next-day HRV lower (confirmed n=12)"]
+  "active_patterns": ["sleep < 6h → next-day HRV lower (confirmed n=12)"],
+  "goals_status": {
+    "strength": { "completed": 1, "target": "3-4x", "status": "not_yet" },
+    "running": {
+      "long": { "done": false, "status": "not_yet" },
+      "easy": { "done": true, "status": "done" },
+      "interval": { "done": false, "status": "not_yet" }
+    }
+  },
+  "mileage_check": { "flag": null, "this_week_km": 6.4, "last_week_km": 9.1, "change_pct": -29.7 },
+  "todays_focus": "Strength session needed — 1 of 3-4x done · NRC interval run still pending"
 }
 ```
 
-Actual keys evolve with `daily_features` / rules enums; the contract is **signals first, narrative second**.
+Actual keys evolve with `daily_features` / rules enums; the contract is **signals first, narrative second**. Goal blocks: [Slice A](#slice-a--structured-goals--daily-plan-build-first).
 
 ### Layer 1 — SQL aggregation (stay in Postgres as long as possible)
 
@@ -156,7 +168,7 @@ Actual keys evolve with `daily_features` / rules enums; the contract is **signal
 
 ### Historical ingestion & backfill (cross-cutting)
 
-Incremental “today only” ingestion is **not** enough for a useful coaching DB. For **each** integration (Hevy, Strava, Apple exports, Renpho, Google Health, calendar, etc.), plan and ship:
+Incremental “today only” ingestion is **not** enough for a useful coaching DB. For **each** integration (Hevy, Strava, Apple Health hub, calendar, etc.), plan and ship:
 
 - **Initial historical pull** to the maximum depth each API/export supports (pagination, date-range filters, export bundles), always **raw to S3 first** then normalize — same adapter contract as incremental runs.
 - **Idempotent writes** (`ON CONFLICT` / dedup keys) so backfill can be retried or extended without duplicate events.
@@ -217,17 +229,17 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 
 - **Strava (repo slice) — PAUSED:** `pipeline/adapters/strava.py`, `pipeline/cardio_upsert.py`, `scripts/smoke_strava.py`, Bruno `.bruno/strava/list-athlete-activities.bru` are **in repo**; **live API work, OAuth refresh, and daily-pipeline wiring are deferred** until an **active Strava subscription** (Standard Tier) exists — see [integrations-checklist.md](./integrations-checklist.md) § Strava API access. Until then: **offline tests + fixtures only**. **Multi-user note:** when unpaused, Strava OAuth belongs in **per-user** token storage — Phase 9 **Multi-user rollout — provider connections**.
 - **Apple Health (export) — active track:** webhook (e.g. Health Auto Export) → raw → **`biometrics`** / rollup and **`cardio_events`** from HAE **`data.workouts`** is implemented: shared pipeline Lambda layer, **`AppleHealthIngestApi`** (API Gateway HTTP API + ingest Lambda + S3 raw bucket), `pipeline/adapters/apple_health_workouts.py`, [apple-health-export.md](./apple-health-export.md). Operator wiring (HAE URL, headers, optional webhook secret) is **post-deploy** in that doc.
-- **Hevy (scheduled pull) — next staging slice:** CDK on **`SomaStagingStack`** first: EventBridge **Scheduler** (e.g. daily UTC, **earlier** than `DailyBriefingPipeline` so features see new sets), Lambda using the **same** pipeline layer + **raw** bucket as Apple (`put_object` keys from `pipeline.raw_storage.format_raw_object_key`), thin handler calling `hevy.fetch_and_normalize_from_api` then `pipeline.strength_upsert.upsert_strength_events`; runtime secrets **`HEVY_API_KEY`** + explicit **`user_id`** (env or `soma-{env}-lambda-runtime` JSON until per-user storage in Phase 9). Document IAM, backoff/rate limits, and optional **disable cron on prod** stack until Phase 11. Add **backfill** path (script or one-off invocation) so history is not “first cron day only.”
-- Add further sources in order of **dependency / risk** (e.g. Renpho, Google Health before Fitbit sunset) after Apple Health is moving.
-- For **every new source**, ship **historical backfill** alongside incremental sync (see **Historical ingestion & backfill** above) so the DB is not “empty until the first cron day.”
-- **Deduplication / source priority** as in overview — implement explicitly in code or small config table.
+- **Hevy (scheduled pull) — staging slice:** **`HevyScheduledIngest`** on **`SomaStagingStack`** (Scheduler **09:00 UTC** → Lambda → shared raw S3 → `upsert_strength_events`); secrets **`soma-hevy`**, **`soma-tenant`**, **`soma-db`**. **Prod stack:** Lambda manual invoke only — **`schedule_enabled=False`** until Phase 11. **Historical backfill:** [staging-validation-checklist.md](./staging-validation-checklist.md) § Hevy backfill (`python scripts/smoke_hevy.py backfill`).
+- **Deduplication / source priority:** `pipeline/apple_hevy_cardio_dedup.py` drops Apple strength-like cardio when Hevy has sets that day; `pipeline/apple_health_cardio_dedup.py` drops near-duplicate hub workouts (Health Sync / multi-writer UUIDs); `pipeline/source_priority.py` documents precedence for future Strava live ingest.
 - **Migrations / CDK:** land schema and infra changes on **staging** only in this phase; treat prod promotion, second Supabase project discipline, and “two envs” operations as **out of scope** until Phase 11.
+
+**Phase 7 closure (2026-06):** Repo + CDK deliverables for **Apple Health hub ingest** (single path for Watch + **Renpho body comp** + **Google/Fitbit via Health Sync** + mirrored workouts; near-duplicate cardio filter), **Hevy scheduled ingest (staging)**, **Hevy backfill script**, **CalDAV scheduled ingest** (`caldav` in Lambda layer; **`CALDAV_CALENDAR_NAME`** for personal calendar only), **Strava scheduled ingest slice** (Lambda only — **`schedule_enabled=False`** until Strava API unpaused), **split `soma-*` secrets**, and **source dedup** are complete. **Operator soak:** [staging-validation-checklist.md](./staging-validation-checklist.md) (HAE, Health Sync, CalDAV, Hevy backfill confirm/run, migration **`0004`**).
 
 ### Phase 8 — Aggregation hardening + anomaly + pattern layers
 
 **Normative spec:** [Signal pipeline: where intelligence lives](#signal-pipeline-where-intelligence-lives). This phase implements **Layers 1–3** (and wires **Layer 4** prompts); it does not change the “one daily pipeline” edge architecture.
 
-**Repo (slices 1–4, shipped):** `pipeline/stat_anomalies.py` — z-scores for `hrv_rmssd`, `sleep_hours`, and `resting_hr` vs at least **14** prior calendar days (stdlib `statistics`). `run_daily_pipeline` caches **`daily_metrics_window`** after features (one window read per run), runs **`compute_stat_signals`** after rules, calls optional **`persist_statistical_anomalies`** (Lambda: delete-then-insert **`anomaly_events`** rows with `anomaly_type = 'statistical'` via `pipeline.persistence.replace_statistical_anomaly_events`). Briefing still gets **`STATISTICAL_SIGNALS`** and **`features_json.stat_signals`**. **Still open:** IQR/EWMA, optional NumPy/SciPy, Layer 1 SQL/MVs, **`metric_patterns`**, weekly job, partial unique index (delete-today suffices for idempotency today).
+**Repo (slices 1–4 + 8a–8d, shipped):** `pipeline/stat_anomalies.py` — z-scores for `hrv_rmssd`, `sleep_hours`, and `resting_hr`; **IQR** for `steps` / `active_cal`; **EWMA drift** trends for `sleep_hours` / `hrv_rmssd`. `pipeline/metric_baselines.py` + migration **`0004_signal_layers.sql`** (`metric_baselines`, `metric_patterns`). `pipeline/metric_patterns.py` + **`WeeklySignalPipeline`** (Sunday Scheduler → `soma-{env}-weekly-signal` Lambda). Daily pipeline persists baselines, loads active patterns into briefing **`TRENDS`** / **`ACTIVE_PATTERNS`**. Optional **weekly Sonnet** via `ENABLE_WEEKLY_PATTERN_LLM` on the **weekly** Lambda (not the daily briefing). **Still optional later:** NumPy/SciPy, materialized views, `pgvector` k-NN.
 
 **8a — Layer 1 (Postgres aggregates, incremental)**
 
@@ -246,16 +258,19 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 
 **8c — Layer 3 (pattern library + optional weekly LLM)**
 
-- Migration: **`metric_patterns`** (or equivalent) with RLS; **weekly** EventBridge rule → Lambda (new handler or shared module) that upserts correlations / lag relationships with caps per user.
+- ✅ **v0 (Sunday piggyback):** `pipeline/weekly_pattern_scan.py` — optional Sonnet pass when `ENABLE_WEEKLY_PATTERN_LLM` is set; persists **`anomaly_type = 'llm_pattern'`** via `replace_llm_pattern_anomaly_events` (narrative hypotheses only).
+- **Next:** Migration **`metric_patterns`** with RLS; dedicated weekly EventBridge schedule if Sunday daily coupling is too tight.
 - **Optional:** `pgvector` extension + embedding column for **daily summary vectors** (k-NN “similar past days”) — feature-flagged.
-- **Weekly Sonnet scan:** optional, behind **`ENABLE_WEEKLY_PATTERN_LLM`** (or similar); writes **`anomaly_type = 'llm_pattern'`** or proposes **`metric_patterns`** rows for review — never the only source of **numeric** outliers.
+- **Weekly Sonnet scan:** never the only source of **numeric** outliers (z-scores remain `stat_anomalies`).
 
 **8d — Layer 4 wiring (briefing)**
 
-- ✅ **Partial (slices 1–3):** `STATISTICAL_SIGNALS` JSON block + `stat_signals` in **`features_json`**; `SYSTEM_GUIDELINES` extended for z-scores.
+- ✅ **Shipped (slices 1–3 + stat block):** `STATISTICAL_SIGNALS` JSON block + `stat_signals` in **`features_json`**; `SYSTEM_GUIDELINES` extended for z-scores.
 - **Next:** **`trends`** / **`active_patterns`** blocks when those layers exist. Extend [briefing-llm-failure-modes.md](./briefing-llm-failure-modes.md) as new edge cases appear.
 
-**Deliverable:** Staging shows new rows in `anomaly_events` on real pipeline runs; daily email includes a concise **Signals** section grounded in persisted stats; weekly job documented (cron + idempotency). Phase 10 can assume this payload shape when adding guidelines.
+**Phase 8 closure (2026-06):** Layers **1–3** wired: **`metric_baselines`** upsert on daily run, **z-score + IQR + EWMA** in `stat_signals`, **`metric_patterns`** weekly job + briefing **`ACTIVE_PATTERNS`**, optional Sonnet on **`WeeklySignalPipeline`**. Operator: apply **`0004_signal_layers.sql`** to staging; set `ENABLE_WEEKLY_PATTERN_LLM=1` on weekly Lambda env if desired.
+
+**Deliverable:** Staging shows new rows in `anomaly_events` on real pipeline runs; daily email includes statistical signals grounded in persisted stats; weekly LLM patterns documented (env flag + Sunday trigger). Phase 10 can assume this payload shape when adding guidelines.
 
 ### Weekly / monthly workload (training load indicators) — cross-cutting
 
@@ -264,12 +279,97 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 - **Evidence-backed design (v0 vs v1):** [workload-indicators.md](./workload-indicators.md) — modality-split **external** load first; optional **Foster session RPE × duration** when users opt in; HR-TRIMP only when streams exist; keep **ACWR-style** ratios as **spike vs baseline** language, not injury oracle.
 - **Repo status:** Migration `0003_training_load_and_effort.sql` + `pipeline/features.py` populate **`training_load_*`** (7d/28d) and **`effort_*`** (unified heuristic index + Foster AU when RPE / `session_rpe` exist). Legacy `cardio_minutes_*` / `strength_tonnage_7d` unchanged for rules/backcompat. **Still optional later:** ISO **calendar week** rollups (today = trailing 7d / 28d only).
 
+### Interactive product track (slices A–D)
+
+**Intent:** “Tell Soma my goals,” adapt the weekly plan from real activity, and chat about health — **without** pivoting to OpenClaw or an always-on agent host. Numeric truth stays in Postgres + the daily pipeline; the LLM **narrates** and **routes writes** through bounded tools, same as the briefing.
+
+**Principle:** Structured data for math (`goals`, `running_sessions`, `daily_goal_snapshot`); narrative context in **`my-goals.md`** (Phase 10). Chat and NL goal entry are **thin layers** on top — not a second system of record.
+
+```
+User (chat / dashboard / email)
+        │
+  Chat or app API (Lambda / Next.js)
+        │
+   ┌────┴────────────────────────────┐
+   │ Bounded tools (read + write)     │
+   │  · get_goal_status / briefing ctx │
+   │  · update_goal · log_run          │
+   │  · append_goal_note (markdown)    │
+   │  · set_schedule_exception (D)     │
+   └────┬────────────────────────────┘
+        │
+  Supabase (RLS) ◄── daily pipeline (Slice A computes snapshots)
+```
+
+| Slice | What | When (relative to numbered phases) | Normative detail |
+|-------|------|-----------------------------------|------------------|
+| **A** | Structured goals + daily plan | After Phase 8 (or parallel once strength/cardio ingest is live on staging) | [Slice A](#slice-a--structured-goals--daily-plan-build-first) below |
+| **B** | NL goal updates (control plane) | After **A**; narrative files optional until Phase 10 | This section § Slice B |
+| **C** | Dashboard + bounded queries + coaching chat | **Phase 9** (extends numbered phase) | This section § Slice C + Phase 9 below |
+| **D** | Calendar-aware schedule adaptation | Optional after **C** | This section § Slice D |
+
+#### Slice A — Structured goals & daily plan (build first)
+
+**Status:** Planned — not yet in repo (`pipeline/goal_progress.py`, goals migration, edge functions).
+
+Ship Slice A deliverables (full schema SQL can live in a future `docs/plans/goals-running-daily-planning.md` or migration comments):
+
+- Migration: `goals`, `running_sessions`, `daily_goal_snapshot`, `weekly_activity_summary` + RLS tests
+- `pipeline/goal_progress.py` (`compute_goal_status`, `suggest_todays_focus`) + `pipeline/mileage_ramp.py`
+- New `run_daily_pipeline` steps: refresh weekly summary → goal snapshot → mileage check → briefing (inject `goals_status`, `mileage_check`, `todays_focus`)
+- Supabase Edge Functions: **`log-run`**, **`update-goal`** (structured API; curl/Shortcut/HAE first)
+- Seed staging goals; smoke one pipeline run
+
+**Unlocks:** Morning email and any future chat both consume the same pre-computed goal JSON — no LLM-invented session counts.
+
+#### Slice B — Natural-language goal updates (control plane)
+
+**Status:** Planned — depends on Slice A.
+
+Let the user say “drop intervals this week” or “I’m targeting 2 strength days until September” in chat or a simple form:
+
+- **Parse:** LLM extracts structured patches (goal_type, target_min/max, period, deactivate flags) + optional free-text for `my-goals.md`
+- **Validate:** Schema checks, SSM/ramp safety rules, reject ambiguous multi-goal mutations in one shot without confirmation
+- **Apply:** Call the same paths as Slice A — `update-goal` edge function for numeric targets; optional S3/Storage patch for narrative `my-goals.md` (Phase 10 loader)
+- **Confirm:** Human-in-the-loop for material changes (e.g. “Confirm: skip NRC intervals for week of …?”) before write
+
+**Deliverable:** `pipeline/goal_tools.py` (or app-layer module) with explicit tool schemas; unit tests on parse → validated `GoalPatch` objects; optional thin **chat Lambda** (multi-turn, same auth as dashboard). **Not** an unconstrained agent — fixed tool list only.
+
+**When:** Can start after Slice A lands; full narrative merge waits on Phase 10 `my-goals.md` injection if you defer markdown writes.
+
+#### Slice C — Dashboard, bounded queries, and coaching chat
+
+**Status:** Planned — **Phase 9** product shape; extends Phase 9 below.
+
+Two surfaces on the same auth + RLS (or read-only SQL) path:
+
+1. **History queries** — schema-bound text-to-SQL (overview § Natural Language Query Frontend): “bench trend vs sleep,” monthly mileage, past flags. Read-only role; LLM sees schema, not row dumps at prompt-build time.
+2. **Coaching chat** — multi-turn Haiku/Sonnet with the **same bounded JSON** as the daily briefing (`goals_status`, `todays_focus`, flags, anomalies) plus recent messages; **tool calls** from Slice B (`update_goal`, `log_run`, `append_goal_note`) for writes.
+
+**Stack (unchanged):** Streamlit spike → Next.js PWA; chat API as Lambda or Next.js route. Optional Telegram bot = thin client calling the same API ([project-overview.md](./project-overview.md) § Notifications).
+
+**Deliverable:** Dashboard shell + one chat endpoint + tool contract shared with Slice B; threat model in supplement (no raw-table NL without schema binding).
+
+#### Slice D — Calendar-aware schedule adaptation (optional)
+
+**Status:** Optional — after Slice C.
+
+Go beyond week-level `suggest_todays_focus` when life interrupts the plan:
+
+- **Read:** CalDAV / iCloud calendar (read-only; already envisioned in overview) for travel, meetings, free blocks
+- **Store:** `schedule_exceptions` (or equivalent) — date range, affected goal types, override hint (“long run → Sunday”)
+- **Compute:** Extend `suggest_todays_focus` to respect exceptions + calendar free blocks; briefing/chat cite the constraint
+
+**Deliverable:** migration + `pipeline/schedule_context.py`; optional CalDAV ingest step or on-demand fetch from chat Lambda. **Not** LLM freestyle replanning — deterministic focus string + LLM narration.
+
+---
+
 ### Phase 9 — User app: homepage / dashboard + bounded queries (optional stack)
 
-**Product shape:** Not only an NL-query playground — ship a **homepage / dashboard** the user actually opens: key **daily features** and trends, **latest briefing** (link, excerpt, or light embed), **integration / sync health** (connected sources, last successful pull), **weekly / monthly training load** (modality-split external load first — see [workload-indicators.md](./workload-indicators.md) and the **Weekly / monthly workload** section above), and simple tables or charts where they add clarity. Layer **bounded** natural-language or saved-query exploration on top of that shell (same auth and RLS-backed or read-only DB path), not instead of it.
+**Product shape:** Not only an NL-query playground — ship a **homepage / dashboard** the user actually opens: key **daily features** and trends, **latest briefing** (link, excerpt, or light embed), **integration / sync health** (connected sources, last successful pull), **weekly / monthly training load** (modality-split external load first — see [workload-indicators.md](./workload-indicators.md) and the **Weekly / monthly workload** section above), **weekly goal progress** ([Slice A](#slice-a--structured-goals--daily-plan-build-first)), and simple tables or charts where they add clarity. Layer **[Slice C](#slice-c--dashboard-bounded-queries--coaching-chat)** on top: bounded natural-language history queries **and** multi-turn coaching chat with validated write tools — same auth and RLS-backed or read-only DB path, not instead of the dashboard shell.
 
-- **Stack:** Streamlit spike → Next.js PWA (or similar) if validated; any text-to-SQL only with **schema-bound** prompts and a **read-only** role (or equivalent RLS-only client) — threat model in supplement.
-- **Multi-user rollout — provider connections:** Today’s pipeline assumes **operator-held** credentials (env vars, Bruno, smoke scripts). **If/when you roll out to additional users**, you need a deliberate way for **each user** to connect their own data sources — not a shared token. Plan product + backend for **per-user auth and secrets** (OAuth flows, refresh tokens, and consent for **Strava**, **Hevy** or equivalent strength APIs, **Apple Health** export/webhooks or HealthKit-backed paths, **Google Health Connect** / Fit, **Renpho**, etc.), plus **sync health** in the dashboard (connected / error / last pull). Until that exists, new users cannot safely onboard without duplicating the operator’s manual wiring.
+- **Stack:** Streamlit spike → Next.js PWA (or similar) if validated; any text-to-SQL only with **schema-bound** prompts and a **read-only** role (or equivalent RLS-only client) — threat model in supplement. Coaching chat reuses Slice B tool schemas.
+- **Multi-user rollout — provider connections:** Today’s pipeline assumes **operator-held** credentials (env vars, Bruno, smoke scripts). **If/when you roll out to additional users**, you need a deliberate way for **each user** to connect their own data sources — not a shared token. Plan product + backend for **per-user auth and secrets** (OAuth flows, refresh tokens, and consent for **Strava**, **Hevy** or equivalent strength APIs, **Apple Health** export/webhooks or HealthKit-backed paths, **Google Health Connect** / Fit OAuth pull, etc.), plus **sync health** in the dashboard (connected / error / last pull). Until that exists, new users cannot safely onboard without duplicating the operator’s manual wiring.
 - **Multi-user rollout check:** Before calling onboarding “done,” walk a **second user** (or clean test account) through the full path: sign-up / invite, profile + **`user_settings` / email** for SES briefings, **self-serve provider connection** (not shared operator credentials), per-user **SSM rules** (or automation that creates `/soma/{env}/{user_id}/rules/…`) if still required, and **confirm the daily pipeline delivers** to that user without one-off manual Lambda edits. Document whatever remains manual; prefer **automation or self-serve** so new users do not depend on the operator wiring notifications by hand. *(If the current design already covers this end-to-end, Phase 9 is the gate to **verify** and close gaps.)*
 
 ### Phase 10 — Integrated delivery refinement (guidelines, corpus, operator polish, recurring)
@@ -278,7 +378,7 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 
 **Training guidelines + expert transcript corpus** (briefing context — **Guidelines Files** and **Prompt Template & LLM Call** in [project-overview.md](./project-overview.md)):
 
-- **Runtime wiring:** Load `my-goals.md` and `expert-principles.md` per user from **S3** (overview path `guidelines/{user_id}/…`) or an agreed alternative (e.g. Supabase Storage); inject into `pipeline/briefing.build_prompt` / `generate_briefing` alongside flags + features + **structured anomalies, trends, and active patterns** (from Phase 8). IAM for the briefing role; keep prompts bounded (truncate/hash long files if needed).
+- **Runtime wiring:** Load `my-goals.md` and `expert-principles.md` per user from **S3** (overview path `guidelines/{user_id}/…`) or an agreed alternative (e.g. Supabase Storage); inject into `pipeline/briefing.build_prompt` / `generate_briefing` alongside flags + features + **structured anomalies, trends, and active patterns** (from Phase 8) + **`goals_status` / `todays_focus`** (from [Slice A](#slice-a--structured-goals--daily-plan-build-first) when shipped). IAM for the briefing role; keep prompts bounded (truncate/hash long files if needed). [Slice B](#slice-b--natural-language-goal-updates-control-plane) may also **append** narrative patches to `my-goals.md` via the same storage path.
 - **One-time corpus builder (operator / local script):** Curated list of **~12 YouTube URLs** (e.g. Mike Israetel, **Jeremy Ethier**, Jeff Nippard — your picks). For each video: obtain **captions/transcripts** (prefer **official** caption export or **manually pasted** transcript files you own; respect **YouTube Terms of Service** and copyright — do not ship a scraper that violates ToS in automation). Optional: LLM-assisted **condensation** into structured bullets for `expert-principles.md`, then **human review** before upload to S3.
 - **Corpus deliverables:** `scripts/` or `pipeline/tools/` README for the one-time flow; sample `expert-principles.md` skeleton; contract tests that the briefing prompt includes injected guideline text when files exist (mocked S3).
 
@@ -306,7 +406,7 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 - **AWS:** IAM, S3, Lambda, EventBridge (or Step Functions), SES, Secrets Manager, SSM, CloudWatch. **IaC:** **AWS CDK v2 (Python) only** — no Terraform or SAM for Soma; single-account staging/prod OK via separate CDK stacks/stages.
 - **Supabase:** staging + prod projects (or single project + branches if you adopt that model — decide explicitly). **Phase 7–10** assume you can lean on **staging** only; **Phase 11** is when you commit to prod and may **destroy or idle staging** (empty DB, no schedules) to stay cheap.
 - **Anthropic:** API keys, spend limits; **model IDs** pinned in `pipeline/briefing.DEFAULT_BRIEFING_MODEL` / `BRIEFING_MODEL` env (refresh when Anthropic retires aliases — see [model deprecations](https://platform.claude.com/docs/en/about-claude/model-deprecations)).
-- **External APIs:** Hevy Pro API, Strava OAuth, Health Auto Export behavior, Google Health Connect / OAuth, Renpho, CalDAV.
+- **External APIs:** Hevy Pro API, Strava OAuth, Health Auto Export behavior, Health Sync (operator app), CalDAV.
 - **Numerics (Phase 8):** **NumPy / SciPy** (optional statsmodels) in the briefing Lambda layer or a slim sibling layer — watch **250 MB** unzipped deployment package limit; prefer **AWS Lambda layers** split if needed.
 - **Local:** Python **3.14+** on the host, **Bruno**, **Supabase CLI** (optional) or Dashboard-only workflow; **no Docker** unless you later choose LocalStack or containerised CI. **GitHub Actions** should pin **Python 3.14** in `setup-python` when workflows are added (Phase 4).
 
@@ -358,7 +458,7 @@ Use **planner → implement** workflow: keep this file updated when phases compl
 - **Terraform or AWS SAM** for Soma AWS resources — use **CDK Python** only (keeps one language with `pipeline/`).
 - Rewriting `project-overview.md` in place (use supplement for corrections).
 - Parquet cold archive / “second query engine” until retention or cost proves necessary (overview itself is mixed on Phase 4 archival — pick one story).
-- OpenClaw or always-on agent hosts (already “archived” in overview — aligned).
+- OpenClaw or always-on agent hosts for core pipeline or goals/chat ([Interactive product track](#interactive-product-track-slices-ad) replaces that pivot — archived in overview, aligned).
 - Nike Run Club as ongoing integration (historical export only).
 - **Managed ML anomaly SaaS** (e.g. SageMaker / Lookout for Metrics), **dedicated TSDBs** (TimescaleDB, InfluxDB), and **LLM-primary numeric anomaly detection** — see [Signal pipeline § Explicitly out of scope](#explicitly-out-of-scope-for-this-pipeline).
 

@@ -84,15 +84,85 @@ def cmd_raw_disk() -> None:
 
 
 def cmd_db_upsert() -> None:
-    """Layer 3: fetch, normalize, upsert into Postgres (service-style connection; bypasses RLS)."""
-    import psycopg2
-    from psycopg2 import errors as pg_errors
+    """Layer 3: fetch page 1, normalize, upsert into Postgres (service-style connection; bypasses RLS)."""
+    _db_upsert_from_rows(_fetch_page1_rows())
 
+
+def cmd_backfill() -> None:
+    """Historical backfill: paginate all Hevy workout pages, optional raw disk + Postgres upsert."""
     from pipeline.adapters import hevy
-    from pipeline.strength_upsert import upsert_strength_events
 
     _require_env("HEVY_API_KEY")
     user_id = _require_env("SOMA_USER_ID")
+    raw_root = Path(os.environ.get("SOMA_RAW_LOCAL_DIR", "tmp/soma_raw")).resolve()
+    write_raw = os.environ.get("SOMA_HEVY_BACKFILL_RAW", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    skip_db = os.environ.get("SOMA_HEVY_BACKFILL_SKIP_DB", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+
+    def raw_put(key: str, body: bytes) -> None:
+        if not write_raw:
+            return
+        dest = raw_root / key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(body)
+
+    utc = datetime.now(timezone.utc)
+    rows = hevy.fetch_and_normalize_from_api(
+        user_id,
+        os.environ["HEVY_API_KEY"],
+        raw_put=raw_put,
+        utc_now=utc,
+    )
+    if not rows:
+        print("backfill: no rows to insert (empty account?)")
+        return
+
+    if skip_db:
+        print("backfill: OK (raw only, SOMA_HEVY_BACKFILL_SKIP_DB set)")
+        print(f"  normalized rows: {len(rows)}")
+        if write_raw:
+            print(f"  raw_root: {raw_root}")
+        return
+
+    _db_upsert_from_rows(rows)
+    print("backfill: OK")
+    print(f"  normalized rows: {len(rows)} (ON CONFLICT DO NOTHING skips duplicates)")
+    if write_raw:
+        print(f"  raw_root: {raw_root}")
+    print("  verify in Supabase SQL editor, e.g.:")
+    print(
+        "    SELECT COUNT(*) FROM strength_events "
+        f"WHERE user_id = '{user_id}' AND source = 'hevy';"
+    )
+
+
+def _fetch_page1_rows() -> list[dict]:
+    from pipeline.adapters import hevy
+
+    _require_env("HEVY_API_KEY")
+    user_id = _require_env("SOMA_USER_ID")
+    payload = hevy.fetch_hevy_workouts_page(os.environ["HEVY_API_KEY"], page=1)
+    return hevy.normalize_hevy_list_workouts(payload, user_id)
+
+
+def _db_upsert_from_rows(rows: list[dict]) -> None:
+    import psycopg2
+    from psycopg2 import errors as pg_errors
+
+    from pipeline.strength_upsert import upsert_strength_events
+
+    user_id = _require_env("SOMA_USER_ID")
+    if not rows:
+        print("db-upsert: no rows to insert (empty page?)")
+        return
+
     dsn = os.environ.get("SOMA_DATABASE_URL", "").strip() or os.environ.get(
         "DATABASE_URL", ""
     ).strip()
@@ -101,12 +171,6 @@ def cmd_db_upsert() -> None:
             "Set SOMA_DATABASE_URL (preferred) or DATABASE_URL to your Supabase "
             "Postgres connection string (see Dashboard → Database → URI)."
         )
-
-    payload = hevy.fetch_hevy_workouts_page(os.environ["HEVY_API_KEY"], page=1)
-    rows = hevy.normalize_hevy_list_workouts(payload, user_id)
-    if not rows:
-        print("db-upsert: no rows to insert (empty page?)")
-        return
 
     try:
         conn = psycopg2.connect(dsn)
@@ -154,6 +218,10 @@ def main() -> None:
     sub.add_parser("live", help="Fetch Hevy page 1 + normalize (print summary)")
     sub.add_parser("raw-disk", help="Fetch + write raw JSON under SOMA_RAW_LOCAL_DIR")
     sub.add_parser("db-upsert", help="Fetch + normalize + upsert page 1 to Postgres")
+    sub.add_parser(
+        "backfill",
+        help="Paginate all Hevy pages; write raw JSON + upsert strength_events (idempotent)",
+    )
 
     args = parser.parse_args()
     if args.command == "live":
@@ -162,6 +230,8 @@ def main() -> None:
         cmd_raw_disk()
     elif args.command == "db-upsert":
         cmd_db_upsert()
+    elif args.command == "backfill":
+        cmd_backfill()
     else:
         parser.error("unknown command")
 

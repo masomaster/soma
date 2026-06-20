@@ -3,16 +3,16 @@
 Environment (set by CDK):
 
     ENV                     staging|prod
-    SOMA_LAMBDA_SECRET_ARN  Secrets Manager JSON with at least ``DB_CONNECT_STRING``
-    RAW_BUCKET              S3 bucket for ``raw/{user_id}/...`` JSON
+    SOMA_DB_SECRET_ARN              Postgres URI (plain string secret)
+    SOMA_APPLE_WEBHOOK_SECRET_ARN   Optional webhook HMAC (plain; update_me = disabled)
+    RAW_BUCKET                      S3 bucket for ``raw/{user_id}/...`` JSON
 
     Webhook auth (optional): header ``X-Soma-Webhook-Secret`` must match when a
     non-placeholder secret is configured. Source order (see
     ``pipeline.lambda_secrets.resolve_apple_health_webhook_secret_optional``):
 
     1. Lambda env ``APPLE_HEALTH_WEBHOOK_SECRET`` (non-``update_me``), or
-    2. JSON key ``APPLE_HEALTH_WEBHOOK_SECRET`` on the same Secrets Manager secret
-       as ``DB_CONNECT_STRING`` (``SOMA_LAMBDA_SECRET_ARN``). Value ``update_me``
+    2. Plain string at ``SOMA_APPLE_WEBHOOK_SECRET_ARN``. Value ``update_me``
        or empty means **disabled** until you set a real string.
 
 Required HTTP headers on each **POST**:
@@ -33,6 +33,7 @@ import boto3
 import psycopg2
 
 from pipeline.adapters.apple_health_export import ingest_apple_health_payload_complete
+from pipeline.apple_health_cardio_dedup import filter_near_duplicate_apple_cardio
 from pipeline.apple_hevy_cardio_dedup import filter_apple_strength_cardio_when_hevy_present
 from pipeline.apple_health_webhook_event import (
     HINT_EMPTY_BODY,
@@ -143,6 +144,9 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
                 cardio_for_db, cardio_dropped_hevy = filter_apple_strength_cardio_when_hevy_present(
                     cur, user_id=user_id, cardio_rows=cardio_rows
                 )
+                cardio_for_db, cardio_dropped_hub = filter_near_duplicate_apple_cardio(
+                    cur, user_id=user_id, cardio_rows=cardio_for_db
+                )
                 upsert_cardio_events(cur, cardio_for_db)
     except Exception as exc:
         logger.exception("Postgres upsert failed: %s", exc)
@@ -151,11 +155,12 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         conn.close()
 
     logger.info(
-        "Apple Health webhook ok user=%s biometrics=%d cardio=%d (dropped_hevy_dup=%d)",
+        "Apple Health webhook ok user=%s biometrics=%d cardio=%d (dropped_hevy_dup=%d hub_dup=%d)",
         user_id,
         len(bio_rows),
         len(cardio_for_db),
         cardio_dropped_hevy,
+        cardio_dropped_hub,
     )
     return _response(
         200,
@@ -164,5 +169,6 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             "biometrics_upserted": len(bio_rows),
             "cardio_events_upserted": len(cardio_for_db),
             "cardio_events_dropped_hevy_strength_dup": cardio_dropped_hevy,
+            "cardio_events_dropped_hub_near_dup": cardio_dropped_hub,
         },
     )

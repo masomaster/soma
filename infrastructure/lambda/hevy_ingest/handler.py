@@ -3,8 +3,9 @@
 Environment (set by CDK):
 
     ENV                     staging|prod
-    SOMA_LAMBDA_SECRET_ARN  Secrets Manager JSON with ``DB_CONNECT_STRING``,
-                            ``HEVY_API_KEY``, ``SOMA_USER_ID`` (or set those as env)
+    SOMA_DB_SECRET_ARN      Postgres URI (plain string secret)
+    SOMA_HEVY_SECRET_ARN    Hevy Pro API key (plain string secret)
+    SOMA_TENANT_SECRET_ARN  Supabase auth.users UUID (plain string secret)
     RAW_BUCKET              Same S3 bucket as Apple Health webhook (``raw/{user_id}/...``)
 """
 

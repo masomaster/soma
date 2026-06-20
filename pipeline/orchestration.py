@@ -23,6 +23,8 @@ from datetime import date
 from typing import Any
 
 from pipeline import features as features_mod
+from pipeline import metric_baselines as metric_baselines_mod
+from pipeline import metric_patterns as metric_patterns_mod
 from pipeline import rules as rules_mod
 from pipeline import stat_anomalies as stat_anomalies_mod
 from pipeline.briefing import Briefing, LLMClient, generate_briefing
@@ -46,6 +48,8 @@ class DailyPipelineIO:
     persist_features: Callable[[Row], None] | None = None
     persist_briefing: Callable[[Row], None] | None = None
     persist_statistical_anomalies: Callable[[str, date, dict[str, Any]], None] | None = None
+    persist_metric_baselines: Callable[[Sequence[Row]], None] | None = None
+    load_active_patterns: Callable[[str, date], Sequence[Row]] | None = None
     deliver: Callable[[Briefing], dict[str, Any]] | None = None
     thresholds: Mapping[str, float] = field(default_factory=dict)
     to_address: str | None = None
@@ -154,8 +158,20 @@ def run_daily_pipeline(
         )
         if io.persist_statistical_anomalies is not None:
             io.persist_statistical_anomalies(user_id, run_date, result.stat_signals)
+        if window and io.persist_metric_baselines is not None:
+            baseline_rows = metric_baselines_mod.compute_metric_baselines(
+                user_id=user_id,
+                metric_date=run_date,
+                daily_metrics_history=window,
+            )
+            io.persist_metric_baselines(baseline_rows)
 
     def do_briefing() -> None:
+        active_patterns: list[str] = []
+        if io.load_active_patterns is not None:
+            active_patterns = metric_patterns_mod.active_pattern_summaries(
+                io.load_active_patterns(user_id, run_date)
+            )
         result.briefing = generate_briefing(
             user_id=user_id,
             feature_date=run_date,
@@ -164,6 +180,7 @@ def run_daily_pipeline(
             llm=io.llm,
             daily_metrics=result.daily_metrics or {},
             stat_signals=result.stat_signals,
+            active_patterns=active_patterns,
         )
         if io.persist_briefing is not None:
             io.persist_briefing(result.briefing.to_row())

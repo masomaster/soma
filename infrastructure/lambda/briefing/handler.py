@@ -9,10 +9,10 @@ Environment variables:
 
     ENV                     local|staging|prod (set by CDK in AWS)
     SOMA_RULES_PREFIX       /soma/{env}/  (SSM tree for per-user thresholds)
-    SOMA_LAMBDA_SECRET_ARN  Secrets Manager secret ARN whose string is JSON with
-                            DB_CONNECT_STRING, ANTHROPIC_API_KEY, SES_SENDER
-                            (set by CDK). Alternatively set those three as plain
-                            env vars (local dev / overrides).
+    SOMA_DB_SECRET_ARN       Postgres URI (plain string secret)
+    SOMA_BRIEFING_SECRET_ARN JSON with ANTHROPIC_API_KEY, SES_SENDER
+                            (set by CDK). Alternatively set DB_CONNECT_STRING,
+                            ANTHROPIC_API_KEY, and SES_SENDER as plain env vars.
 
     BRIEFING_MODEL          (optional) override briefing model id
     BRIEFING_EMAIL_DASHBOARD_URL  (optional) https?://... link appended to HTML email
@@ -76,6 +76,10 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
                 cur, user_id=uid, detected_date=d, rows=rows
             )
 
+    def _persist_metric_baselines(rows: list[dict[str, Any]]) -> None:
+        with conn.cursor() as cur:
+            persistence.upsert_metric_baselines(cur, rows)
+
     try:
         loaders = clients.build_db_loaders(conn)
         with conn.cursor() as cur:
@@ -99,6 +103,7 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
                     persist_features=_persister("daily_features"),
                     persist_briefing=_persister("daily_briefings"),
                     persist_statistical_anomalies=_persist_statistical_anomalies,
+                    persist_metric_baselines=_persist_metric_baselines,
                     **loaders,
                 )
                 result = run_daily_pipeline(user_id=str(user_id), run_date=run_date, io=io)

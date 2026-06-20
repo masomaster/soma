@@ -1,12 +1,32 @@
-# Apple Health export → Soma (Phase 7)
+# Apple Health hub → Soma (Phase 7)
 
-**Goal:** Land Apple Health (and HealthKit–proxied) data in **`biometrics`** and per-workout **`cardio_events`** using **raw JSON in S3 first**, then normalize → Postgres.
+**Goal:** Land **all** iPhone-side health data in **`biometrics`** and **`cardio_events`** through **one** ingest path: HealthKit → **Health Auto Export (HAE)** → webhook → raw S3 → Postgres.
+
+There is **no** separate Renpho API ingest and **no** separate Google Health / Fitbit webhook in this repo. Those sources sync into **Apple Health** first; Soma reads the combined hub.
+
+---
+
+## What flows through Apple Health
+
+| Upstream source | How it reaches Soma | Postgres |
+|-----------------|---------------------|----------|
+| Apple Watch / iPhone | Native HealthKit | `biometrics`, `cardio_events` |
+| **Renpho scale** | Renpho app → Apple Health sync → HAE metrics | `body_weight_lbs`, `body_fat_pct`, `muscle_mass_lbs` |
+| **Google Fit / Fitbit** | **Health Sync** app (Android-side data → Apple Health) → HAE | `sleep_hours`, activities, HR, etc. |
+| Strava / NRC (while API paused) | Apps write workouts into HealthKit → HAE workouts | `cardio_events` |
+| Hevy | **Separate** scheduled API ingest → `strength_events` (not Apple) | dedup vs Apple strength workouts |
+
+**Operator setup:**
+
+1. **Renpho:** enable Apple Health sync; include `body_mass`, `body_fat_percentage`, `lean_body_mass` in HAE metrics.
+2. **Health Sync:** configure Google Fit / Fitbit → Apple Health (sleep, activities, HR as needed); same HAE automations as Watch data.
+3. **HAE:** one or two POST automations (metrics + workouts) to **`AppleHealthIngestUrl`** — see below.
 
 ---
 
 ## How it works (very simple)
 
-1. **On your iPhone**, the Health app collects data from Apple Watch, Strava, Nike Run Club, etc. (whatever you’ve allowed to write into **Apple Health / HealthKit**).
+1. **On your iPhone**, the Health app collects data from Apple Watch, **Renpho**, **Health Sync** (Google/Fitbit), Strava, Nike Run Club, etc. (whatever you’ve allowed to write into **Apple Health / HealthKit**).
 
 2. **Health Auto Export** (third-party iOS app) reads HealthKit and can send a **JSON POST** to a URL you configure — **when you use a tier that supports automated / REST API exports**. The **free tier often does not** include hands-off scheduling; that’s commonly a **paid upgrade** (verify current pricing in the App Store / the developer’s site — amounts change). If you only have manual export, you can still **verify Soma** by saving JSON and running the smoke script or `curl` against your ingest URL (see below).
 
@@ -23,6 +43,26 @@
 **Repo behavior:** HAE **`data.metrics`** → **`biometrics`**; HAE **`data.workouts`** → **`cardio_events`** (`source = apple_health`). Extend `pipeline/adapters/apple_health_export.py` (metric name map) and `pipeline/adapters/apple_health_workouts.py` (workout fields) as you see real payloads.
 
 **HRV note:** HAE often exposes **SDNN** as `heart_rate_variability_sdnn`. Soma stores it under **`hrv_rmssd`** as a **v0 proxy** — not identical to RMSSD.
+
+**Body composition (Renpho scale):** Enable Renpho → Apple Health sync in the Renpho app. Include **`body_mass`**, **`body_fat_percentage`**, and **`lean_body_mass`** in your HAE metrics automation. Soma maps them to **`body_weight_lbs`**, **`body_fat_pct`**, and **`muscle_mass_lbs`**.
+
+**Google Fit / Fitbit (Health Sync):** Use the **Health Sync** app to mirror Android-side sleep, activities, and related metrics into Apple Health. They are exported by the **same** HAE POST as Watch data — no second Soma endpoint.
+
+---
+
+## Deduplication (Health Sync + multi-writer HealthKit)
+
+Health Sync and multiple apps can create **duplicate** representations of the same night’s sleep or the same workout (different HealthKit UUIDs). Soma handles this at ingest:
+
+| Layer | Behavior |
+|-------|----------|
+| **`biometrics`** | Upsert on `(user_id, source, event_date, metric)` — last POST wins for a given day/metric. **`sleep_hours`** (and sleep stage columns) use **max** per day when HAE sends multiple same-night entries (avoids averaging duplicate full-night totals). |
+| **`cardio_events`** | `ON CONFLICT (user_id, source_id) DO NOTHING` for exact UUID retries. **Near-duplicate filter** (`pipeline/apple_health_cardio_dedup.py`): same calendar day + activity type + duration ±5 min (+ distance ±0.15 mi when both present) → keep the richer row; skip duplicates already in Postgres. |
+| **Hevy strength** | Apple strength-style workouts dropped when Hevy logged sets that day (`pipeline/apple_hevy_cardio_dedup.py`). |
+
+Webhook JSON responses include **`cardio_events_dropped_hub_near_dup`** and **`cardio_events_dropped_hevy_strength_dup`**.
+
+Tune Health Sync to avoid writing the same metric from two Google sources when possible; Soma’s filters are a safety net, not a substitute for clean HealthKit permissions.
 
 ---
 
@@ -87,7 +127,7 @@ In **Add Headers**, **Key** is the **HTTP header name** (left column), **Value**
 | `X-Soma-User-Id` | Your Supabase Auth user UUID |
 | `X-Soma-Webhook-Secret` | Same random string as **`APPLE_HEALTH_WEBHOOK_SECRET`** in Secrets Manager (or Lambda env override) |
 
-**`APPLE_HEALTH_WEBHOOK_SECRET`** can be **any long random string** you invent (password manager, `openssl rand -hex 32`, etc.). Prefer storing it in **`soma-{env}-lambda-runtime`** JSON (key `APPLE_HEALTH_WEBHOOK_SECRET`) so it is not visible in the Lambda console; optional **Lambda environment variable** with the same name **overrides** the JSON value for emergencies. The placeholder **`update_me`** in JSON or env is treated as **unset** (no header required). If no real secret is configured, do **not** send `X-Soma-Webhook-Secret`.
+**`APPLE_HEALTH_WEBHOOK_SECRET`** can be **any long random string** you invent (password manager, `openssl rand -hex 32`, etc.). Store it in Secrets Manager secret **`soma-apple-health-webhook`** (plain string; not env-scoped). Optional **Lambda environment variable** with the same name **overrides** the secret for emergencies. The placeholder **`update_me`** is treated as **unset** (no header required). If no real secret is configured, do **not** send `X-Soma-Webhook-Secret`.
 
 ---
 
@@ -95,11 +135,11 @@ In **Add Headers**, **Key** is the **HTTP header name** (left column), **Value**
 
 1. **CloudFormation → Outputs** — copy **`AppleHealthIngestUrl`** (ends with `/ingest/apple-health`). That is the **only URL** you paste into Health Auto Export.
 
-2. **Secrets Manager** — same secret as the briefing Lambda: `soma-{staging|prod}-lambda-runtime`. It must contain a valid **`DB_CONNECT_STRING`**. Optionally add **`APPLE_HEALTH_WEBHOOK_SECRET`** (long random string). **`update_me`** for that key is treated as **disabled** until you replace it. Fresh CDK seeds include this key with `update_me` so the shape is documented.
+2. **Secrets Manager** — **`soma-db`** (Postgres URI) and **`soma-apple-health-webhook`** (optional webhook secret). **`update_me`** for the webhook secret is treated as **disabled** until you replace it.
 
-3. **Lambda** `soma-{env}-apple-health-webhook` → **Configuration → Environment variables** (optional): **`APPLE_HEALTH_WEBHOOK_SECRET`** overrides the JSON key when set to a non-placeholder value. Usually leave unset.
+3. **Lambda** `soma-{env}-apple-health-webhook` → **Configuration → Environment variables** (optional): **`APPLE_HEALTH_WEBHOOK_SECRET`** overrides the secret when set to a non-placeholder value. Usually leave unset.
 
-4. **Health Auto Export** (iOS) — one or two **REST API** / webhook automations (same URL and headers):  
+4. **Health Auto Export** (iOS) — one or two **REST API** / webhook automations (same URL and headers):
    - **URL:** the output URL (HTTPS **POST**).  
    - **Headers:** **`X-Soma-User-Id: <your Supabase Auth user UUID>`** (same tenant as `user_settings` / briefing).  
    - Optional: **`X-Soma-Webhook-Secret`** when a real webhook secret is configured (step 2 or 3).  
@@ -108,7 +148,7 @@ In **Add Headers**, **Key** is the **HTTP header name** (left column), **Value**
 5. **S3** — raw files land in the stack’s ingest bucket under  
    `raw/{user_id}/apple_health_export/{YYYY-MM-DD}/{timestamp}.json`.
 
-See **`infrastructure/lambda/apple_health_webhook/README.md`** for a short operator checklist.
+See **`infrastructure/lambda/apple_health_webhook/README.md`** for a short operator checklist. Staging soak (HAE wired, Health Sync, SQL checks): [staging-validation-checklist.md](./staging-validation-checklist.md).
 
 ### Troubleshooting: no Lambda logs
 
@@ -125,6 +165,7 @@ See **`infrastructure/lambda/apple_health_webhook/README.md`** for a short opera
 | `pipeline/adapters/apple_health_workouts.py` | HAE `data.workouts` (v2 + v1-style) → `cardio_events`. |
 | `pipeline/biometrics_upsert.py` | `ON CONFLICT DO UPDATE` on `biometrics`. |
 | `pipeline/apple_hevy_cardio_dedup.py` | Before cardio upsert: skip Apple strength ``cardio_events`` on days Hevy already has sets. |
+| `pipeline/apple_health_cardio_dedup.py` | Near-duplicate hub workouts (Health Sync / multi-writer UUIDs). |
 | `pipeline/lambda_secrets.py` | `resolve_db_connect_string()`; optional `APPLE_HEALTH_WEBHOOK_SECRET` from same JSON or env. |
 | `infrastructure/soma_cdk/apple_health_ingest.py` | S3 bucket + HTTP API + webhook Lambda (shares pipeline layer with briefing). |
 | `pipeline/apple_health_webhook_event.py` | API Gateway event parsing (headers, body, JSON) for the Apple Health webhook. |

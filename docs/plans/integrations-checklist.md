@@ -2,7 +2,7 @@
 
 This list is derived from [project-overview.md](./project-overview.md) and the README. **Scope:** ✅ **confirmed** — proceed with Hevy + Apple Health export path as first strength + biometrics sources unless priorities change.
 
-**Phase 7 focus (2026-06):** **Strava is paused** — no Strava (athlete) subscription, so live API / OAuth / pipeline wiring for Strava is deferred; the **in-repo adapter + offline tests** stay for when this unpauses. **Apple Health export** is the **active** track: **HAE metrics → `biometrics`**, **HAE workouts → `cardio_events`** (`apple_health`), CDK **HTTP API + Lambda + S3 raw** — see [apple-health-export.md](./apple-health-export.md). **Cardio proxy:** Strava/NRC → Apple Health on-device; HAE POSTs the combined JSON to Soma.
+**Phase 7 focus (2026-06):** **Strava is paused**. **Apple Health hub** is the single ingest path for Watch, **Renpho** body comp, **Google/Fitbit (Health Sync)**, and mirrored workouts — HAE → **`biometrics`** + **`cardio_events`**. See [apple-health-export.md](./apple-health-export.md).
 
 Use it to confirm scope before building adapters. For future changes: edit this file (or an issue) with deltas.
 
@@ -10,20 +10,18 @@ Use it to confirm scope before building adapters. For future changes: edit this 
 |---|---------|----------------------|----------------------------|------------------|
 | 1 | **Hevy** | Lifting — sets, reps, weight, RPE | REST API (API key header) | High — primary strength source |
 | 2 | **Strava** | Runs/rides — GPS, HR, pace, elevation | OAuth2 + REST | **Paused** — Standard Tier needs an **active Strava subscription**; repo has adapter + fixtures only until unpaused (§ Strava API access) |
-| 3 | **Apple Health (export)** | Steps, HRV, sleep, VO2, resting HR + **workouts** (runs/rides mirrored from Strava/NRC into Health) | Health Auto Export → **HTTPS POST** to API Gateway → Lambda → S3 raw + Postgres | High — **active**; `biometrics` + `cardio_events` (`apple_health`); URL in CFN output `AppleHealthIngestUrl` |
-| 4 | **Google Health / Fit** | Sleep, HR, HRV, weight (Fitbit migration path) | Google APIs + OAuth2 | Medium — align with Fitbit sunset / Google Health roadmap |
-| 5 | **Renpho** | Weight, body fat, muscle mass | Unofficial/community APIs (e.g. PyPI clients) | Medium |
-| 6 | **iCloud Calendar** | Busy/free blocks for coaching context | CalDAV + app-specific password | Medium — read-only polling |
-| 7 | **Anthropic** | Daily briefing + weekly analysis | REST API (API key) | High — not a “health” source but core pipeline |
-| 8 | **AWS** | S3 raw, Lambda, EventBridge, SES, SSM, Secrets Manager | SDK + IAM | High — infrastructure |
-| 9 | **Supabase** | Postgres + Auth + generated REST | Dashboard, CLI, `rest/v1`, client libs | High |
+| 3 | **Apple Health hub** | Steps, HRV, sleep, VO2, body comp (**Renpho**), **Google/Fitbit via Health Sync**, workouts (Strava/NRC mirrors) | Health Auto Export → **HTTPS POST** → API Gateway → Lambda → S3 raw + Postgres | High — **single ingest path** for all HealthKit data; see [apple-health-export.md](./apple-health-export.md) |
+| 4 | **iCloud Calendar** | Busy/free blocks for coaching context | CalDAV + app-specific password | Medium — read-only polling |
+| 5 | **Anthropic** | Daily briefing + weekly analysis | REST API (API key) | High — not a “health” source but core pipeline |
+| 6 | **AWS** | S3 raw, Lambda, EventBridge, SES, SSM, Secrets Manager | SDK + IAM | High — infrastructure |
+| 7 | **Supabase** | Postgres + Auth + generated REST | Dashboard, CLI, `rest/v1`, client libs | High |
 
 ## Explicitly deprioritized or one-off (per overview)
 
 | Service | Note |
 |---------|------|
 | **Nike Run Club** | Fragile API; **one-time historical export** only if needed. **Ongoing runs:** prefer data in **Apple Health** (NRC → Health) while Strava is paused, then HAE → Soma `biometrics`; or Strava → `cardio_events` when unpaused. |
-| **Fitbit legacy API** | Sunsetting — prefer **Google Health** path rather than new Fitbit work. |
+| **Fitbit / Google Fit** | No direct Soma ingest — use **Health Sync** → Apple Health → HAE (same as Apple Health hub). |
 
 ## Not vendor APIs but part of “integration” work
 

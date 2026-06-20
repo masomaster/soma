@@ -38,7 +38,7 @@ The briefing Lambda **reads Postgres only** — it does not call Hevy or Apple.
 - [ ] **Apple — today:** **`biometrics`** has rows for the run date so the rollup can build **`daily_health_metrics`** for **today** (enough for same-day metrics + many rules).
 - [ ] **Apple — history / z-scores:** Older **`daily_health_metrics`** accumulate as the pipeline runs. **Fewer than 14 prior calendar days** with non-null values for a given metric ⇒ **no z-score** for that metric. **`stat_signals.anomalies`** may still be **empty** when no metric clears the bar; **`anomaly_events`** often has **no** new statistical rows. **Normal on a cold start** — not a blocker for an SES smoke.
 - [ ] **Apple — history / rolling windows:** **7d/28d** features stay **partial** until windows fill; expect **`SPARSE_RECOVERY_DATA`** and nulls — no invented weekly sleep/HRV story ([briefing-llm-failure-modes.md](./briefing-llm-failure-modes.md)).
-- [ ] **Hevy:** **`strength_events`** populated for your user (e.g. **`scripts/smoke_hevy.py db-upsert`**, historical backfill, or scheduled ingest once wired — see [implementation-plan.md](./implementation-plan.md) § *Integration slices*).
+- [ ] **Hevy:** **`strength_events`** populated — confirm with SQL or run backfill: [staging-validation-checklist.md](./staging-validation-checklist.md) § Hevy backfill.
 
 ## Operational
 

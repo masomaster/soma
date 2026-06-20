@@ -106,3 +106,55 @@ def test_replace_statistical_anomaly_events_rejects_wrong_type():
     }
     with pytest.raises(KeyError, match="statistical"):
         P.replace_statistical_anomaly_events(cur, user_id="u1", detected_date=RUN, rows=[bad])
+
+
+def test_replace_llm_pattern_anomaly_events_deletes_then_inserts():
+    cur = FakeCursor()
+    row = {
+        "user_id": "u1",
+        "detected_date": RUN,
+        "metric": None,
+        "anomaly_type": "llm_pattern",
+        "description": "Sleep lag: short sleep often precedes low HRV.",
+        "severity": "info",
+        "context_json": {"title": "Sleep lag", "confidence": "low"},
+    }
+    P.replace_llm_pattern_anomaly_events(cur, user_id="u1", detected_date=RUN, rows=[row])
+    assert len(cur.calls) == 2
+    assert cur.calls[0][1] == ("u1", RUN, "llm_pattern")
+    assert cur.calls[1][1][3] == "llm_pattern"
+
+
+def test_upsert_metric_baselines_binds_rows():
+    cur = FakeCursor()
+    row = {
+        "user_id": "u1",
+        "metric_date": RUN,
+        "metric": "hrv_rmssd",
+        "window_days": 28,
+        "mean_value": 50.0,
+        "stdev_value": 2.1,
+        "sample_n": 20,
+    }
+    P.upsert_metric_baselines(cur, [row])
+    assert len(cur.calls) == 1
+    assert "INSERT INTO metric_baselines" in str(cur.calls[0][0])
+
+
+def test_replace_metric_patterns_deletes_active_then_inserts():
+    cur = FakeCursor()
+    row = {
+        "user_id": "u1",
+        "metric_a": "sleep_hours",
+        "metric_b": "hrv_rmssd",
+        "lag_days": 1,
+        "correlation": 0.62,
+        "sample_n": 20,
+        "status": "active",
+        "description": "sleep vs hrv",
+    }
+    P.replace_metric_patterns(cur, user_id="u1", rows=[row])
+    assert len(cur.calls) == 2
+    assert "DELETE FROM metric_patterns" in str(cur.calls[0][0])
+    assert cur.calls[0][1] == ("u1", "active")
+    assert "INSERT INTO metric_patterns" in str(cur.calls[1][0])

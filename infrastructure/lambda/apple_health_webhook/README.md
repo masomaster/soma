@@ -14,10 +14,12 @@ Bundled with the same **pipeline Lambda layer** as the daily briefing function
 2. In **AWS Lambda** console → `soma-{staging|prod}-apple-health-webhook` → *Configuration* → *Environment variables* (optional override):
    - **`APPLE_HEALTH_WEBHOOK_SECRET`** — if set here (non-`update_me`), it overrides the JSON key below. Usually leave unset and use Secrets Manager only.
 
-3. **Secrets Manager** — secret **`soma-{env}-lambda-runtime`** (same JSON as DB / Anthropic / SES):
+3. **Secrets Manager** — per-concern secrets (see `soma_cdk.runtime_secrets`):
 
-   - **`DB_CONNECT_STRING`** must be set (this Lambda does not need Anthropic or SES at runtime).
-   - **`APPLE_HEALTH_WEBHOOK_SECRET`** — set to a long random string to require header **`X-Soma-Webhook-Secret`**. The placeholder **`update_me`** (from a fresh seed deploy) is treated as **unset** (webhook open) until you replace it. The Apple Health Lambda already has **`secretsmanager:GetSecretValue`** on this secret.
+   - **`soma-db`** — Postgres URI (plain string).
+   - **`soma-apple-health-webhook`** — optional webhook HMAC (plain string; `update_me` = disabled).
+
+   Optional Lambda env **`APPLE_HEALTH_WEBHOOK_SECRET`** overrides the webhook secret ARN.
 
 4. In **Health Auto Export** (iOS): create a **REST API** / webhook automation:
    - **URL:** the output URL above.  
@@ -28,7 +30,11 @@ Bundled with the same **pipeline Lambda layer** as the daily briefing function
 
 ## Hevy overlap (strength)
 
-Before upserting **`cardio_events`**, the handler drops **Apple Health** workouts whose activity type is strength-like (**Traditional / Functional / Core training**) when **`strength_events`** already has **`source = hevy`** rows on the **same calendar day**. See `pipeline/apple_hevy_cardio_dedup.py`. Successful responses include **`cardio_events_dropped_hevy_strength_dup`**.
+Before upserting **`cardio_events`**, the handler drops **Apple Health** workouts whose activity type is strength-like (**Traditional / Functional / Core training**) when **`strength_events`** already has **`source = hevy`** rows on the **same calendar day**. See `pipeline/apple_hevy_cardio_dedup.py`. Responses include **`cardio_events_dropped_hevy_strength_dup`**.
+
+## Health Sync / hub near-duplicates
+
+When **Health Sync** (Google Fit / Fitbit → Apple Health) or multiple HealthKit writers post the **same workout** with different UUIDs, `pipeline/apple_health_cardio_dedup.py` drops near-matches (same day + activity type + duration ±5 min). Responses include **`cardio_events_dropped_hub_near_dup`**. See `docs/plans/apple-health-export.md` § Deduplication.
 
 ## API Gateway access logs
 

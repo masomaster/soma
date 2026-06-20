@@ -22,8 +22,17 @@ from typing import Any
 
 from pipeline.features import as_date
 
-# Metrics with roughly symmetric daily variation; IQR/EWMA can follow later.
+# Metrics with roughly symmetric daily variation.
 Z_SCORE_METRICS: tuple[str, ...] = ("hrv_rmssd", "sleep_hours", "resting_hr")
+
+# Skewed / count metrics — IQR fence (1.5×).
+IQR_METRICS: tuple[str, ...] = ("steps", "active_cal")
+
+# Slow drift via EWMA residual comparison.
+EWMA_TREND_METRICS: tuple[str, ...] = ("sleep_hours", "hrv_rmssd")
+
+EWMA_ALPHA = 0.3
+EWMA_DRIFT_THRESHOLD = 0.15  # relative change recent vs prior EWMA
 
 # Require this many non-null **prior** days before flagging (sparse recovery).
 MIN_BASELINE_DAYS = 14
@@ -63,6 +72,98 @@ def _baseline_series(
     return out
 
 
+def _percentile(sorted_vals: list[float], p: float) -> float:
+    if not sorted_vals:
+        return 0.0
+    if len(sorted_vals) == 1:
+        return sorted_vals[0]
+    k = (len(sorted_vals) - 1) * p
+    f = int(k)
+    c = min(f + 1, len(sorted_vals) - 1)
+    if f == c:
+        return sorted_vals[f]
+    return sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f)
+
+
+def _iqr_outlier(
+    baseline: list[float],
+    today: float,
+    *,
+    fence: float = 1.5,
+) -> dict[str, Any] | None:
+    if len(baseline) < MIN_BASELINE_DAYS:
+        return None
+    s = sorted(baseline)
+    q1 = _percentile(s, 0.25)
+    q3 = _percentile(s, 0.75)
+    iqr = q3 - q1
+    if iqr <= 0:
+        return None
+    low = q1 - fence * iqr
+    high = q3 + fence * iqr
+    if low <= today <= high:
+        return None
+    direction = "below_baseline" if today < low else "above_baseline"
+    return {
+        "baseline_q1": round(q1, 4),
+        "baseline_q3": round(q3, 4),
+        "baseline_iqr": round(iqr, 4),
+        "fence_low": round(low, 4),
+        "fence_high": round(high, 4),
+        "direction": direction,
+    }
+
+
+def _ewma(values: Sequence[float], alpha: float = EWMA_ALPHA) -> list[float]:
+    if not values:
+        return []
+    out = [values[0]]
+    for v in values[1:]:
+        out.append(alpha * v + (1.0 - alpha) * out[-1])
+    return out
+
+
+def _ewma_trend(
+    history: Sequence[Mapping[str, Any]],
+    *,
+    metric: str,
+    before: date,
+    min_days: int = MIN_BASELINE_DAYS,
+) -> dict[str, Any] | None:
+    """Detect slow drift when recent EWMA diverges from earlier EWMA."""
+    points: list[tuple[date, float]] = []
+    for row in history:
+        d = as_date(row.get("metric_date"))
+        if d is None or d >= before:
+            continue
+        v = _num(row.get(metric))
+        if v is not None:
+            points.append((d, v))
+    points.sort(key=lambda x: x[0])
+    if len(points) < min_days:
+        return None
+    series = [v for _, v in points]
+    smoothed = _ewma(series)
+    if len(smoothed) < 8:
+        return None
+    split = len(smoothed) // 2
+    prior = mean(smoothed[:split])
+    recent = mean(smoothed[split:])
+    if prior == 0.0:
+        return None
+    rel = (recent - prior) / abs(prior)
+    if abs(rel) < EWMA_DRIFT_THRESHOLD:
+        return None
+    direction = "declining" if rel < 0 else "rising"
+    return {
+        "metric": metric,
+        "direction": direction,
+        "relative_change": round(rel, 4),
+        "method": "ewma_drift",
+        "window_days": len(points),
+    }
+
+
 def compute_statistical_signals(
     *,
     feature_date: date,
@@ -75,13 +176,14 @@ def compute_statistical_signals(
 
     Baseline uses only rows with ``metric_date`` **strictly before**
     ``feature_date``. Today's value is read from ``today_metrics`` (same source
-    as rollup). ``trends`` is reserved for EWMA/drift (empty in slices 1–3).
+    as rollup). ``trends`` carries EWMA drift records.
 
     ``stdev`` needs at least two baseline points; with fewer than
     ``min_baseline_days`` samples the metric is skipped. Zero sample variance
     yields no z-score (no flag).
     """
     anomalies: list[dict[str, Any]] = []
+    trends: list[dict[str, Any]] = []
     for metric in Z_SCORE_METRICS:
         baseline = _baseline_series(daily_metrics_history, metric=metric, before=feature_date)
         if len(baseline) < min_baseline_days:
@@ -111,7 +213,30 @@ def compute_statistical_signals(
                 "direction": direction,
             }
         )
-    return {"anomalies": anomalies, "trends": []}
+    for metric in IQR_METRICS:
+        baseline = _baseline_series(daily_metrics_history, metric=metric, before=feature_date)
+        today = _num(today_metrics.get(metric))
+        if today is None:
+            continue
+        iqr_hit = _iqr_outlier(baseline, today)
+        if iqr_hit is None:
+            continue
+        anomalies.append(
+            {
+                "metric": metric,
+                "value": today,
+                "baseline_n": len(baseline),
+                "method": "iqr",
+                **iqr_hit,
+            }
+        )
+    for metric in EWMA_TREND_METRICS:
+        drift = _ewma_trend(
+            daily_metrics_history, metric=metric, before=feature_date, min_days=min_baseline_days
+        )
+        if drift is not None:
+            trends.append(drift)
+    return {"anomalies": anomalies, "trends": trends}
 
 
 def build_statistical_anomaly_rows(
@@ -135,21 +260,37 @@ def build_statistical_anomaly_rows(
         metric = item.get("metric")
         if not isinstance(metric, str) or not metric:
             continue
-        z = item.get("z_score")
-        z_val = _num(z) if z is not None else None
-        mean_v = item.get("baseline_mean")
-        n = item.get("baseline_n")
-        desc = (
-            f"{metric} z-score {z} vs prior baseline "
-            f"(mean {mean_v}, n={n})"
-        )
+        method = item.get("method", "z_score")
+        if method == "iqr":
+            desc = (
+                f"{metric} outside IQR fence ({item.get('direction')}) "
+                f"[{item.get('fence_low')} – {item.get('fence_high')}]"
+            )
+        else:
+            z = item.get("z_score")
+            z_val = _num(z) if z is not None else None
+            mean_v = item.get("baseline_mean")
+            n = item.get("baseline_n")
+            desc = f"{metric} z-score {z} vs prior baseline (mean {mean_v}, n={n})"
+            severity = (
+                "alert"
+                if z_val is not None and abs(z_val) >= Z_SEVERITY_ALERT_THRESHOLD
+                else "info"
+            )
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "detected_date": detected_date,
+                    "metric": metric,
+                    "anomaly_type": "statistical",
+                    "description": desc[:500],
+                    "severity": severity,
+                    "context_json": dict(item),
+                }
+            )
+            continue
         if len(desc) > 500:
             desc = desc[:497] + "..."
-        severity = (
-            "alert"
-            if z_val is not None and abs(z_val) >= Z_SEVERITY_ALERT_THRESHOLD
-            else "info"
-        )
         rows.append(
             {
                 "user_id": user_id,
@@ -157,7 +298,7 @@ def build_statistical_anomaly_rows(
                 "metric": metric,
                 "anomaly_type": "statistical",
                 "description": desc,
-                "severity": severity,
+                "severity": "info",
                 "context_json": dict(item),
             }
         )

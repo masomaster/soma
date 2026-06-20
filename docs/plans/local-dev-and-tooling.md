@@ -61,6 +61,7 @@ Use [`scripts/smoke_hevy.py`](../../scripts/smoke_hevy.py) after `pip install -e
 | `python scripts/smoke_hevy.py live` | Live Hevy `GET /v1/workouts` page 1 + normalization (no S3, no DB). |
 | `python scripts/smoke_hevy.py raw-disk` | Same fetch, plus **raw JSON** written under `SOMA_RAW_LOCAL_DIR` (default `tmp/soma_raw/`) using the same **key layout** as production S3 (`raw/{user_id}/hevy/...`). |
 | `python scripts/smoke_hevy.py db-upsert` | Page 1 fetch + normalize + **`upsert_strength_events`** against Postgres. |
+| `python scripts/smoke_hevy.py backfill` | **All pages** — historical Hevy → raw disk (optional) + **`strength_events`** (idempotent). See [staging-validation-checklist.md](./staging-validation-checklist.md) § Hevy backfill. |
 
 **Environment variables** (copy from [`.env.example`](../../.env.example)):
 
@@ -123,6 +124,7 @@ For **AWS CDK** (`make cdk-synth`), the Lambda dependency layer is built with **
 
 ## Related docs
 
+- [staging-validation-checklist.md](./staging-validation-checklist.md) — Phase 7–8 operator soak (Hevy backfill confirm/run, SQL checks).  
 - [integrations-checklist.md](./integrations-checklist.md) — services to integrate (confirm with you).  
 - [implementation-plan.md](./implementation-plan.md) — Phase 0 updated for non-Docker workflow.  
 - [../schema/README.md](../schema/README.md) — schema overview + link to full SQL.
