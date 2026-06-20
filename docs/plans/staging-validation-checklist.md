@@ -10,15 +10,17 @@ Replace `<user_id>` with your **`soma-tenant`** UUID (`SOMA_USER_ID` / `auth.use
 
 | Step | Status | Doc section |
 |------|--------|-------------|
-| Split secrets (`soma-db`, `soma-hevy`, …) | Operator | [infrastructure/lambda/briefing/README.md](../../infrastructure/lambda/briefing/README.md) |
-| Migration **`0004_signal_layers.sql`** applied | Operator | [db-access-patterns.md](./db-access-patterns.md) |
-| **`user_settings`** row + SES identity | Operator | [briefing-staging-inbox-checklist.md](./briefing-staging-inbox-checklist.md) |
+| Split secrets (`soma-db`, `soma-hevy`, …) | ✅ Done | [infrastructure/lambda/briefing/README.md](../../infrastructure/lambda/briefing/README.md) |
+| Migration **`0004_signal_layers.sql`** applied | ✅ Done | [db-access-patterns.md](./db-access-patterns.md) |
+| Migration **`0005_goals_and_product.sql`** applied | ✅ Done | [db-access-patterns.md](./db-access-patterns.md) |
+| **`user_settings`** row + SES identity | ✅ Done | [briefing-staging-inbox-checklist.md](./briefing-staging-inbox-checklist.md) |
 | Apple Health (HAE) wired | ✅ Done | [apple-health-export.md](./apple-health-export.md) |
 | Health Sync → Apple Health | ✅ Done | [integrations-checklist.md](./integrations-checklist.md) |
 | CalDAV (`CALDAV_CALENDAR_NAME=Mason`) | ✅ Done | [caldav_ingest README](../../infrastructure/lambda/caldav_ingest/README.md) |
 | Hevy historical backfill | ✅ Done | § Hevy backfill below |
-| Daily briefing SES smoke | Optional | [briefing-staging-inbox-checklist.md](./briefing-staging-inbox-checklist.md) |
-| Weekly signal job | Optional | `aws lambda invoke … soma-staging-weekly-signal` |
+| Daily briefing SES smoke | ✅ Done | [briefing-staging-inbox-checklist.md](./briefing-staging-inbox-checklist.md) |
+| Phase 8 baselines / patterns (post-briefing) | ✅ Done | § Phase 8 below |
+| Weekly signal job | ✅ Done | `aws lambda invoke … soma-staging-weekly-signal` |
 
 **CalDAV note:** Only the **`Mason`** calendar is ingested (`interventions.category = calendar_busy`). Events on shared calendars (e.g. **`Caroline`**) are **intentionally excluded** — they do not necessarily block your training window.
 
@@ -142,4 +144,4 @@ Empty **`anomaly_events`** is normal for the first ~2 weeks (z-scores need basel
 
 | Date | Hevy backfill confirmed | Briefing SES OK | Notes |
 |------|-------------------------|-----------------|-------|
-|      |                         |                 |       |
+| 2026-06-19 | ✅ | ✅ | Single-user staging soak complete (Phases 7–8). Migrations through `0005`, secrets, ingests, daily briefing, Phase 8 tables verified. |
