@@ -277,7 +277,8 @@ Tighten the **operator-visible** briefing after the first SES smoke passes: stre
 **Product goal:** Surface a **week**- and **month**-scale view of **total workload** / **training exposure** — from as simple as **total exercise time** (especially cardio minutes) through richer **modality-specific** signals (strength tonnage, hard sets, session counts). “Total stress” framing should stay **honest**: without session HR, avoid marketing a single number as deep **physiological stress** (see [workload-indicators.md](./workload-indicators.md)).
 
 - **Evidence-backed design (v0 vs v1):** [workload-indicators.md](./workload-indicators.md) — modality-split **external** load first; optional **Foster session RPE × duration** when users opt in; HR-TRIMP only when streams exist; keep **ACWR-style** ratios as **spike vs baseline** language, not injury oracle.
-- **Repo status:** Migration `0003_training_load_and_effort.sql` + `pipeline/features.py` populate **`training_load_*`** (7d/28d) and **`effort_*`** (unified heuristic index + Foster AU when RPE / `session_rpe` exist). Legacy `cardio_minutes_*` / `strength_tonnage_7d` unchanged for rules/backcompat. **Still optional later:** ISO **calendar week** rollups (today = trailing 7d / 28d only).
+- **Repo status:** Migration `0003_training_load_and_effort.sql` + `pipeline/features.py` populate **`training_load_*`** (7d/28d) and **`effort_*`** (unified heuristic index + Foster AU when RPE / `session_rpe` exist). Legacy `cardio_minutes_*` / `strength_tonnage_7d` unchanged for rules/backcompat. **`weekly_activity_summary`** already uses **ISO calendar weeks** (Mon `week_start` … Sun) for session counts, running km, and cardio minutes ([Slice A](#slice-a--structured-goals--daily-plan-build-first)).
+- **Planned — calendar Mon–Sun tonnage:** Extend `pipeline/goal_progress.compute_weekly_activity_summary` to aggregate strength **volume load** for the same Mon–Sun window (working sets only; `reps × weight_lbs` → US short tons, matching `features.py`). Store in **`summary_json`** (`strength_short_tons`, `strength_hard_sets`; optional `strength_volume_lbs`) — avoids a migration for v1. Expose via `build_dashboard_context` / coaching chat so “this week’s poundage” maps to calendar week, not trailing 7d. See [workload-indicators.md](./workload-indicators.md) § Implementation phasing. Optional later: promote to top-level columns if query volume warrants it.
 
 ### Interactive product track (slices A–D)
 
@@ -311,6 +312,8 @@ User (chat / dashboard / email)
 #### Slice A — Structured goals & daily plan (build first)
 
 **Status:** **Repo slice complete (2026-06):** migration `0005_goals_and_product.sql`, `pipeline/goal_progress.py`, `pipeline/mileage_ramp.py`, orchestration `goal_snapshot` step, briefing injection; offline tests. Operator: apply `0005` to staging; seed `goals` rows. Supabase Edge Functions (`log-run`, `update-goal`) deferred — use `pipeline/goal_tools.py` + dashboard instead.
+
+**Planned enhancement:** **Calendar Mon–Sun strength tonnage** in `weekly_activity_summary.summary_json` (working-set volume for `[week_start, week_start + 6]`; same semantics as `training_load_strength_short_tons_*` but calendar-bound). Unblocks “how much did I lift this week?” in dashboard/chat without text-to-SQL. Details: [workload-indicators.md](./workload-indicators.md) § Implementation phasing.
 
 Ship Slice A deliverables (full schema SQL can live in a future `docs/plans/goals-running-daily-planning.md` or migration comments):
 
