@@ -2,8 +2,7 @@
 
 Writes each POST body to **S3** (raw JSON), normalizes **biometrics** + **cardio_events**
 (``pipeline.adapters.apple_health_export`` + ``apple_health_workouts``), upserts to
-Postgres using the same ``soma-{env}-lambda-runtime`` secret as the briefing Lambda
-(``DB_CONNECT_STRING`` only required for this function).
+Postgres using ``soma-db`` and optional ``soma-apple-health-webhook``.
 
 Operator URL (after deploy): ``{apiUrl}/ingest/apple-health`` (``POST``).
 """
@@ -21,6 +20,8 @@ from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
+from soma_cdk.runtime_secrets import RuntimeSecrets
+
 _WEBHOOK_ASSET = os.path.join(os.path.dirname(__file__), "..", "lambda", "apple_health_webhook")
 
 
@@ -34,7 +35,7 @@ class AppleHealthIngestApi(Construct):
         *,
         env_name: str,
         deps_layer: lambda_.ILayerVersion,
-        runtime_secret_ref: str,
+        runtime_secrets: RuntimeSecrets,
     ) -> None:
         super().__init__(scope, construct_id)
 
@@ -64,17 +65,12 @@ class AppleHealthIngestApi(Construct):
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
                 "ENV": env_name,
-                "SOMA_LAMBDA_SECRET_ARN": runtime_secret_ref,
                 "RAW_BUCKET": bucket.bucket_name,
+                **runtime_secrets.env_apple_health(),
             },
         )
         bucket.grant_put(fn)
-        fn.add_to_role_policy(
-            iam.PolicyStatement(
-                actions=["secretsmanager:GetSecretValue"],
-                resources=[runtime_secret_ref],
-            )
-        )
+        runtime_secrets.grant_apple_health(fn)
 
         integration = apigwv2_int.HttpLambdaIntegration("AppleHealthLambdaIntegration", fn)
         api = apigwv2.HttpApi(
@@ -134,7 +130,7 @@ class AppleHealthIngestApi(Construct):
             self,
             "AppleHealthIngestUrl",
             value=ingest_url,
-            description="POST HAE JSON; X-Soma-User-Id required; X-Soma-Webhook-Secret when webhook key set in lambda-runtime secret or Lambda env",
+            description="POST HAE JSON; X-Soma-User-Id required; X-Soma-Webhook-Secret when webhook key set in apple-health-webhook secret or Lambda env",
         )
         CfnOutput(
             self,

@@ -20,44 +20,44 @@ directory contains **only** `handler.py`.
 
 ## Secrets (Secrets Manager)
 
-CDK creates a secret named `soma-{staging|prod}-lambda-runtime` whose value is a
-JSON object:
+CDK creates **per-concern** secrets (see `soma_cdk.runtime_secrets.RuntimeSecrets`):
 
-```json
-{
-  "DB_CONNECT_STRING": "update_me",
-  "ANTHROPIC_API_KEY": "update_me",
-  "SES_SENDER": "update_me",
-  "APPLE_HEALTH_WEBHOOK_SECRET": "update_me",
-  "HEVY_API_KEY": "update_me",
-  "SOMA_USER_ID": "update_me"
-}
-```
+| Secret name | Format | Keys / value |
+|-------------|--------|--------------|
+| `soma-db` | plain string | Postgres URI |
+| `soma-briefing` | JSON | `ANTHROPIC_API_KEY`, `SES_SENDER` |
 
-`APPLE_HEALTH_WEBHOOK_SECRET` is optional for the briefing Lambda (Apple webhook
-auth). `HEVY_API_KEY` and `SOMA_USER_ID` are for scheduled Hevy ingest (see
-[`../hevy_ingest/README.md`](../hevy_ingest/README.md)); placeholders stay `update_me`
-until you set real values.
-
-The Lambda receives `SOMA_LAMBDA_SECRET_ARN` and calls `GetSecretValue`.
+The Lambda receives `SOMA_DB_SECRET_ARN` and `SOMA_BRIEFING_SECRET_ARN` and calls
+`GetSecretValue` on each (see `pipeline.lambda_secrets.resolve_lambda_secrets`).
 
 ### Not overwriting your real values after you edit in the console
 
-Each stack has a CloudFormation parameter (e.g. **`StagingSeedLambdaRuntimeSecret`**
-for staging, **`ProdSeedLambdaRuntimeSecret`** for prod)
-with allowed values **`Yes`** / **`No`** (default **Yes** for first deploy).
+Each stack has a CloudFormation parameter **`SeedRuntimeSecrets`**
+with allowed values **`Yes`** / **`No`** (default **Yes** for first deploy). Only
+**`SomaStagingStack`** creates the secrets; **`SomaProdStack`** imports the same names.
 
-1. First `cdk deploy`: **Yes** → CloudFormation may set the secret string to the
-   `update_me` JSON.
-2. Replace the JSON in the **Secrets Manager** console with real values.
+1. First `cdk deploy`: **Yes** → CloudFormation may set placeholder secret strings.
+2. Replace values in the **Secrets Manager** console.
 3. Deploy again with **No** (CLI:  
-   `cdk deploy SomaStagingStack --parameters StagingSeedLambdaRuntimeSecret=No`  
+   `cdk deploy SomaStagingStack --parameters SeedRuntimeSecrets=No`  
    or set the parameter in the CloudFormation console). With **No**, the template
    passes `AWS::NoValue` for `SecretString` on update so CloudFormation should **not**
-   push a new string—your console values stay.
+   push new strings—your console values stay.
 
-If you leave **Yes** forever, a future template change that still embeds the
-placeholder could reset the secret—switch to **No** once the secret is real.
+If you leave **Yes** forever, a future template change that still embeds placeholders
+could reset secrets—switch to **No** once values are real.
+
+### Migrating from `soma-{env}-lambda-runtime`
+
+If you previously deployed the monolithic secret, copy fields into the new secrets
+before switching Lambdas to the new ARNs:
+
+| Old JSON key | New secret |
+|--------------|------------|
+| `DB_CONNECT_STRING` | `soma-db` (plain) |
+| `ANTHROPIC_API_KEY`, `SES_SENDER` | `soma-briefing` (JSON) |
+
+Deploy with **`SeedRuntimeSecrets=No`** after copying so placeholders are not applied.
 
 ### Local / overrides
 
@@ -72,13 +72,3 @@ See `pipeline.lambda_secrets.resolve_lambda_secrets`.
 | `ENV` | `staging` / `prod` (set by CDK) |
 | `SOMA_RULES_PREFIX` | SSM tree for thresholds, set by CDK (`/soma/{env}/`) |
 | `BRIEFING_MODEL` | optional; default `claude-haiku-4-5-20251001` (see `pipeline/briefing.py`) |
-| `BRIEFING_EMAIL_DASHBOARD_URL` | optional; full `http://` or `https://` URL shown in the HTML briefing footer (`pipeline/settings.py` + `pipeline/delivery.py`) |
-
-IAM for SSM rule reads, Secrets Manager read on that secret, and SES send is
-granted by `DailyBriefingPipeline`.
-
-## Failures and alarms
-
-Per-user errors are logged with `Daily pipeline failed for user` (Lambda may
-still return success). CDK wires CloudWatch metric filters and SNS alarms; see
-**Pipeline alarms** in [`infrastructure/README.md`](../../README.md).

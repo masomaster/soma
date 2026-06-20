@@ -87,6 +87,7 @@ def cmd_db_upsert(path: Path) -> None:
 
     from pipeline.adapters import apple_health_export
     from pipeline.adapters import apple_health_workouts
+    from pipeline.apple_health_cardio_dedup import filter_near_duplicate_apple_cardio
     from pipeline.apple_hevy_cardio_dedup import filter_apple_strength_cardio_when_hevy_present
     from pipeline.biometrics_upsert import upsert_biometrics
     from pipeline.cardio_upsert import upsert_cardio_events
@@ -121,6 +122,7 @@ def cmd_db_upsert(path: Path) -> None:
         _die(f"Postgres connection failed: {exc!s}.{hint}", code=2)
     rows_cardio_in = rows_cardio
     hevy_dropped = 0
+    hub_dropped = 0
     try:
         with conn:
             with conn.cursor() as cur:
@@ -130,6 +132,9 @@ def cmd_db_upsert(path: Path) -> None:
                     if rows_cardio_in:
                         rows_for_db, hevy_dropped = filter_apple_strength_cardio_when_hevy_present(
                             cur, user_id=user_id, cardio_rows=rows_cardio_in
+                        )
+                        rows_for_db, hub_dropped = filter_near_duplicate_apple_cardio(
+                            cur, user_id=user_id, cardio_rows=rows_for_db
                         )
                         upsert_cardio_events(cur, rows_for_db)
                 except pg_errors.UndefinedTable as exc:
@@ -153,8 +158,9 @@ def cmd_db_upsert(path: Path) -> None:
 
     print("db-upsert: OK")
     print(f"  biometrics rows: {len(rows_bio)}")
-    print(f"  cardio_events rows (upserted): {len(rows_cardio_in) - hevy_dropped}")
+    print(f"  cardio_events rows (upserted): {len(rows_cardio_in) - hevy_dropped - hub_dropped}")
     print(f"  cardio_events dropped (Hevy same-day strength dup): {hevy_dropped}")
+    print(f"  cardio_events dropped (hub near-dup): {hub_dropped}")
     print("  verify in Supabase SQL editor, e.g.:")
     print(
         "    SELECT event_date, metric, value, source FROM biometrics "

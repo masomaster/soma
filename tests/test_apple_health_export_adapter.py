@@ -44,6 +44,27 @@ def test_normalize_health_auto_export_steps_sum_and_sleep_seconds() -> None:
     assert by_day["2024-06-02"]["sleep_hours"] == pytest.approx(8.0)
 
 
+def test_sleep_hours_uses_max_when_sync_posts_duplicate_nights() -> None:
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "units": "hr",
+                    "data": [
+                        {"date": "2024-06-01", "totalSleep": 7.0},
+                        {"date": "2024-06-01", "totalSleep": 7.5},
+                    ],
+                }
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    sleep = [r for r in rows if r["metric"] == "sleep_hours"]
+    assert len(sleep) == 1
+    assert sleep[0]["value"] == pytest.approx(7.5)
+
+
 def test_event_date_camel_case_envelope() -> None:
     body = {"eventDate": "2024-06-03", "metrics": [{"metric": "steps", "value": 1200, "unit": "count"}]}
     rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
@@ -61,6 +82,36 @@ def test_weight_body_mass_maps_to_body_weight_lbs() -> None:
     assert len(rows) == 1
     assert rows[0]["metric"] == "body_weight_lbs"
     assert rows[0]["value"] == pytest.approx(180.0)
+
+
+def test_hae_body_composition_from_renpho_sync() -> None:
+    """Renpho → Apple Health → HAE: weight, fat %, lean mass."""
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "body_mass",
+                    "units": "kg",
+                    "data": [{"date": "2024-06-01", "qty": 80.5}],
+                },
+                {
+                    "name": "body_fat_percentage",
+                    "units": "%",
+                    "data": [{"date": "2024-06-01", "qty": 18.2}],
+                },
+                {
+                    "name": "lean_body_mass",
+                    "units": "kg",
+                    "data": [{"date": "2024-06-01", "qty": 65.9}],
+                },
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    by_metric = {r["metric"]: r["value"] for r in rows if r["event_date"].isoformat() == "2024-06-01"}
+    assert by_metric["body_weight_lbs"] == pytest.approx(80.5 * 2.2046226218, rel=1e-4)
+    assert by_metric["body_fat_pct"] == pytest.approx(18.2)
+    assert by_metric["muscle_mass_lbs"] == pytest.approx(65.9 * 2.2046226218, rel=1e-4)
 
 
 def test_rollup_daily_health_metrics_accepts_normalized_rows() -> None:

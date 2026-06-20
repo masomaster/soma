@@ -26,7 +26,7 @@ def _repo_root() -> str:
 
 @jsii.implements(ILocalBundling)
 class _PipInstallLayer:
-    """Install ``psycopg2-binary`` then this repo (``--no-deps``) into ``output_dir/python``."""
+    """Install ``psycopg2-binary``, ``caldav``, then this repo (``--no-deps``) into ``output_dir/python``."""
 
     def try_bundle(self, output_dir: str, options: BundlingOptions) -> bool:  # noqa: ARG002
         root = _repo_root()
@@ -50,14 +50,16 @@ class _PipInstallLayer:
                 "--only-binary=:all:",
             ]
 
+        layer_packages = ["psycopg2-binary", "caldav"]
         try:
-            subprocess.run([*base_cmd, *cross_x86, "psycopg2-binary"], check=True)
+            for pkg in layer_packages:
+                subprocess.run([*base_cmd, *cross_x86, pkg], check=True)
             subprocess.run([*base_cmd, *cross_x86, root, "--no-deps"], check=True)
         except subprocess.CalledProcessError as exc:
             raise RuntimeError(
                 "Failed to build Lambda dependency layer with local pip. "
                 "Ensure Python 3.14 matches the Lambda runtime and you can reach PyPI. "
-                "On Apple Silicon, manylinux x86_64 wheels for psycopg2-binary must exist for 3.14."
+                "On Apple Silicon, manylinux x86_64 wheels for psycopg2-binary and caldav must exist for 3.14."
             ) from exc
         return True
 
@@ -90,5 +92,5 @@ def build_pipeline_deps_layer(scope: Construct, *, construct_id: str) -> lambda_
         ),
         compatible_runtimes=[lambda_.Runtime.PYTHON_3_14],
         compatible_architectures=[lambda_.Architecture.X86_64],
-        description="Soma pipeline package + psycopg2-binary",
+        description="Soma pipeline package + psycopg2-binary + caldav",
     )

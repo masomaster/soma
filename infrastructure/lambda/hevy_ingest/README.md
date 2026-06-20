@@ -16,15 +16,17 @@ Same **Lambda layer** as the briefing and Apple webhook functions
 |-----|---------|
 | `ENV` | `staging` / `prod` (set by CDK) |
 | `RAW_BUCKET` | S3 bucket name (shared with Apple Health raw ingest) |
-| `SOMA_LAMBDA_SECRET_ARN` | Secrets Manager JSON (see below) |
+| `SOMA_DB_SECRET_ARN` | Postgres URI (plain secret) |
+| `SOMA_HEVY_SECRET_ARN` | Hevy Pro API key (plain secret) |
+| `SOMA_TENANT_SECRET_ARN` | Supabase `auth.users.id` UUID (plain secret) |
 
 ## Secrets
 
-**``DB_CONNECT_STRING``**, **``HEVY_API_KEY``**, and **``SOMA_USER_ID``** (Supabase
-``auth.users.id`` for the tenant) are read via :func:`pipeline.lambda_secrets.resolve_db_connect_string`,
+**``DB_CONNECT_STRING``**, **``HEVY_API_KEY``**, and **``SOMA_USER_ID``** are read via
+:func:`pipeline.lambda_secrets.resolve_db_connect_string`,
 :func:`pipeline.lambda_secrets.resolve_hevy_api_key`, and
-:func:`pipeline.lambda_secrets.resolve_soma_user_id` — either plain env vars or keys
-on the same ``soma-{env}-lambda-runtime`` secret as the briefing Lambda.
+:func:`pipeline.lambda_secrets.resolve_soma_user_id` — either plain env vars or the
+matching ``soma-db``, ``soma-hevy``, and ``soma-tenant`` secrets.
 
 Placeholder ``update_me`` is rejected for the Hevy key and user id until you replace
 them in Secrets Manager (same seed parameter pattern as

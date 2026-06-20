@@ -42,6 +42,12 @@ KG_TO_LBS = 2.2046226218
 # Metrics that aggregate by summing intraday samples (HealthKit daily semantics).
 _SUM_PER_DAY: frozenset[str] = frozenset({"steps", "active_cal"})
 
+# Synced sources (Health Sync, multiple HealthKit writers) may post duplicate daily
+# totals — take the max rather than mean/sum so sleep is not halved or doubled.
+_MAX_PER_DAY: frozenset[str] = frozenset(
+    {"sleep_hours", "sleep_deep_hrs", "sleep_rem_hrs", "sleep_score"}
+)
+
 # Normalized HAE ``name`` (see :func:`_normalize_vendor_metric_name`) → Soma canonical.
 _HAE_NAME_TO_CANONICAL: dict[str, str] = {
     "active_energy": "active_cal",
@@ -56,6 +62,7 @@ _HAE_NAME_TO_CANONICAL: dict[str, str] = {
     "body_mass": "body_weight_lbs",
     "weight_body_mass": "body_weight_lbs",
     "body_fat_percentage": "body_fat_pct",
+    "lean_body_mass": "muscle_mass_lbs",
     "sleep_analysis": "sleep_hours",
     "sleepanalysis": "sleep_hours",
 }
@@ -135,15 +142,20 @@ def _canonical_for_hae_name(name: str) -> str | None:
     return _HAE_NAME_TO_CANONICAL.get(key)
 
 
-def _body_weight_lbs_from_qty(qty: float, units: str) -> float | None:
+def _mass_lbs_from_qty(qty: float, units: str) -> float | None:
+    """Convert HealthKit mass quantity to US pounds (``body_weight_lbs``, ``muscle_mass_lbs``)."""
     u = (units or "").strip().lower()
     if "kg" in u:
         return round(qty * KG_TO_LBS, 4)
     if "lb" in u:
         return float(qty)
     # Unknown unit — assume lb (US typical for Health app)
-    logger.warning("body_mass without clear units %r; assuming pounds", units)
+    logger.warning("mass metric without clear units %r; assuming pounds", units)
     return float(qty)
+
+
+def _body_weight_lbs_from_qty(qty: float, units: str) -> float | None:
+    return _mass_lbs_from_qty(qty, units)
 
 
 def _iter_hae_metric_samples(
@@ -192,11 +204,11 @@ def _iter_hae_metric_samples(
         if d is None:
             continue
 
-        if canonical == "body_weight_lbs":
+        if canonical in {"body_weight_lbs", "muscle_mass_lbs"}:
             q = _qty_from_entry(entry)
             if q is None:
                 continue
-            w = _body_weight_lbs_from_qty(q, units_s or "")
+            w = _mass_lbs_from_qty(q, units_s or "")
             v = w
         else:
             v = _qty_from_entry(entry)
@@ -211,13 +223,14 @@ def _rollup_samples(
     samples: list[tuple[date, str, float, str | None]],
 ) -> list[tuple[date, str, float, str | None]]:
     """Merge same (day, metric) using sum vs mean rules."""
-    # key -> {"sum": float, "n": int, "unit": str|None}
+    # key -> {"sum": float, "n": int, "max": float, "unit": str|None}
     buckets: dict[tuple[date, str], dict[str, Any]] = {}
     for d, metric, value, unit in samples:
         key = (d, metric)
-        b = buckets.setdefault(key, {"sum": 0.0, "n": 0, "unit": unit})
+        b = buckets.setdefault(key, {"sum": 0.0, "n": 0, "max": 0.0, "unit": unit})
         b["sum"] += value
         b["n"] += 1
+        b["max"] = max(b["max"], value)
         if unit and b.get("unit") is None:
             b["unit"] = unit
 
@@ -225,6 +238,8 @@ def _rollup_samples(
     for (d, metric), b in sorted(buckets.items(), key=lambda x: (x[0][0], x[0][1])):
         if metric in _SUM_PER_DAY:
             val = b["sum"]
+        elif metric in _MAX_PER_DAY:
+            val = b["max"]
         else:
             n = b["n"]
             val = b["sum"] / n if n else 0.0

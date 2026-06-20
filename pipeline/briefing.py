@@ -47,6 +47,8 @@ SYSTEM_GUIDELINES = (
     "STATISTICAL_SIGNALS lists z-score outliers vs the athlete's prior daily baseline "
     "(see baseline_n). Do not contradict listed z-scores or directions; if the "
     "anomalies list is empty, do not invent statistical outliers. "
+    "TRENDS lists EWMA drift signals — narrate only if present. "
+    "ACTIVE_PATTERNS lists confirmed cross-metric correlations — cite briefly, do not invent new ones. "
     "Use plain sentences; at most light Markdown (bold, short bullets). "
     "Keep it under 150 words, warm but direct."
 )
@@ -91,6 +93,7 @@ def build_prompt(
     features: Mapping[str, Any],
     daily_metrics: Mapping[str, Any] | None = None,
     stat_signals: Mapping[str, Any] | None = None,
+    active_patterns: Sequence[str] | None = None,
 ) -> str:
     """Render the user prompt: the pre-computed flags + features the model must narrate."""
     flag_lines = (
@@ -110,6 +113,12 @@ def build_prompt(
     )
     stat_block = stat_signals if stat_signals is not None else {"anomalies": [], "trends": []}
     stat_blob = json.dumps(stat_block, indent=2, sort_keys=True, default=str)
+    trends = stat_block.get("trends") if isinstance(stat_block.get("trends"), list) else []
+    patterns_lines = (
+        "\n".join(f"- {p}" for p in active_patterns)
+        if active_patterns
+        else "- None stored for this user."
+    )
     stat_preamble = (
         "No statistical outliers vs prior baseline for monitored metrics today "
         "(insufficient history or within normal variation)."
@@ -122,6 +131,9 @@ def build_prompt(
         f"FEATURES (rolling computed metrics):\n{feature_blob}\n\n"
         f"TODAY'S METRICS:\n{metrics_blob}\n\n"
         f"STATISTICAL_SIGNALS (pre-computed; {stat_preamble}):\n{stat_blob}\n\n"
+        f"TRENDS (EWMA drift; narrate only if non-empty):\n"
+        f"{json.dumps(trends, indent=2, sort_keys=True, default=str)}\n\n"
+        f"ACTIVE_PATTERNS (stored correlations; do not invent):\n{patterns_lines}\n\n"
         "UNITS / INTERPRETATION (do not contradict):\n"
         "- strength_tonnage_7d is US short tons (2000 lb): sum over the window of "
         "(reps x weight_lbs) / 2000. Do not call it \"metric tonnes\" unless you "
@@ -155,6 +167,7 @@ def generate_briefing(
     llm: LLMClient,
     daily_metrics: Mapping[str, Any] | None = None,
     stat_signals: Mapping[str, Any] | None = None,
+    active_patterns: Sequence[str] | None = None,
     model: str = DEFAULT_BRIEFING_MODEL,
 ) -> Briefing:
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
@@ -169,6 +182,7 @@ def generate_briefing(
         features=features,
         daily_metrics=daily_metrics,
         stat_signals=stat_block,
+        active_patterns=active_patterns,
     )
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
@@ -176,6 +190,8 @@ def generate_briefing(
     logger.info("Generated briefing for %s on %s (%d flags)", user_id, feature_date, len(flags))
     features_json = {k: _jsonable(v) for k, v in features.items() if v is not None}
     features_json["stat_signals"] = stat_block
+    if active_patterns:
+        features_json["active_patterns"] = list(active_patterns)
     return Briefing(
         user_id=user_id,
         briefing_date=feature_date,
