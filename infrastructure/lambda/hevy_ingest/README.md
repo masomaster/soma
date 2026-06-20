@@ -32,6 +32,16 @@ Placeholder ``update_me`` is rejected for the Hevy key and user id until you rep
 them in Secrets Manager (same seed parameter pattern as
 [`../briefing/README.md`](../briefing/README.md)).
 
+## Historical backfill
+
+Scheduled ingest only adds **new** workouts after deploy. For full Hevy history, run once from your laptop:
+
+```bash
+python scripts/smoke_hevy.py backfill
+```
+
+Confirm or troubleshoot: [docs/plans/staging-validation-checklist.md](../../../docs/plans/staging-validation-checklist.md) § Hevy backfill.
+
 ## Schedule
 
 CDK creates an EventBridge **Scheduler** schedule named ``soma-{env}-hevy-ingest`` at **09:00 UTC** by default, before the daily briefing schedule (11:00 UTC) so ``strength_events`` is current for features.

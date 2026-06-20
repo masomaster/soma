@@ -127,7 +127,7 @@ In **Add Headers**, **Key** is the **HTTP header name** (left column), **Value**
 | `X-Soma-User-Id` | Your Supabase Auth user UUID |
 | `X-Soma-Webhook-Secret` | Same random string as **`APPLE_HEALTH_WEBHOOK_SECRET`** in Secrets Manager (or Lambda env override) |
 
-**`APPLE_HEALTH_WEBHOOK_SECRET`** can be **any long random string** you invent (password manager, `openssl rand -hex 32`, etc.). Prefer storing it in **`soma-{env}-lambda-runtime`** JSON (key `APPLE_HEALTH_WEBHOOK_SECRET`) so it is not visible in the Lambda console; optional **Lambda environment variable** with the same name **overrides** the JSON value for emergencies. The placeholder **`update_me`** in JSON or env is treated as **unset** (no header required). If no real secret is configured, do **not** send `X-Soma-Webhook-Secret`.
+**`APPLE_HEALTH_WEBHOOK_SECRET`** can be **any long random string** you invent (password manager, `openssl rand -hex 32`, etc.). Store it in Secrets Manager secret **`soma-apple-health-webhook`** (plain string; not env-scoped). Optional **Lambda environment variable** with the same name **overrides** the secret for emergencies. The placeholder **`update_me`** is treated as **unset** (no header required). If no real secret is configured, do **not** send `X-Soma-Webhook-Secret`.
 
 ---
 
@@ -135,11 +135,11 @@ In **Add Headers**, **Key** is the **HTTP header name** (left column), **Value**
 
 1. **CloudFormation → Outputs** — copy **`AppleHealthIngestUrl`** (ends with `/ingest/apple-health`). That is the **only URL** you paste into Health Auto Export.
 
-2. **Secrets Manager** — same secret as the briefing Lambda: `soma-{staging|prod}-lambda-runtime`. It must contain a valid **`DB_CONNECT_STRING`**. Optionally add **`APPLE_HEALTH_WEBHOOK_SECRET`** (long random string). **`update_me`** for that key is treated as **disabled** until you replace it. Fresh CDK seeds include this key with `update_me` so the shape is documented.
+2. **Secrets Manager** — **`soma-db`** (Postgres URI) and **`soma-apple-health-webhook`** (optional webhook secret). **`update_me`** for the webhook secret is treated as **disabled** until you replace it.
 
-3. **Lambda** `soma-{env}-apple-health-webhook` → **Configuration → Environment variables** (optional): **`APPLE_HEALTH_WEBHOOK_SECRET`** overrides the JSON key when set to a non-placeholder value. Usually leave unset.
+3. **Lambda** `soma-{env}-apple-health-webhook` → **Configuration → Environment variables** (optional): **`APPLE_HEALTH_WEBHOOK_SECRET`** overrides the secret when set to a non-placeholder value. Usually leave unset.
 
-4. **Health Auto Export** (iOS) — one or two **REST API** / webhook automations (same URL and headers):  
+4. **Health Auto Export** (iOS) — one or two **REST API** / webhook automations (same URL and headers):
    - **URL:** the output URL (HTTPS **POST**).  
    - **Headers:** **`X-Soma-User-Id: <your Supabase Auth user UUID>`** (same tenant as `user_settings` / briefing).  
    - Optional: **`X-Soma-Webhook-Secret`** when a real webhook secret is configured (step 2 or 3).  
@@ -148,7 +148,7 @@ In **Add Headers**, **Key** is the **HTTP header name** (left column), **Value**
 5. **S3** — raw files land in the stack’s ingest bucket under  
    `raw/{user_id}/apple_health_export/{YYYY-MM-DD}/{timestamp}.json`.
 
-See **`infrastructure/lambda/apple_health_webhook/README.md`** for a short operator checklist.
+See **`infrastructure/lambda/apple_health_webhook/README.md`** for a short operator checklist. Staging soak (HAE wired, Health Sync, SQL checks): [staging-validation-checklist.md](./staging-validation-checklist.md).
 
 ### Troubleshooting: no Lambda logs
 
