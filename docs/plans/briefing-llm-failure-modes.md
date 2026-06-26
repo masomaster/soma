@@ -1,6 +1,6 @@
 # Briefing LLM — known failure modes and mitigations (Phase 6.6)
 
-The daily briefing uses a small model (**Haiku-class**) over a **structured prompt**: pre-computed **flags** + **features** + optional **same-day metrics** + **STATISTICAL_SIGNALS** (z-score outliers when baseline history is sufficient). The model’s job is to **narrate**, not to re-derive physiology. Below are common failure modes and how Soma reduces them.
+The daily briefing uses a small model (**Haiku-class**) over a **structured prompt**: pre-computed **flags** + **features** + optional **same-day metrics** + **STATISTICAL_SIGNALS** (z-score outliers when baseline history is sufficient). The model’s job is to **narrate**, not to re-derive physiology. Output tone is **hobbyist-friendly**: neutral reminders and gentle suggestions — not commands, alarms, or clinical urgency. Below are common failure modes and how Soma reduces them.
 
 ## Inventing recovery narrative without data
 
@@ -23,7 +23,7 @@ The daily briefing uses a small model (**Haiku-class**) over a **structured prom
 
 ## Misreading null ACWR as “high load”
 
-**Symptom:** Injury-risk language when `acute_chronic_ratio` is `null` (often little or no cardio in the chronic window).
+**Symptom:** Load-spike or injury-risk language when `acute_chronic_ratio` is `null` (often little or no cardio in the chronic window).
 
 **Mitigations:**
 
@@ -36,8 +36,17 @@ The daily briefing uses a small model (**Haiku-class**) over a **structured prom
 
 **Mitigations:**
 
-- System prompt: do not contradict flags; lead with most severe flag.
+- System prompt: do not contradict flags; lead with the highest-priority signal.
 - Staging checklist: compare narrative to flag list (`docs/plans/briefing-staging-inbox-checklist.md`).
+
+## Alarmist or commanding tone
+
+**Symptom:** Briefing reads like a medical warning or order — e.g. “you must,” “critical,” “urgent,” “immediately,” or mandatory injury-risk language when the user is a hobbyist.
+
+**Mitigations:**
+
+- `SYSTEM_GUIDELINES`: hobbyist framing, low-pressure tone, explicit ban on commanding/alarmist phrasing; prefer soft suggestions (`pipeline/briefing.py`).
+- Staging checklist: skim for commanding or clinical urgency words that do not match the intended voice.
 
 ## Partial recovery coverage (sleep only or HRV only)
 
