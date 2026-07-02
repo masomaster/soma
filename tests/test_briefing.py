@@ -58,6 +58,25 @@ def test_build_prompt_includes_goal_snapshot():
     assert "Strength session needed" in prompt
 
 
+def test_build_prompt_includes_guidelines():
+    from pipeline.guidelines import GuidelinesContext
+
+    ctx = GuidelinesContext(
+        my_goals="Run a marathon in fall.",
+        injury_history="Right knee — limit downhill volume.",
+    )
+    prompt = B.build_prompt(
+        feature_date=RUN,
+        flags=[],
+        features={},
+        guidelines=ctx,
+    )
+    assert "PERSONAL GOALS" in prompt
+    assert "marathon" in prompt
+    assert "INJURY HISTORY" in prompt
+    assert "knee" in prompt
+
+
 def test_generate_briefing_uses_llm_and_maps_to_row():
     captured = {}
 

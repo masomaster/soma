@@ -274,10 +274,22 @@ def _iso(val: Any) -> str | None:
 def validate_bounded_sql(sql: str, *, user_id: str) -> str:
     """Reject unsafe SQL before execution (Slice C read path).
 
+    Uses sqlglot AST checks when available; falls back to string guards.
+
     Raises:
         ValueError: If the statement is not a safe read-only SELECT.
     """
-    normalized = sql.strip().rstrip(";").lower()
+    cleaned = sql.strip().rstrip(";")
+    if not cleaned:
+        raise ValueError("Empty SQL")
+    try:
+        return _validate_bounded_sql_ast(cleaned, user_id=user_id)
+    except ImportError:
+        return _validate_bounded_sql_string(cleaned, user_id=user_id)
+
+
+def _validate_bounded_sql_string(sql: str, *, user_id: str) -> str:
+    normalized = sql.lower()
     if not normalized.startswith("select"):
         raise ValueError("Only SELECT queries are allowed")
     forbidden = (
@@ -299,5 +311,80 @@ def validate_bounded_sql(sql: str, *, user_id: str) -> str:
         raise ValueError("Query must filter by user_id")
     if user_id.lower() not in normalized.replace("'", ""):
         raise ValueError("Query must include the requesting user's id")
-    # Note: production would use sqlglot AST validation; this is a v0 guard.
-    return sql.strip()
+    return sql
+
+
+def _validate_bounded_sql_ast(sql: str, *, user_id: str) -> str:
+    import sqlglot
+    from sqlglot import exp
+
+    try:
+        parsed = sqlglot.parse_one(sql, read="postgres")
+    except Exception as exc:
+        raise ValueError(f"Invalid SQL: {exc}") from exc
+
+    if not isinstance(parsed, exp.Select):
+        raise ValueError("Only SELECT queries are allowed")
+
+    for node in parsed.walk():
+        if isinstance(
+            node,
+            (
+                exp.Insert,
+                exp.Update,
+                exp.Delete,
+                exp.Drop,
+                exp.Alter,
+                exp.Create,
+                exp.TruncateTable,
+                exp.Grant,
+                exp.Revoke,
+            ),
+        ):
+            raise ValueError(f"Forbidden statement type: {type(node).__name__}")
+
+    tables = {t.name.lower() for t in parsed.find_all(exp.Table) if t.name}
+    unknown = tables - {t.lower() for t in ALLOWED_QUERY_TABLES}
+    if unknown:
+        raise ValueError(f"Table not allowed: {', '.join(sorted(unknown))}")
+
+    if not _sql_references_user_id(parsed, user_id=user_id):
+        raise ValueError("Query must filter by user_id for the requesting user")
+
+    limit = parsed.args.get("limit")
+    if limit is not None:
+        try:
+            limit_val = int(limit.expression.this)  # type: ignore[union-attr]
+        except (AttributeError, TypeError, ValueError):
+            limit_val = None
+        if limit_val is not None and limit_val > 500:
+            raise ValueError("LIMIT must be 500 or fewer")
+
+    return sql
+
+
+def _sql_references_user_id(parsed: Any, *, user_id: str) -> bool:
+    from sqlglot import exp
+
+    uid = user_id.lower()
+    for node in parsed.walk():
+        if isinstance(node, exp.EQ):
+            left = node.left
+            right = node.right
+            if isinstance(left, exp.Column) and left.name and left.name.lower() == "user_id":
+                rval = _literal_text(right)
+                if rval and rval.lower() == uid:
+                    return True
+            if isinstance(right, exp.Column) and right.name and right.name.lower() == "user_id":
+                lval = _literal_text(left)
+                if lval and lval.lower() == uid:
+                    return True
+    return False
+
+
+def _literal_text(node: Any) -> str | None:
+    from sqlglot import exp
+
+    if isinstance(node, exp.Literal):
+        return str(node.this)
+    return None
