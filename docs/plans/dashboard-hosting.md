@@ -1,5 +1,7 @@
 # Dashboard hosting (single user, public URL)
 
+> **Live:** https://somaapp.streamlit.app — deployed on Streamlit Community Cloud. Briefing emails link here via the GitHub variable `SOMA_DASHBOARD_URL`.
+
 Soma’s dashboard is **`dashboard/app.py`** (Streamlit). For a **free, HTTPS, any-device** URL with **Supabase Auth** in front of your data, deploy to **[Streamlit Community Cloud](https://streamlit.io/cloud)** — not AWS containers.
 
 **Cost:** $0 on the Community Cloud hobby tier for a personal app.
