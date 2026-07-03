@@ -1,0 +1,23 @@
+{
+  "data": {
+    "metrics": [
+      {
+        "name": "sleep_analysis",
+        "units": "hr",
+        "data": [
+          {
+            "date": "2024-06-01 06:30:00 -0700",
+            "sleepStart": "2024-05-31 22:45:00 -0700",
+            "sleepEnd": "2024-06-01 06:30:00 -0700",
+            "totalSleep": 7.5,
+            "inBed": 7.75,
+            "deep": 1.6,
+            "rem": 1.9,
+            "core": 3.6,
+            "awake": 0.4
+          }
+        ]
+      }
+    ]
+  }
+}

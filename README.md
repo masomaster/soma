@@ -24,6 +24,7 @@ Phased implementation plan, orchestration/timing notes, and doc validation:
 - **[docs/plans/project-overview-supplement.md](docs/plans/project-overview-supplement.md)** — pipeline timing, inconsistencies flagged, open questions  
 - **[docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md)** — no-Docker workflow, Bruno, Supabase REST mapping  
 - **[docs/plans/integrations-checklist.md](docs/plans/integrations-checklist.md)** — services to integrate (confirm / edit)  
+- **[docs/plans/fitbit-sleep-score.md](docs/plans/fitbit-sleep-score.md)** — why Fitbit's sleep score can't cross Apple Health, how Soma ingests sleep stages and computes its own score  
 - **[infrastructure/README.md](infrastructure/README.md)** — CDK app: single `SomaStack`, synth & deploy  
 
 ## Status

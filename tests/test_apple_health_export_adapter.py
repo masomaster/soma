@@ -65,6 +65,103 @@ def test_sleep_hours_uses_max_when_sync_posts_duplicate_nights() -> None:
     assert sleep[0]["value"] == pytest.approx(7.5)
 
 
+def test_sleep_analysis_row_emits_deep_and_rem_stage_hours() -> None:
+    payload = _load("health_auto_export_sleep_stages_redacted.json")
+    rows = apple_health_export.normalize_apple_health_export_payload(payload, user_id=_USER)
+    by_metric = {r["metric"]: r for r in rows if r["event_date"].isoformat() == "2024-06-01"}
+    assert by_metric["sleep_hours"]["value"] == pytest.approx(7.5)
+    assert by_metric["sleep_deep_hrs"]["value"] == pytest.approx(1.6)
+    assert by_metric["sleep_rem_hrs"]["value"] == pytest.approx(1.9)
+    assert by_metric["sleep_deep_hrs"]["unit"] == "h"
+
+
+def test_sleep_stage_minutes_converted_to_hours_by_magnitude() -> None:
+    """No explicit unit: stage values that look like minutes are divided by 60."""
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "data": [{"date": "2024-06-01", "totalSleep": 7.5, "deep": 96, "rem": 114}],
+                }
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    by_metric = {r["metric"]: r["value"] for r in rows}
+    assert by_metric["sleep_deep_hrs"] == pytest.approx(1.6)
+    assert by_metric["sleep_rem_hrs"] == pytest.approx(1.9)
+
+
+def test_sleep_stage_seconds_converted_to_hours() -> None:
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "units": "s",
+                    "data": [{"date": "2024-06-01", "deep": 5760, "rem": 6840}],
+                }
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    by_metric = {r["metric"]: r["value"] for r in rows}
+    assert by_metric["sleep_deep_hrs"] == pytest.approx(1.6)
+    assert by_metric["sleep_rem_hrs"] == pytest.approx(1.9)
+
+
+def test_standalone_sleep_stage_metric_names_map_to_canonical() -> None:
+    body = {
+        "data": {
+            "metrics": [
+                {"name": "sleep_deep", "units": "min", "data": [{"date": "2024-06-01", "qty": 96}]},
+                {"name": "rem_sleep", "units": "min", "data": [{"date": "2024-06-01", "qty": 114}]},
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    by_metric = {r["metric"]: r["value"] for r in rows}
+    assert by_metric["sleep_deep_hrs"] == pytest.approx(1.6)
+    assert by_metric["sleep_rem_hrs"] == pytest.approx(1.9)
+
+
+def test_sleep_stage_uses_max_when_sync_posts_duplicate_nights() -> None:
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "units": "hr",
+                    "data": [
+                        {"date": "2024-06-01", "totalSleep": 7.0, "deep": 1.2, "rem": 1.5},
+                        {"date": "2024-06-01", "totalSleep": 7.5, "deep": 1.6, "rem": 1.9},
+                    ],
+                }
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    by_metric = {r["metric"]: r["value"] for r in rows if r["metric"].startswith("sleep")}
+    assert by_metric["sleep_deep_hrs"] == pytest.approx(1.6)
+    assert by_metric["sleep_rem_hrs"] == pytest.approx(1.9)
+
+
+def test_sleep_stages_via_soma_envelope() -> None:
+    body = {
+        "event_date": "2024-06-01",
+        "metrics": [
+            {"metric": "sleep_hours", "value": 7.5, "unit": "h"},
+            {"metric": "sleep_deep_hrs", "value": 1.6, "unit": "h"},
+            {"metric": "sleep_rem_hrs", "value": 1.9, "unit": "h"},
+        ],
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    by_metric = {r["metric"]: r["value"] for r in rows}
+    assert by_metric["sleep_deep_hrs"] == pytest.approx(1.6)
+    assert by_metric["sleep_rem_hrs"] == pytest.approx(1.9)
+
+
 def test_event_date_camel_case_envelope() -> None:
     body = {"eventDate": "2024-06-03", "metrics": [{"metric": "steps", "value": 1200, "unit": "count"}]}
     rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
