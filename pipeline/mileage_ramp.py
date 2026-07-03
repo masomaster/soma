@@ -13,9 +13,9 @@ from typing import Any
 from pipeline.cardio_quality import (
     DEFAULT_RUN_PACE_MAX_SEC_MI,
     DEFAULT_RUN_PACE_MIN_SEC_MI,
-    assess_cardio_quality,
-    has_suspect_distance,
+    is_overrecorded_distance,
 )
+from pipeline.units import KM_PER_MILE
 
 # Default max week-over-week increase before flagging (percent).
 DEFAULT_MAX_WEEKLY_INCREASE_PCT = 15.0
@@ -32,7 +32,7 @@ def _km_from_row(row: Mapping[str, Any]) -> float:
         return float(km)
     miles = row.get("distance_miles")
     if miles is not None:
-        return float(miles) * 1.60934
+        return float(miles) * KM_PER_MILE
     return 0.0
 
 
@@ -46,8 +46,12 @@ def sum_running_km(
 ) -> float:
     """Sum running km for ``[week_start, week_start + 6]`` from sessions + cardio.
 
-    Pace bands (defaulting to the module constants; SSM-overridable upstream) tag
-    which cardio runs have an implausible distance so it is left out of the total.
+    Only *over-recorded* distances (an implausibly fast pace, below the min band —
+    typically GPS multiplication) are excluded so they cannot corrupt the total.
+    An implausibly *slow* pace (walk breaks / a paused timer) is kept: the athlete
+    really covered that distance, so a genuine logged run is never silently zeroed.
+    ``run_pace_max_sec_mi`` is retained for signature compatibility with the daily
+    pipeline (it drives the separate data-quality note, not this sum).
     """
     week_end = week_start + timedelta(days=6)
     total = 0.0
@@ -67,14 +71,7 @@ def sum_running_km(
             ed = date.fromisoformat(ed[:10])
         activity = str(row.get("activity_type") or "").lower()
         if week_start <= ed <= week_end and "run" in activity:
-            # Suspect distance (impossible pace) would corrupt weekly mileage;
-            # skip its distance — the run still counts for frequency elsewhere.
-            quality = assess_cardio_quality(
-                row,
-                run_pace_min_sec_mi=run_pace_min_sec_mi,
-                run_pace_max_sec_mi=run_pace_max_sec_mi,
-            )
-            if has_suspect_distance(quality):
+            if is_overrecorded_distance(row, run_pace_min_sec_mi=run_pace_min_sec_mi):
                 continue
             total += _km_from_row(row)
     return round(total, 2)

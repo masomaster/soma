@@ -21,6 +21,7 @@ from typing import Any
 
 from pipeline.features import ACUTE_WINDOW_DAYS, LBS_PER_SHORT_TON, as_date
 from pipeline.rules import Flag
+from pipeline.units import km_to_miles
 
 GLANCE_HEADING = "## At a Glance"
 
@@ -143,7 +144,8 @@ def build_glance_metrics(
         if isinstance(mileage, Mapping):
             this_week_km = _num(mileage, "this_week_km")
             if this_week_km is not None:
-                lines.append(("Run distance (this week)", f"{_fmt_num(this_week_km, decimals=1)} km"))
+                miles = km_to_miles(this_week_km)
+                lines.append(("Run distance (this week)", f"{_fmt_num(miles, decimals=1)} mi"))
 
     resting_hr = _num(metrics, "resting_hr")
     if resting_hr is not None:

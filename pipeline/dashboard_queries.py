@@ -13,7 +13,22 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from pipeline.cardio_quality import DEFAULT_RUN_PACE_MIN_SEC_MI, is_overrecorded_distance
 from pipeline.features import ACUTE_WINDOW_DAYS
+from pipeline.units import km_to_miles
+
+
+def _mileage_check_in_miles(mileage: Mapping[str, Any]) -> dict[str, Any]:
+    """Re-key a stored (km) ``mileage_check`` block into miles for display / LLM.
+
+    ``change_pct`` is a unit-independent ratio and is passed through unchanged.
+    """
+    return {
+        "flag": mileage.get("flag"),
+        "this_week_miles": km_to_miles(mileage.get("this_week_km")),
+        "last_week_miles": km_to_miles(mileage.get("last_week_km")),
+        "change_pct": mileage.get("change_pct"),
+    }
 
 
 def _utc_today() -> date:
@@ -126,7 +141,6 @@ def build_dashboard_context(
     latest_metrics: Mapping[str, Any] | None,
     goal_snapshot: Mapping[str, Any] | None,
     weekly_summary: Mapping[str, Any] | None,
-    provider_connections: Sequence[Mapping[str, Any]] | None = None,
     recent_anomalies: Sequence[Mapping[str, Any]] | None = None,
     metric_patterns: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -169,28 +183,18 @@ def build_dashboard_context(
         ctx["goals_status"] = _coerce_json_mapping(goal_snapshot.get("goals_status")) or None
         ctx["todays_focus"] = goal_snapshot.get("todays_focus")
         mileage = _coerce_json_mapping(goal_snapshot.get("mileage_check"))
-        ctx["mileage_check"] = mileage or goal_snapshot.get("mileage_check")
+        ctx["mileage_check"] = _mileage_check_in_miles(mileage) if mileage else None
     if weekly_summary:
         summary_json = _coerce_json_mapping(weekly_summary.get("summary_json"))
         ctx["weekly_summary"] = {
             "week_start": _iso(weekly_summary.get("week_start")),
             "strength_sessions": weekly_summary.get("strength_sessions"),
-            "running_km": weekly_summary.get("running_km"),
+            "running_miles": km_to_miles(weekly_summary.get("running_km")),
             "cardio_minutes": weekly_summary.get("cardio_minutes"),
             "strength_short_tons": summary_json.get("strength_short_tons"),
             "strength_hard_sets": summary_json.get("strength_hard_sets"),
             "strength_volume_lbs": summary_json.get("strength_volume_lbs"),
         }
-    if provider_connections:
-        ctx["sync_health"] = [
-            {
-                "provider": r.get("provider"),
-                "status": r.get("status"),
-                "last_sync_at": r.get("last_sync_at"),
-                "last_error": r.get("last_error"),
-            }
-            for r in provider_connections
-        ]
     if recent_anomalies:
         ctx["recent_anomalies"] = [
             {
@@ -251,13 +255,6 @@ def fetch_dashboard_source_rows(
         "ORDER BY week_start DESC LIMIT 1",
         (user_id, as_of),
     )
-    provider_connections = list(
-        query_all(
-            "SELECT provider, status, last_sync_at, last_error "
-            "FROM provider_connections WHERE user_id = %s ORDER BY provider",
-            (user_id,),
-        )
-    )
     recent_anomalies = list(
         query_all(
             "SELECT detected_date, metric, description, severity "
@@ -284,7 +281,6 @@ def fetch_dashboard_source_rows(
         latest_metrics=latest_metrics,
         goal_snapshot=snapshot_row,
         weekly_summary=weekly_summary,
-        provider_connections=provider_connections,
         recent_anomalies=recent_anomalies,
         metric_patterns=metric_patterns,
     )
@@ -349,6 +345,95 @@ def fetch_cardio_breakdown_7d(
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
             "GROUP BY event_date, source, source_app, activity_type "
             "ORDER BY event_date DESC, minutes DESC",
+            (user_id, window_start, effective),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+CYCLING_KEYWORDS = ("cycl", "bike", "ride", "spin")
+
+
+def cardio_mode(activity_type: Any) -> str:
+    """Bucket a cardio ``activity_type`` into ``running`` / ``cycling`` / ``other``.
+
+    Uses the same substring convention as the rest of the pipeline ("run"), plus
+    cycling synonyms, so Apple Health's "Outdoor Run" / "Outdoor Cycling" and
+    Strava's "Run" / "Ride" all map correctly.
+    """
+    a = str(activity_type or "").lower()
+    if "run" in a:
+        return "running"
+    if any(k in a for k in CYCLING_KEYWORDS):
+        return "cycling"
+    return "other"
+
+
+def summarize_cardio_by_mode(
+    cardio_events: Sequence[Mapping[str, Any]] | None,
+    *,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+) -> dict[str, dict[str, float]]:
+    """Aggregate cardio rows into per-mode distance (miles) + minutes + sessions.
+
+    ``distance_miles`` is already the canonical stored unit. Over-recorded run
+    distances (implausibly fast pace) are excluded from the running mileage total,
+    consistent with :func:`pipeline.mileage_ramp.sum_running_km`; cycling distance
+    is summed as-is (run pace bands do not apply to rides).
+    """
+    modes: dict[str, dict[str, float]] = {
+        "running": {"miles": 0.0, "minutes": 0.0, "sessions": 0},
+        "cycling": {"miles": 0.0, "minutes": 0.0, "sessions": 0},
+        "other": {"miles": 0.0, "minutes": 0.0, "sessions": 0},
+    }
+    for row in cardio_events or ():
+        mode = cardio_mode(row.get("activity_type"))
+        agg = modes[mode]
+        agg["sessions"] += 1
+        duration = row.get("duration_min")
+        if duration is not None:
+            try:
+                agg["minutes"] += float(duration)
+            except (TypeError, ValueError):
+                pass
+        distance = row.get("distance_miles")
+        if distance is None:
+            continue
+        if mode == "running" and is_overrecorded_distance(
+            row, run_pace_min_sec_mi=run_pace_min_sec_mi
+        ):
+            continue
+        try:
+            agg["miles"] += float(distance)
+        except (TypeError, ValueError):
+            pass
+    for agg in modes.values():
+        agg["miles"] = round(agg["miles"], 2)
+        agg["minutes"] = round(agg["minutes"], 1)
+    return modes
+
+
+def fetch_cardio_events_window(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+    days: int = ACUTE_WINDOW_DAYS,
+) -> list[dict[str, Any]]:
+    """Raw cardio rows for a user over a bounded window (for per-mode summaries).
+
+    RLS-scoped by the caller (see :func:`pipeline.db_session.apply_rls_scope`);
+    the ``user_id`` predicate is defense in depth.
+    """
+    from psycopg2.extras import RealDictCursor
+
+    effective = as_of or _utc_today()
+    window_start = effective - timedelta(days=max(1, days) - 1)
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            "SELECT event_date, activity_type, distance_miles, duration_min "
+            "FROM cardio_events "
+            "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
+            "ORDER BY event_date DESC",
             (user_id, window_start, effective),
         )
         return [dict(r) for r in cur.fetchall()]
