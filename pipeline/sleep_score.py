@@ -8,17 +8,26 @@ plus resting HR and HRV). This lives in the feature/rollup layer, **not** an
 adapter: adapters only normalize raw source data, while a derived score is a
 *computed conclusion* the LLM later narrates (see ``.cursor/rules/soma.mdc``).
 
-Design — a weighted blend of up to five components, each scored in ``[0, 1]``:
+Methodology — modelled on Fitbit / Google's published sleep-score breakdown,
+which sums three families of signals into a 0–100 score (Fitbit help centre:
+"time asleep" 50 pts, "deep & REM" 25 pts, "restoration" 25 pts; ranges Poor
+<60, Fair 60–79, Good 80–89, Excellent 90–100, with most nights 72–83). Soma
+mirrors that 50 / 25 / 25 split across up to five components, each scored in
+``[0, 1]``:
 
 ===========  ======  ==================================================
 component    weight  meaning
 ===========  ======  ==================================================
-duration     0.30    actual sleep vs personal need (default 8h)
-stages       0.30    deep + REM fraction vs physiological optima
-hrv          0.15    overnight HRV vs personal baseline (higher is better)
+duration     0.50    actual sleep vs personal need (asymmetric curve)
+stages       0.25    deep + REM fraction vs physiological optima
 resting_hr   0.15    resting HR vs personal baseline (lower is better)
-awake        0.10    wakefulness / interruptions (less is better)
+hrv          0.05    overnight HRV vs personal baseline (higher is better)
+awake        0.05    wakefulness / interruptions (less is better)
 ===========  ======  ==================================================
+
+``resting_hr + hrv + awake`` together form Fitbit's 0.25 "restoration" family;
+``resting_hr`` carries most of it because it is the one restoration signal Soma
+almost always has (HRV and any awake/restlessness column are usually absent).
 
 Only components whose inputs are present contribute; the remaining weights are
 **renormalized** over the available components, so a day with just a duration
@@ -26,10 +35,20 @@ still yields a score (it simply reflects fewer signals). The weighted mean is
 scaled to 0–100 and clamped. Returns ``None`` when there is no sleep duration at
 all — a sleep score with no sleep is meaningless.
 
-Every mapping here is a transparent heuristic, not a validated clinical model:
-baselines land near 0.75 (room to reward better-than-usual nights), and the
-stage optima (deep ~18%, REM ~22% of total sleep) are mid-range population
-figures. Tune the constants as real personal data accrues.
+Curve choices (transparent heuristics, not a validated clinical model):
+
+* **Duration** is *asymmetric*: under-sleep is penalised harder than an equal
+  amount of over-sleep (Fitbit rewards ~7–9h and treats short nights as the
+  bigger problem). Deficit slope 1.5, surplus slope 0.5 — so a 1h shortfall
+  costs 3× what a 1h surplus does, and a big lie-in is only mildly discounted.
+* **Restoration** metrics sit at :data:`RESTORATION_NEUTRAL` (0.65) when the
+  observation merely equals baseline — a deliberately middling value, not the
+  old generous 0.75, so a night that is only "average" for HR does not prop the
+  score up. Better/worse-than-baseline moves it via :data:`RESTORATION_SLOPE`.
+* **Stage** optima (deep ~18%, REM ~22% of total sleep) are mid-range
+  population figures.
+
+Tune the constants as real personal data accrues.
 """
 
 from __future__ import annotations
@@ -44,12 +63,23 @@ DEFAULT_SLEEP_NEED_HOURS = 8.0
 OPTIMAL_DEEP_FRACTION = 0.18
 OPTIMAL_REM_FRACTION = 0.22
 
-# Component weights (sum to 1.0 when every input is present).
-WEIGHT_DURATION = 0.30
-WEIGHT_STAGES = 0.30
-WEIGHT_HRV = 0.15
+# Component weights (sum to 1.0 when every input is present), mirroring
+# Fitbit's 50 / 25 / 25 duration / quality / restoration split. The restoration
+# 0.25 is shared across resting_hr (primary, near-always present), hrv and awake.
+WEIGHT_DURATION = 0.50
+WEIGHT_STAGES = 0.25
 WEIGHT_RESTING_HR = 0.15
-WEIGHT_AWAKE = 0.10
+WEIGHT_HRV = 0.05
+WEIGHT_AWAKE = 0.05
+
+# Asymmetric duration penalty: under-sleep hurts more than equal over-sleep.
+DURATION_DEFICIT_SLOPE = 1.5
+DURATION_SURPLUS_SLOPE = 0.5
+
+# Restoration (HR / HRV vs baseline): value when the metric *equals* baseline,
+# and the sensitivity of relative deviations around it.
+RESTORATION_NEUTRAL = 0.65
+RESTORATION_SLOPE = 1.5
 
 # Trailing window used to derive personal HRV / resting-HR baselines.
 BASELINE_WINDOW_DAYS = 28
@@ -70,11 +100,19 @@ def _num(value: Any) -> float | None:
 
 
 def _duration_component(sleep_hours: float, need_hours: float) -> float:
-    """Closeness of actual sleep to personal need; 1.0 at need, decaying either side."""
+    """Closeness of actual sleep to personal need; 1.0 at need, asymmetric decay.
+
+    Under-sleep decays with :data:`DURATION_DEFICIT_SLOPE`, over-sleep with the
+    gentler :data:`DURATION_SURPLUS_SLOPE`, reflecting that a shortfall costs
+    more than an equivalent lie-in.
+    """
     if need_hours <= 0:
         return 0.0
-    deviation = abs(sleep_hours - need_hours) / need_hours
-    return _clamp(1.0 - deviation)
+    if sleep_hours >= need_hours:
+        deviation = (sleep_hours - need_hours) / need_hours
+        return _clamp(1.0 - DURATION_SURPLUS_SLOPE * deviation)
+    deviation = (need_hours - sleep_hours) / need_hours
+    return _clamp(1.0 - DURATION_DEFICIT_SLOPE * deviation)
 
 
 def _stage_component(sleep_hours: float, deep_hrs: float | None, rem_hrs: float | None) -> float | None:
@@ -91,13 +129,19 @@ def _stage_component(sleep_hours: float, deep_hrs: float | None, rem_hrs: float 
 
 
 def _ratio_component(observed: float | None, baseline: float | None, *, higher_is_better: bool) -> float | None:
-    """Score a metric vs baseline: baseline ≈ 0.75, ±deviations scaled by 1.5."""
+    """Score a restoration metric vs baseline.
+
+    At baseline the component is :data:`RESTORATION_NEUTRAL` — a middling value
+    (a merely "average" HR night earns no bonus). Relative deviations move it by
+    :data:`RESTORATION_SLOPE`; ``higher_is_better`` flips the sign for metrics
+    (like resting HR) where lower is the healthier direction.
+    """
     if observed is None or baseline is None or baseline <= 0:
         return None
     rel = (observed - baseline) / baseline
     if not higher_is_better:
         rel = -rel
-    return _clamp(0.75 + rel * 1.5)
+    return _clamp(RESTORATION_NEUTRAL + rel * RESTORATION_SLOPE)
 
 
 def _awake_component(awake_hours: float | None, sleep_hours: float) -> float | None:

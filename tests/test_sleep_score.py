@@ -26,6 +26,25 @@ def test_score_none_without_any_sleep_duration() -> None:
     assert S.compute_sleep_score(sleep_hours=0.0) is None
 
 
+def test_last_night_lands_in_fair_band() -> None:
+    """Regression for the real 2026-07-03 night Fitbit/Google scored 79 ("Fair").
+
+    Previously Soma read ~84.5 (Good) because a flat 0.75 restoration constant
+    plus a gentle symmetric duration curve propped a 6.9h night up. The redesign
+    should land it in the Fair band, close to the ground-truth 79.
+    """
+    score = S.compute_sleep_score(
+        sleep_hours=6.9167,
+        sleep_deep_hrs=1.0167,
+        sleep_rem_hrs=1.6667,
+        resting_hr=58.0,
+        hrv_rmssd=None,  # HRV is usually absent from HealthKit-bridged data
+        resting_hr_baseline=58.0,  # ~28-day trailing mean of recent 57–60 nights
+    )
+    assert score is not None
+    assert 77.0 <= score <= 81.0
+
+
 def test_score_in_range_and_high_for_ideal_night() -> None:
     score = S.compute_sleep_score(
         sleep_hours=8.0,
@@ -38,8 +57,38 @@ def test_score_in_range_and_high_for_ideal_night() -> None:
     )
     assert score is not None
     assert 0.0 <= score <= 100.0
-    # On-need duration, optimal stages, better-than-baseline HRV and RHR → strong.
+    # On-need duration, optimal stages, better-than-baseline HRV and RHR → Excellent.
     assert score >= 90.0
+
+
+def test_duration_curve_is_asymmetric() -> None:
+    """A shortfall is penalised harder than an equal-sized lie-in past the need."""
+    need = 8.0
+    under = S.compute_sleep_score(sleep_hours=need - 2.0)  # 6h: 2h short
+    over = S.compute_sleep_score(sleep_hours=need + 2.0)  # 10h: 2h long
+    on_need = S.compute_sleep_score(sleep_hours=need)
+    assert under is not None and over is not None and on_need is not None
+    # Both deviate from need, so both sit below a perfect on-need night...
+    assert under < on_need and over < on_need
+    # ...but under-sleeping the same amount costs strictly more credit.
+    assert under < over
+
+
+def test_restoration_at_baseline_is_not_generous() -> None:
+    """A resting HR merely equal to baseline yields the middling neutral value.
+
+    It should pull a perfect-duration night down (no free credit) rather than
+    leave it untouched the way the old flat-0.75 constant nearly did.
+    """
+    assert S.RESTORATION_NEUTRAL < 0.75
+    duration_only = S.compute_sleep_score(sleep_hours=8.0)
+    at_baseline = S.compute_sleep_score(
+        sleep_hours=8.0, resting_hr=58.0, resting_hr_baseline=58.0
+    )
+    assert duration_only is not None and at_baseline is not None
+    # On-need duration alone is a perfect 100; a neutral restoration term drags it down.
+    assert duration_only == pytest.approx(100.0)
+    assert at_baseline < duration_only
 
 
 def test_more_deep_rem_and_duration_raise_score() -> None:
