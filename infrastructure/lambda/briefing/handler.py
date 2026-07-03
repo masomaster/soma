@@ -56,6 +56,17 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
     send_email = clients.ses_email_sender(ses_sender)
     get_parameters = clients.ssm_threshold_loader()
 
+    guidelines_loader = None
+    from pipeline.guidelines import load_guidelines, resolve_guidelines_storage
+
+    storage = resolve_guidelines_storage()
+    if storage is not None:
+        get_object, _put = storage
+
+        def guidelines_loader(uid: str):
+            ctx = load_guidelines(uid, get_object=get_object)
+            return ctx if ctx.has_content() else None
+
     conn = psycopg2.connect(db_url)
     summaries: list[dict[str, Any]] = []
 
@@ -105,6 +116,7 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
                     persist_weekly_summary=_persister("weekly_activity_summary"),
                     persist_statistical_anomalies=_persist_statistical_anomalies,
                     persist_metric_baselines=_persist_metric_baselines,
+                    load_guidelines=guidelines_loader,
                     **loaders,
                 )
                 result = run_daily_pipeline(user_id=str(user_id), run_date=run_date, io=io)

@@ -49,7 +49,7 @@ DAILY_HEALTH_METRIC_COLUMNS: frozenset[str] = frozenset(
 ACUTE_WINDOW_DAYS = 7
 CHRONIC_WINDOW_DAYS = 28
 # Hevy stores ``weight_lbs``; convert summed (reps × lbs) into approximate US short tons.
-_LBS_PER_SHORT_TON = 2000.0
+LBS_PER_SHORT_TON = 2000.0
 # Sets Hevy marks as real working effort (see hevy._hevy_set_type_to_db).
 _HARD_SET_TYPES = frozenset({"working"})
 # Heuristic unified index: map strength short tons to nominal cardio-equivalent minutes
@@ -156,8 +156,8 @@ def _strength_training_load(
         hard_28 += 1
         if reps is not None and weight is not None:
             vol_28_lb += reps * weight
-    tons_7 = round(vol_7_lb / _LBS_PER_SHORT_TON, 3)
-    tons_28 = round(vol_28_lb / _LBS_PER_SHORT_TON, 3)
+    tons_7 = round(vol_7_lb / LBS_PER_SHORT_TON, 3)
+    tons_28 = round(vol_28_lb / LBS_PER_SHORT_TON, 3)
     return {
         "strength_sessions_7d": len(session_7),
         "strength_hard_sets_7d": hard_7,

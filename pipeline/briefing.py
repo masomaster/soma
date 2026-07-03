@@ -19,6 +19,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from pipeline.guidelines import GuidelinesContext, format_guidelines_for_prompt
+from pipeline.metrics_summary import format_glance_section
 from pipeline.rules import Flag
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,8 @@ SYSTEM_GUIDELINES = (
     "TRENDS lists EWMA drift signals — narrate only if present. "
     "ACTIVE_PATTERNS lists confirmed cross-metric correlations — cite briefly, do not invent new ones. "
     "GOALS_STATUS and TODAYS_FOCUS are pre-computed weekly goal progress — narrate; do not invent counts. "
+    "PERSONAL GOALS and INJURY HISTORY blocks are athlete-provided context — respect injury constraints "
+    "and do not invent injuries or goals beyond what is stated. "
     "Use plain sentences; at most light Markdown (bold, short bullets). "
     "Do NOT write your own title, date, or greeting line — a 'Morning Check-In' "
     "header is added for you, so begin directly with the substance. "
@@ -134,11 +138,13 @@ def _strip_trailing_question(note: str) -> str:
     return result if result else note
 
 
-def _prepend_title(note: str, feature_date: date) -> str:
-    """Prepend the canonical ``# Morning Check-In · ...`` heading to ``note``.
+def _prepend_title(note: str, feature_date: date, *, glance_block: str | None = None) -> str:
+    """Assemble the final briefing: title, optional glance summary, then prose.
 
     Any leading heading or "Morning Check-In" line the model emitted is removed
-    first so the enforced title is never duplicated.
+    first so the enforced title is never duplicated. ``glance_block`` (a
+    pre-computed Markdown "At a Glance" section) is placed between the title and
+    the LLM prose so the reader gets a quick numeric summary before the narrative.
     """
     lines = note.lstrip("\n").split("\n")
     if lines and (lines[0].lstrip().startswith("#") or _LEADING_TITLE_RE.match(lines[0])):
@@ -146,8 +152,12 @@ def _prepend_title(note: str, feature_date: date) -> str:
         while lines and not lines[0].strip():
             lines = lines[1:]
     body = "\n".join(lines).strip()
-    title = f"# {format_briefing_title(feature_date)}"
-    return f"{title}\n\n{body}" if body else title
+    parts = [f"# {format_briefing_title(feature_date)}"]
+    if glance_block:
+        parts.append(glance_block)
+    if body:
+        parts.append(body)
+    return "\n\n".join(parts)
 
 
 def build_prompt(
@@ -159,6 +169,7 @@ def build_prompt(
     stat_signals: Mapping[str, Any] | None = None,
     active_patterns: Sequence[str] | None = None,
     goal_snapshot: Mapping[str, Any] | None = None,
+    guidelines: GuidelinesContext | None = None,
 ) -> str:
     """Render the user prompt: the pre-computed flags + features the model must narrate."""
     flag_lines = (
@@ -202,7 +213,9 @@ def build_prompt(
             f"{json.dumps(mc, indent=2, sort_keys=True, default=str)}\n\n"
             f"TODAYS_FOCUS (deterministic — narrate, do not replan):\n{focus}\n\n"
         )
+    guidelines_block = format_guidelines_for_prompt(guidelines)
     return (
+        f"{guidelines_block}"
         f"Date: {feature_date.isoformat()}\n\n"
         f"FLAGS (pre-computed, narrate these in priority order):\n{flag_lines}\n\n"
         f"FEATURES (rolling computed metrics):\n{feature_blob}\n\n"
@@ -247,9 +260,14 @@ def generate_briefing(
     stat_signals: Mapping[str, Any] | None = None,
     active_patterns: Sequence[str] | None = None,
     goal_snapshot: Mapping[str, Any] | None = None,
+    guidelines: GuidelinesContext | None = None,
+    run_sessions_7d: int | None = None,
     model: str = DEFAULT_BRIEFING_MODEL,
 ) -> Briefing:
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
+
+    The returned ``coaching_note`` leads with a deterministic "At a Glance" metrics
+    summary (pre-computed here, not by the model), followed by the LLM prose.
 
     Raises:
         ValueError: If the model returns empty text.
@@ -263,11 +281,21 @@ def generate_briefing(
         stat_signals=stat_block,
         active_patterns=active_patterns,
         goal_snapshot=goal_snapshot,
+        guidelines=guidelines,
     )
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
         raise ValueError("LLM returned an empty coaching note")
-    note = _prepend_title(_strip_trailing_question(note), feature_date)
+    glance_block = format_glance_section(
+        features=features,
+        daily_metrics=daily_metrics,
+        flags=flags,
+        goal_snapshot=goal_snapshot,
+        run_sessions_7d=run_sessions_7d,
+    )
+    note = _prepend_title(
+        _strip_trailing_question(note), feature_date, glance_block=glance_block
+    )
     logger.info("Generated briefing for %s on %s (%d flags)", user_id, feature_date, len(flags))
     features_json = {k: _jsonable(v) for k, v in features.items() if v is not None}
     features_json["stat_signals"] = stat_block
