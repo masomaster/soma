@@ -218,6 +218,21 @@ COACHING_TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        "name": "query_history",
+        "description": (
+            "Answer a question about the athlete's historical data (trends, "
+            "averages, counts over time — sleep, HRV, resting HR, body weight, "
+            "cardio, strength) by running a read-only, schema-bound SQL query. "
+            "Use this whenever the answer is not already in DASHBOARD_CONTEXT. "
+            "Provide a clear natural-language 'question'."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {"question": {"type": "string"}},
+            "required": ["question"],
+        },
+    },
+    {
         "name": "set_schedule_exception",
         "description": "Block or reschedule goal types for a date range (Slice D).",
         "input_schema": {

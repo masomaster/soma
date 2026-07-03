@@ -11,10 +11,12 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from pipeline.coaching_chat import load_chat_messages, run_coaching_turn, save_chat_messages
 from pipeline.dashboard_queries import load_dashboard_context_from_db
@@ -27,7 +29,7 @@ from pipeline.guidelines import (
     load_guidelines_from_env,
     resolve_guidelines_storage,
 )
-from pipeline.history_query import run_history_query, summarize_query_result
+from pipeline.history_query import QueryAll
 
 try:
     import streamlit as st
@@ -37,6 +39,11 @@ except ImportError as exc:
     ) from exc
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
+
+# `streamlit run dashboard/app.py` puts dashboard/ (not the repo root) on sys.path,
+# so `import dashboard.*` (e.g. dashboard.auth) needs the repo root added explicitly.
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def _load_dotenv() -> None:
@@ -104,8 +111,9 @@ def _resolve_llm(ctx: dict):
         )
 
     def _mock_llm(system: str, prompt: str) -> str:
-        del system
-        if "SQL" in prompt or "QUESTION:" in prompt:
+        # Dispatch on the system prompt so the tool-schema text (which mentions
+        # "SQL") in a chat prompt can't be mistaken for a SQL-generation request.
+        if "PostgreSQL SELECT" in system:  # generate_bounded_sql
             uid = ctx.get("user_id", "demo-user")
             return (
                 f"SELECT metric_date, AVG(sleep_hours) AS avg_sleep "
@@ -113,6 +121,13 @@ def _resolve_llm(ctx: dict):
                 f"WHERE user_id = '{uid}' "
                 f"GROUP BY metric_date ORDER BY metric_date DESC LIMIT 30"
             )
+        if "query results" in system:  # summarize_query_result
+            return "Demo summary: sleep looks steady (set ANTHROPIC_API_KEY for real analysis)."
+        # Coaching chat: route trend/history questions through the query_history tool
+        # so the demo exercises the folded-in text-to-SQL path. Keywords are specific
+        # phrases unlikely to appear in the embedded context JSON.
+        if any(kw in prompt.lower() for kw in ("trend", "how has", "over the last", "past 30", "past 7")):
+            return '{"tool_calls": [{"name": "query_history", "arguments": {"question": "sleep trend"}}]}'
         return (
             f"Based on your data: {ctx.get('todays_focus', 'stay consistent')}. "
             "Set ANTHROPIC_API_KEY in .env for real replies."
@@ -369,54 +384,41 @@ def _page_dashboard(ctx: dict, mode: str) -> None:
             st.write(f"**{row.get('date')}** {row.get('metric')}: {row.get('description')}")
 
 
-def _page_history(ctx: dict, mode: str) -> None:
-    st.subheader("Ask your history")
-    st.caption(
-        "Schema-bound text-to-SQL: read-only queries on your aggregated health tables."
-    )
-    question = st.text_input(
-        "Question",
-        placeholder="How has my sleep trended over the last 30 days?",
-        key="history_question",
-    )
-    if st.button("Run query", key="history_run") and question.strip():
-        llm = _resolve_llm(ctx)
-        user_id = ctx["user_id"]
+def _history_query_all(user_id: str, mode: str) -> QueryAll:
+    """Build the RLS-scoped read-only executor the chat's ``query_history`` tool uses."""
 
-        def query_all(sql: str, params: tuple) -> list:
-            if mode != "live":
-                return [{"metric_date": "2026-06-01", "avg_sleep": 6.5}]
-            with _scoped_conn(user_id) as conn:
-                from psycopg2.extras import RealDictCursor
+    def query_all(sql: str, params: tuple[Any, ...]) -> list[dict[str, Any]]:
+        if mode != "live":
+            return [{"metric_date": "2026-06-01", "avg_sleep": 6.5}]
+        from psycopg2.extras import RealDictCursor
 
-                with conn.cursor(cursor_factory=RealDictCursor) as cur:
-                    cur.execute(sql, params)
-                    return [dict(r) for r in cur.fetchall()]
+        with _scoped_conn(user_id) as conn, conn.cursor(
+            cursor_factory=RealDictCursor
+        ) as cur:
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
 
-        result = run_history_query(
-            question, user_id=user_id, llm=llm, query_all=query_all
-        )
-        if not result.get("ok"):
-            st.error(result.get("error", "Query failed"))
-            return
-        st.code(result.get("sql") or "", language="sql")
-        rows = result.get("rows") or []
-        if rows:
-            st.dataframe(rows, use_container_width=True, hide_index=True)
-        else:
-            st.caption("No rows returned.")
-        if rows and os.environ.get("ANTHROPIC_API_KEY", "").strip():
-            summary = summarize_query_result(
-                question,
-                result["sql"],
-                rows,
-                llm=llm,
-            )
-            st.markdown(summary)
+    return query_all
+
+
+def _render_query_details(query_results: list[dict[str, Any]]) -> None:
+    """Show the SQL + rows behind the latest text-to-SQL answer, if any."""
+    for result in query_results:
+        if not result.get("ok") or not result.get("sql"):
+            continue
+        with st.expander("Query details"):
+            st.code(result["sql"], language="sql")
+            if result.get("rows"):
+                st.dataframe(result["rows"], use_container_width=True, hide_index=True)
 
 
 def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> None:
     st.subheader("Coaching chat")
+    st.caption(
+        "Ask about today's briefing or your history (e.g. \"how has my sleep trended "
+        "over 30 days?\") — trend questions run a read-only, schema-bound query and "
+        "get summarized inline."
+    )
     saved_msg = st.session_state.pop("_coaching_saved", None)
     if saved_msg:
         st.success(f"Saved: {saved_msg}")
@@ -443,7 +445,9 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
             messages=st.session_state.chat_messages,
             llm=_resolve_llm(ctx),
             guidelines=guidelines,
+            query_all=_history_query_all(user_id, mode),
         )
+        st.session_state["_last_query_results"] = turn.get("query_results") or []
         st.session_state.chat_messages.append({"role": "user", "content": user_input})
         st.session_state.chat_messages.append(
             {"role": "assistant", "content": turn["reply"]}
@@ -490,6 +494,8 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
 
+    _render_query_details(st.session_state.get("_last_query_results") or [])
+
 
 def main() -> None:
     _load_dotenv()
@@ -517,14 +523,12 @@ def main() -> None:
 
     page = st.radio(
         "Navigate",
-        ["Dashboard", "History query", "Coaching chat"],
+        ["Dashboard", "Coaching chat"],
         horizontal=True,
         label_visibility="collapsed",
     )
     if page == "Dashboard":
         _page_dashboard(ctx, mode)
-    elif page == "History query":
-        _page_history(ctx, mode)
     else:
         _page_chat(ctx, mode, guidelines)
 
