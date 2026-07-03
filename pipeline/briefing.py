@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -57,6 +58,10 @@ SYSTEM_GUIDELINES = (
     "ACTIVE_PATTERNS lists confirmed cross-metric correlations — cite briefly, do not invent new ones. "
     "GOALS_STATUS and TODAYS_FOCUS are pre-computed weekly goal progress — narrate; do not invent counts. "
     "Use plain sentences; at most light Markdown (bold, short bullets). "
+    "Do NOT write your own title, date, or greeting line — a 'Morning Check-In' "
+    "header is added for you, so begin directly with the substance. "
+    "Do NOT end with a question or a request for a reply (e.g. 'How are you "
+    "feeling?', 'Sound good?'); close with a calm, declarative sentence. "
     "Keep it under 150 words."
 )
 
@@ -91,6 +96,58 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     return value
+
+
+# A leading heading / "Morning Check-In" line the model may emit despite the
+# system guidelines; stripped so the canonical title is never duplicated.
+_LEADING_TITLE_RE = re.compile(r"^\s*#{0,6}\s*morning\s+check[- ]?in\b.*$", re.IGNORECASE)
+# Sentence boundary: split after ., !, or ? followed by whitespace.
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def format_briefing_title(feature_date: date) -> str:
+    """Canonical check-in title, e.g. ``Morning Check-In · Thursday, July 2``."""
+    return f"Morning Check-In · {feature_date:%A, %B} {feature_date.day}"
+
+
+def _strip_trailing_question(note: str) -> str:
+    """Drop a trailing question/follow-up sentence so briefings end declaratively.
+
+    Belt-and-suspenders alongside the system guideline: the model is told not to
+    end with a question, but we also enforce it so a stray "How are you feeling?"
+    never ships. Returns the original note if stripping would empty it.
+    """
+    text = note.rstrip()
+    if not text.endswith("?"):
+        return note
+    paragraphs = re.split(r"\n\n+", text)
+    last = paragraphs[-1].rstrip()
+    sentences = _SENTENCE_BOUNDARY_RE.split(last)
+    while sentences and sentences[-1].rstrip().endswith("?"):
+        sentences.pop()
+    rebuilt = " ".join(s.strip() for s in sentences if s.strip()).rstrip()
+    if rebuilt:
+        paragraphs[-1] = rebuilt
+    else:
+        paragraphs.pop()
+    result = "\n\n".join(paragraphs).rstrip()
+    return result if result else note
+
+
+def _prepend_title(note: str, feature_date: date) -> str:
+    """Prepend the canonical ``# Morning Check-In · ...`` heading to ``note``.
+
+    Any leading heading or "Morning Check-In" line the model emitted is removed
+    first so the enforced title is never duplicated.
+    """
+    lines = note.lstrip("\n").split("\n")
+    if lines and (lines[0].lstrip().startswith("#") or _LEADING_TITLE_RE.match(lines[0])):
+        lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines = lines[1:]
+    body = "\n".join(lines).strip()
+    title = f"# {format_briefing_title(feature_date)}"
+    return f"{title}\n\n{body}" if body else title
 
 
 def build_prompt(
@@ -210,6 +267,7 @@ def generate_briefing(
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
         raise ValueError("LLM returned an empty coaching note")
+    note = _prepend_title(_strip_trailing_question(note), feature_date)
     logger.info("Generated briefing for %s on %s (%d flags)", user_id, feature_date, len(flags))
     features_json = {k: _jsonable(v) for k, v in features.items() if v is not None}
     features_json["stat_signals"] = stat_block
