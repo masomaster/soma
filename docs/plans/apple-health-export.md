@@ -12,7 +12,7 @@ There is **no** separate Renpho API ingest and **no** separate Google Health / F
 |-----------------|---------------------|----------|
 | Apple Watch / iPhone | Native HealthKit | `biometrics`, `cardio_events` |
 | **Renpho scale** | Renpho app → Apple Health sync → HAE metrics | `body_weight_lbs`, `body_fat_pct`, `muscle_mass_lbs` |
-| **Google Fit / Fitbit** | **Health Sync** app (Android-side data → Apple Health) → HAE | `sleep_hours`, activities, HR, etc. |
+| **Google Fit / Fitbit** | **Health Sync** app (Android-side data → Apple Health) → HAE | `sleep_hours`, sleep stages (`sleep_deep_hrs`/`sleep_rem_hrs`), activities, HR, etc. |
 | Strava / NRC (while API paused) | Apps write workouts into HealthKit → HAE workouts | `cardio_events` |
 | Hevy | **Separate** scheduled API ingest → `strength_events` (not Apple) | dedup vs Apple strength workouts |
 
@@ -47,6 +47,8 @@ There is **no** separate Renpho API ingest and **no** separate Google Health / F
 **Body composition (Renpho scale):** Enable Renpho → Apple Health sync in the Renpho app. Include **`body_mass`**, **`body_fat_percentage`**, and **`lean_body_mass`** in your HAE metrics automation. Soma maps them to **`body_weight_lbs`**, **`body_fat_pct`**, and **`muscle_mass_lbs`**.
 
 **Google Fit / Fitbit (Health Sync):** Use the **Health Sync** app to mirror Android-side sleep, activities, and related metrics into Apple Health. They are exported by the **same** HAE POST as Watch data — no second Soma endpoint.
+
+**Sleep stages & sleep score:** when a `sleep_analysis` row carries per-stage durations (`deep`/`rem`), Soma maps them to **`sleep_deep_hrs`** / **`sleep_rem_hrs`** (unit-aware hours). Fitbit's proprietary 0–100 *sleep score* **cannot** flow through Apple Health — HealthKit has no sleep-score type — so Soma **computes its own** `sleep_score` from the stages + recovery signals during the daily rollup. To capture Fitbit stages you need a Fitbit→Apple Health bridge app (SyncFit / myFitnessSync / Sync Solver). See **[fitbit-sleep-score.md](./fitbit-sleep-score.md)**.
 
 ---
 

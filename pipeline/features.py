@@ -29,6 +29,7 @@ from pipeline.cardio_quality import (
     DEFAULT_RUN_PACE_MIN_SEC_MI,
     assess_cardio_quality,
 )
+from pipeline.sleep_score import DEFAULT_SLEEP_NEED_HOURS, compute_sleep_score
 
 # Canonical biometric metric names that map 1:1 onto ``daily_health_metrics``
 # columns (see schema/migrations/0001_initial.sql). Anything else is ignored by
@@ -104,6 +105,9 @@ def rollup_daily_health_metrics(
     *,
     user_id: str,
     metric_date: date,
+    sleep_need_hours: float = DEFAULT_SLEEP_NEED_HOURS,
+    hrv_baseline: float | None = None,
+    resting_hr_baseline: float | None = None,
 ) -> dict[str, Any]:
     """Pivot canonical ``biometrics`` EAV rows for one day into a wide row dict.
 
@@ -112,6 +116,13 @@ def rollup_daily_health_metrics(
     :data:`DAILY_HEALTH_METRIC_COLUMNS` are kept; the last value wins on
     duplicates. The returned dict is keyed by ``(user_id, metric_date)`` plus
     whatever metrics were present (sparse — missing columns are simply absent).
+
+    When a source did not supply ``sleep_score`` (Fitbit's proprietary score
+    cannot reach Soma — see :mod:`pipeline.sleep_score`), a **native** 0–100 score
+    is computed from the day's sleep signals as a pre-computed conclusion. Pass
+    ``hrv_baseline`` / ``resting_hr_baseline`` (e.g. trailing means) to let the
+    recovery components contribute; otherwise the score degrades to the signals
+    present that day.
     """
     row: dict[str, Any] = {"user_id": user_id, "metric_date": metric_date}
     for entry in biometric_rows:
@@ -126,6 +137,20 @@ def rollup_daily_health_metrics(
             row[metric] = int(round(value))
         else:
             row[metric] = value
+
+    if row.get("sleep_score") is None and row.get("sleep_hours") is not None:
+        score = compute_sleep_score(
+            sleep_hours=row.get("sleep_hours"),
+            sleep_deep_hrs=row.get("sleep_deep_hrs"),
+            sleep_rem_hrs=row.get("sleep_rem_hrs"),
+            resting_hr=row.get("resting_hr"),
+            hrv_rmssd=row.get("hrv_rmssd"),
+            sleep_need_hours=sleep_need_hours,
+            hrv_baseline=hrv_baseline,
+            resting_hr_baseline=resting_hr_baseline,
+        )
+        if score is not None:
+            row["sleep_score"] = score
     return row
 
 

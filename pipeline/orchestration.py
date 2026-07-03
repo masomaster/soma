@@ -28,6 +28,7 @@ from pipeline import metric_patterns as metric_patterns_mod
 from pipeline import metrics_summary as metrics_summary_mod
 from pipeline import rules as rules_mod
 from pipeline import goal_progress as goal_progress_mod
+from pipeline import sleep_score as sleep_score_mod
 from pipeline import stat_anomalies as stat_anomalies_mod
 from pipeline.briefing import Briefing, LLMClient, generate_briefing
 from pipeline.mileage_ramp import iso_week_start
@@ -120,14 +121,32 @@ def run_daily_pipeline(
 
     def do_rollup() -> None:
         today = io.load_biometrics_today(user_id, run_date)
+        # Load the trailing window once here so the native sleep score can use
+        # personal HRV / resting-HR baselines; do_features reuses the same list.
+        window = list(io.load_daily_metrics_window(user_id, run_date))
+        result.daily_metrics_window = window
         result.daily_metrics = features_mod.rollup_daily_health_metrics(
-            today, user_id=user_id, metric_date=run_date
+            today,
+            user_id=user_id,
+            metric_date=run_date,
+            sleep_need_hours=thresholds["target_sleep_hours"],
+            hrv_baseline=sleep_score_mod.trailing_baseline(
+                window, metric="hrv_rmssd", as_of=run_date
+            ),
+            resting_hr_baseline=sleep_score_mod.trailing_baseline(
+                window, metric="resting_hr", as_of=run_date
+            ),
         )
         if io.persist_daily_metrics is not None:
             io.persist_daily_metrics(result.daily_metrics)
 
     def do_features() -> None:
-        window = list(io.load_daily_metrics_window(user_id, run_date))
+        # Reuse the window loaded during rollup (avoids a second DB round-trip).
+        window = (
+            result.daily_metrics_window
+            if result.daily_metrics_window is not None
+            else list(io.load_daily_metrics_window(user_id, run_date))
+        )
         # Ensure today's freshly-rolled metrics are part of the feature window.
         if result.daily_metrics is not None and not any(
             features_mod.as_date(m.get("metric_date")) == run_date for m in window

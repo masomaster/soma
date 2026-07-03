@@ -20,6 +20,14 @@ Supports:
 Unknown vendor metric names are **ignored** (never written). ``hrv_rmssd`` may be
 fed from HAE ``heart_rate_variability_sdnn`` — SDNN is not RMSSD; document as a
 v0 proxy until a dedicated RMSSD export exists.
+
+**Sleep stages:** when a ``sleep_analysis`` row carries per-stage durations
+(``deep`` / ``rem``), they are additionally emitted as ``sleep_deep_hrs`` /
+``sleep_rem_hrs`` (unit-aware hours). Some exporters instead send standalone
+stage metrics (``sleep_deep`` / ``sleep_rem``); those map too. Fitbit's proprietary
+0–100 *sleep score* is **not** available through Apple Health (HealthKit has no
+sleep-score type), so Soma computes its own — see :mod:`pipeline.sleep_score` and
+``docs/plans/fitbit-sleep-score.md``.
 """
 
 from __future__ import annotations
@@ -65,7 +73,19 @@ _HAE_NAME_TO_CANONICAL: dict[str, str] = {
     "lean_body_mass": "muscle_mass_lbs",
     "sleep_analysis": "sleep_hours",
     "sleepanalysis": "sleep_hours",
+    # Standalone sleep-stage metrics (some Health Sync / HAE configs emit these
+    # instead of nesting stages inside a sleep_analysis row).
+    "sleep_deep": "sleep_deep_hrs",
+    "deep_sleep": "sleep_deep_hrs",
+    "sleep_rem": "sleep_rem_hrs",
+    "rem_sleep": "sleep_rem_hrs",
 }
+
+# Canonical sleep-stage durations stored as hours in the wide table.
+_SLEEP_STAGE_HOUR_METRICS: frozenset[str] = frozenset({"sleep_deep_hrs", "sleep_rem_hrs"})
+
+# Keys HAE uses for per-stage duration inside an aggregated ``sleep_analysis`` row.
+_SLEEP_STAGE_ROW_KEYS: dict[str, str] = {"deep": "sleep_deep_hrs", "rem": "sleep_rem_hrs"}
 
 
 def _normalize_vendor_metric_name(raw: str) -> str:
@@ -137,6 +157,29 @@ def _sleep_hours_from_aggregated_row(entry: Mapping[str, Any]) -> float | None:
     return float(v)
 
 
+def _sleep_stage_hours(value: float | None, *, units: str | None) -> float | None:
+    """Coerce a sleep-stage duration to hours, tolerating hours/minutes/seconds.
+
+    Prefers the declared ``units``; otherwise infers from magnitude (a single
+    sleep stage is at most a few hours, so values above plausible hour ranges are
+    treated as minutes, and very large values as seconds).
+    """
+    if value is None or value <= 0:
+        return None
+    u = (units or "").strip().lower()
+    if "min" in u:
+        return round(value / 60.0, 4)
+    if "sec" in u:
+        return round(value / 3600.0, 4)
+    if "h" in u:  # "h", "hr", "hour(s)"
+        return round(value, 4)
+    if value > 1440:  # > 24h expressed in minutes → must be seconds
+        return round(value / 3600.0, 4)
+    if value > 24:  # implausible as hours → minutes
+        return round(value / 60.0, 4)
+    return round(value, 4)
+
+
 def _canonical_for_hae_name(name: str) -> str | None:
     key = _normalize_vendor_metric_name(name)
     return _HAE_NAME_TO_CANONICAL.get(key)
@@ -189,9 +232,16 @@ def _iter_hae_metric_samples(
             if d is None:
                 continue
             hrs = _sleep_hours_from_aggregated_row(entry)
-            if hrs is None:
-                continue
-            out.append((d, canonical, hrs, "h"))
+            if hrs is not None:
+                out.append((d, canonical, hrs, "h"))
+            # A sleep_analysis row may also carry per-stage durations; surface the
+            # ones Soma tracks (deep / rem) as their own canonical hour metrics.
+            for stage_key, stage_metric in _SLEEP_STAGE_ROW_KEYS.items():
+                if stage_metric not in DAILY_HEALTH_METRIC_COLUMNS:
+                    continue
+                stage_hrs = _sleep_stage_hours(_num(entry.get(stage_key)), units=units_s)
+                if stage_hrs is not None:
+                    out.append((d, stage_metric, stage_hrs, "h"))
         return out
 
     for entry in data:
@@ -210,12 +260,15 @@ def _iter_hae_metric_samples(
                 continue
             w = _mass_lbs_from_qty(q, units_s or "")
             v = w
+        elif canonical in _SLEEP_STAGE_HOUR_METRICS:
+            v = _sleep_stage_hours(_qty_from_entry(entry), units=units_s)
         else:
             v = _qty_from_entry(entry)
 
         if v is None:
             continue
-        out.append((d, canonical, float(v), units_s))
+        unit_out = "h" if canonical in _SLEEP_STAGE_HOUR_METRICS else units_s
+        out.append((d, canonical, float(v), unit_out))
     return out
 
 
