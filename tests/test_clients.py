@@ -146,6 +146,23 @@ def test_load_cardio_events_selects_run_detection_columns():
     assert "distance_miles" in sql
 
 
+def test_build_db_loaders_keys_are_accepted_by_daily_pipeline_io():
+    """Regression: the briefing handler does ``DailyPipelineIO(..., **loaders)``.
+
+    Every key returned by ``build_db_loaders`` must therefore be a valid
+    ``DailyPipelineIO`` field, or the daily briefing Lambda dies with a
+    ``TypeError`` at construction (e.g. a loader added for the weekly signal
+    job that the pipeline dataclass never learned about).
+    """
+    import dataclasses
+
+    from pipeline.orchestration import DailyPipelineIO
+
+    loader_keys = set(clients.build_db_loaders(_FakeConn()))
+    io_fields = {f.name for f in dataclasses.fields(DailyPipelineIO)}
+    assert loader_keys <= io_fields, sorted(loader_keys - io_fields)
+
+
 def test_ssm_threshold_loader_flattens_pages():
     class FakePaginator:
         def paginate(self, **kwargs):

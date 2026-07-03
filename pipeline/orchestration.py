@@ -54,6 +54,10 @@ class DailyPipelineIO:
     persist_statistical_anomalies: Callable[[str, date, dict[str, Any]], None] | None = None
     persist_metric_baselines: Callable[[Sequence[Row]], None] | None = None
     load_active_patterns: Callable[[str, date], Sequence[Row]] | None = None
+    # Not consumed by the daily pipeline itself, but present in the shared
+    # ``clients.build_db_loaders`` dict (used by the weekly signal job for
+    # cross-metric correlations) that the briefing handler splats in wholesale.
+    load_daily_features_window: Callable[[str, date], Sequence[Row]] | None = None
     load_guidelines: Callable[[str], Any] | None = None
     load_goals: Callable[[str, date], Sequence[Row]] | None = None
     load_running_sessions: Callable[[str, date], Sequence[Row]] | None = None
