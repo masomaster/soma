@@ -55,9 +55,15 @@ def _load_dotenv() -> None:
 
 
 def _apply_streamlit_secrets() -> None:
-    """Map Streamlit Community Cloud secrets into ``os.environ`` when unset."""
+    """Map Streamlit Community Cloud secrets into ``os.environ`` when unset.
+
+    ``st.secrets`` parses lazily, so membership tests raise when no
+    ``secrets.toml`` exists (the common local / fixture case). Force the parse
+    up front and bail out quietly so offline runs never crash.
+    """
     try:
         secrets = st.secrets
+        available = set(secrets.keys())
     except Exception:
         return
     for key in (
@@ -74,7 +80,7 @@ def _apply_streamlit_secrets() -> None:
         "AWS_SECRET_ACCESS_KEY",
         "AWS_DEFAULT_REGION",
     ):
-        if key in secrets and not os.environ.get(key, "").strip():
+        if key in available and not os.environ.get(key, "").strip():
             os.environ[key] = str(secrets[key])
 
 
@@ -276,6 +282,138 @@ def _cloud_dashboard() -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# Presentation helpers (frontend-only; no data/auth logic lives here)
+# ---------------------------------------------------------------------------
+
+_TRUTHY = ("1", "true", "yes", "on")
+
+
+def _debug_enabled() -> bool:
+    """Developer/debug mode: OFF by default.
+
+    Enabled via the sidebar toggle or a ``?debug=1`` query parameter. Gates all
+    raw JSON / tool-result dumps so they never appear in the default view.
+    """
+    try:
+        if str(st.query_params.get("debug", "")).strip().lower() in _TRUTHY:
+            return True
+    except Exception:
+        pass
+    return bool(st.session_state.get("dev_mode", False))
+
+
+def _fmt(value: Any, *, suffix: str = "", dash: str = "—") -> str:
+    """Human-friendly scalar formatting with a graceful empty state."""
+    if value is None or value == "":
+        return dash
+    if isinstance(value, float):
+        text = f"{value:.1f}".rstrip("0").rstrip(".")
+        return f"{text}{suffix}"
+    return f"{value}{suffix}"
+
+
+def _readiness_meta(score: Any) -> tuple[str, str]:
+    """Return (emoji, label) for a readiness score, or a neutral default."""
+    try:
+        value = float(score)
+    except (TypeError, ValueError):
+        return ("", "")
+    if value >= 75:
+        return ("🟢", "High")
+    if value >= 50:
+        return ("🟡", "Moderate")
+    return ("🔴", "Low")
+
+
+_GOAL_STATUS_META: dict[str, tuple[str, str]] = {
+    "done": ("✅", "Done"),
+    "complete": ("✅", "Complete"),
+    "on_track": ("✅", "On track"),
+    "ahead": ("🔥", "Ahead"),
+    "behind": ("⚠️", "Behind"),
+    "at_risk": ("⚠️", "At risk"),
+    "not_yet": ("⬜", "Not yet"),
+    "missed": ("❌", "Missed"),
+}
+
+
+def _goal_status_meta(status: Any) -> tuple[str, str]:
+    if not status:
+        return ("•", "")
+    key = str(status).strip().lower()
+    return _GOAL_STATUS_META.get(key, ("•", str(status).replace("_", " ").title()))
+
+
+def _is_leaf_goal(value: Any) -> bool:
+    return isinstance(value, dict) and any(
+        k in value for k in ("status", "completed", "target", "done")
+    )
+
+
+def _goal_detail(leaf: dict) -> str:
+    """Compose a short right-hand detail string for a single goal row."""
+    parts: list[str] = []
+    completed = leaf.get("completed")
+    target = leaf.get("target")
+    if completed is not None and target is not None:
+        parts.append(f"{completed} / {target}")
+    elif completed is not None:
+        parts.append(str(completed))
+    elif target is not None:
+        parts.append(f"target {target}")
+    emoji, label = _goal_status_meta(leaf.get("status"))
+    if label:
+        parts.append(f"{emoji} {label}")
+    elif leaf.get("done") is not None:
+        parts.append("✅ Done" if leaf.get("done") else "⬜ Not yet")
+    return " · ".join(parts) if parts else "—"
+
+
+def _render_goal_row(name: str, leaf: dict) -> None:
+    label = name.replace("_", " ").title()
+    st.markdown(f"**{label}** &nbsp;·&nbsp; {_goal_detail(leaf)}")
+
+
+def _render_goals_status(goals_status: dict) -> None:
+    """Human-readable goal rendering (replaces the raw ``st.json`` tree)."""
+    for name, value in goals_status.items():
+        if _is_leaf_goal(value):
+            _render_goal_row(name, value)
+        elif isinstance(value, dict):
+            st.markdown(f"**{name.replace('_', ' ').title()}**")
+            for sub_name, sub in value.items():
+                if isinstance(sub, dict):
+                    st.markdown(
+                        f"&nbsp;&nbsp;• {sub_name.replace('_', ' ').title()} "
+                        f"&nbsp;·&nbsp; {_goal_detail(sub)}"
+                    )
+                else:
+                    st.markdown(f"&nbsp;&nbsp;• {sub_name.replace('_', ' ').title()}: {sub}")
+        else:
+            st.markdown(f"**{name.replace('_', ' ').title()}**: {value}")
+
+
+_SYNC_STATUS_EMOJI = {
+    "connected": "🟢",
+    "ok": "🟢",
+    "active": "🟢",
+    "stale": "🟡",
+    "degraded": "🟡",
+    "error": "🔴",
+    "disconnected": "🔴",
+}
+
+_SEVERITY_EMOJI = {
+    "high": "🔴",
+    "critical": "🔴",
+    "medium": "🟡",
+    "warning": "🟡",
+    "low": "🔵",
+    "info": "🔵",
+}
+
+
 def _render_auth_gate() -> bool:
     """Return True when the user may proceed to the app."""
     from dashboard.auth import (
@@ -356,22 +494,27 @@ def _render_auth_gate() -> bool:
 
 def _render_sidebar(mode: str, ctx: dict, guidelines: GuidelinesContext | None) -> None:
     with st.sidebar:
-        st.header("Soma")
-        st.caption(f"Data: **{mode}**")
+        st.markdown("## 🧬 Soma")
+        st.caption("Personal Health OS")
+        mode_badge = "🧪 Demo data" if mode == "fixture" else "🔒 Live · RLS-scoped"
+        st.caption(mode_badge)
+        st.divider()
+
         if st.session_state.get("auth_email"):
-            st.caption(f"Signed in: {st.session_state.auth_email}")
-            if st.button("Sign out"):
+            st.caption(f"Signed in as **{st.session_state.auth_email}**")
+            if st.button("Sign out", use_container_width=True):
                 for key in ("auth_user_id", "auth_email", "auth_token", "chat_messages"):
                     st.session_state.pop(key, None)
                 st.rerun()
         elif mode == "live":
             uid = ctx.get("user_id", "")
             st.caption(f"User: `{uid[:8]}…`")
-        if mode == "live" and st.button("Refresh data"):
+        if mode == "live" and st.button("↻ Refresh data", use_container_width=True):
             _load_live_context.clear()
             st.rerun()
+
         if guidelines and guidelines.has_content():
-            with st.expander("Personal context (guidelines)"):
+            with st.expander("Personal context"):
                 if guidelines.injury_history:
                     st.markdown("**Injury history**")
                     st.caption(guidelines.injury_history[:400])
@@ -379,30 +522,94 @@ def _render_sidebar(mode: str, ctx: dict, guidelines: GuidelinesContext | None) 
                     st.markdown("**Goals**")
                     st.caption(guidelines.my_goals[:400])
 
+        st.divider()
+        st.toggle(
+            "Developer mode",
+            key="dev_mode",
+            help="Show raw JSON context and tool-call payloads for debugging.",
+        )
+
+
+def _render_top_header(ctx: dict, mode: str) -> None:
+    """Shared branding header shown above the page navigation."""
+    as_of = str(ctx.get("as_of", date.today().isoformat()))[:10]
+    left, right = st.columns([4, 1], vertical_alignment="center")
+    with left:
+        st.markdown("## 🧬 Soma")
+        st.caption("Your personal health snapshot")
+    with right:
+        badge = "🧪 Demo" if mode == "fixture" else "🔒 Live"
+        st.markdown(
+            f"<div style='text-align:right'>📅 <b>{as_of}</b><br>"
+            f"<span style='color:#64748b;font-size:0.85em'>{badge}</span></div>",
+            unsafe_allow_html=True,
+        )
+    st.divider()
+
 
 def _page_dashboard(ctx: dict, mode: str) -> None:
     from pipeline.dashboard_queries import fetch_cardio_breakdown_7d
 
     as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
+
+    # --- Today: focus + latest briefing ---
+    st.markdown("#### Today")
     col1, col2 = st.columns(2)
     with col1:
-        st.subheader("Today's focus")
-        st.info(ctx.get("todays_focus") or "No focus computed yet.")
-        if ctx.get("goals_status"):
-            st.json(ctx["goals_status"])
+        with st.container(border=True):
+            st.markdown("**🎯 Today's focus**")
+            st.info(ctx.get("todays_focus") or "No focus computed yet.")
     with col2:
-        st.subheader("Latest briefing")
-        briefing = ctx.get("briefing") or {}
-        st.write(briefing.get("coaching_note", "—"))
-        if briefing.get("flags"):
-            st.caption(f"Flags: {', '.join(briefing['flags'])}")
+        with st.container(border=True):
+            st.markdown("**📝 Latest briefing**")
+            briefing = ctx.get("briefing") or {}
+            note = briefing.get("coaching_note")
+            st.write(note if note else "_No briefing available yet._")
+            if briefing.get("flags"):
+                st.caption("Flags: " + " ".join(f"`{flag}`" for flag in briefing["flags"]))
 
+    # --- Recovery / biometrics ---
+    metrics = ctx.get("today_metrics") or {}
     features = ctx.get("features") or {}
-    m1, m2, m3, m4 = st.columns(4)
-    m1.metric("Strength sessions (7d)", features.get("strength_sessions_7d"))
-    m2.metric("Cardio min (7d)", features.get("cardio_minutes_7d"))
-    m3.metric("Cardio load 7d", features.get("training_load_cardio_minutes_7d"))
-    m4.metric("Readiness", features.get("overall_readiness_score"))
+    if metrics or features:
+        st.markdown("#### Recovery")
+        r1, r2, r3, r4 = st.columns(4)
+        r1.metric("HRV (rMSSD)", _fmt(metrics.get("hrv_rmssd"), suffix=" ms"))
+        r2.metric("Sleep", _fmt(metrics.get("sleep_hours"), suffix=" h"))
+        r3.metric("Resting HR", _fmt(metrics.get("resting_hr"), suffix=" bpm"))
+        readiness = features.get("overall_readiness_score")
+        emoji, label = _readiness_meta(readiness)
+        r4.metric(
+            "Readiness",
+            _fmt(readiness),
+            delta=f"{emoji} {label}" if label else None,
+            delta_color="off",
+        )
+
+    # --- Training (rolling 7d) ---
+    if features:
+        st.markdown("#### Training · rolling 7d")
+        t1, t2, t3, t4 = st.columns(4)
+        t1.metric("Strength sessions", _fmt(features.get("strength_sessions_7d")))
+        t2.metric("Cardio minutes", _fmt(features.get("cardio_minutes_7d")))
+        load_7d = features.get("training_load_cardio_minutes_7d")
+        load_28d = features.get("training_load_cardio_minutes_28d")
+        load_delta = None
+        if isinstance(load_7d, (int, float)) and isinstance(load_28d, (int, float)) and load_28d:
+            load_delta = f"{load_7d - load_28d / 4:+.0f} vs 4-wk avg"
+        t3.metric("Cardio load", _fmt(load_7d), delta=load_delta)
+        t4.metric("Effort index", _fmt(features.get("effort_unified_index_7d")))
+
+        weekly = ctx.get("weekly_summary")
+        if weekly:
+            tonnage = weekly.get("strength_short_tons")
+            tonnage_part = f" · {tonnage} short tons" if tonnage is not None else ""
+            st.caption(
+                f"📆 Calendar week (Mon {weekly.get('week_start')}): "
+                f"{weekly.get('strength_sessions')} strength · "
+                f"{weekly.get('running_km')} km · "
+                f"{weekly.get('cardio_minutes')} cardio min{tonnage_part}"
+            )
 
     if mode == "live":
         with _scoped_conn(ctx["user_id"]) as conn:
@@ -413,32 +620,68 @@ def _page_dashboard(ctx: dict, mode: str) -> None:
             else:
                 st.caption("No cardio_events in the rolling 7-day window.")
 
-    weekly = ctx.get("weekly_summary")
-    if weekly:
-        tonnage = weekly.get("strength_short_tons")
-        tonnage_part = f" · {tonnage} short tons lifted" if tonnage is not None else ""
-        st.caption(
-            f"Calendar week (Mon {weekly.get('week_start')}): "
-            f"{weekly.get('strength_sessions')} strength · "
-            f"{weekly.get('running_km')} km · "
-            f"{weekly.get('cardio_minutes')} cardio min"
-            f"{tonnage_part}"
-        )
+    # --- Goals + weekly mileage ---
+    goals = ctx.get("goals_status")
+    mileage = ctx.get("mileage_check")
+    has_mileage = isinstance(mileage, dict) and mileage.get("this_week_km") is not None
+    if goals or has_mileage:
+        st.markdown("#### Goals")
+        gcol, mcol = st.columns([2, 1])
+        with gcol:
+            with st.container(border=True):
+                if goals:
+                    _render_goals_status(goals)
+                else:
+                    st.caption("No goal snapshot yet.")
+        with mcol:
+            with st.container(border=True):
+                st.markdown("**🏃 Weekly mileage**")
+                if has_mileage:
+                    this_wk = mileage.get("this_week_km")
+                    last_wk = mileage.get("last_week_km")
+                    delta = None
+                    if isinstance(this_wk, (int, float)) and isinstance(last_wk, (int, float)):
+                        delta = f"{this_wk - last_wk:+.1f} km vs last week"
+                    st.metric(
+                        "This week",
+                        _fmt(this_wk, suffix=" km"),
+                        delta=delta,
+                        label_visibility="collapsed",
+                    )
+                    if mileage.get("flag"):
+                        st.caption(f"⚠️ {mileage['flag']}")
+                else:
+                    st.caption("—")
 
-    sync_rows = ctx.get("sync_health") or []
-    if sync_rows:
-        st.subheader("Sync health")
-        for row in sync_rows:
-            st.write(
-                f"**{row.get('provider')}**: {row.get('status')} — "
-                f"last sync {row.get('last_sync_at') or 'never'}"
-            )
-
-    anomalies = ctx.get("recent_anomalies") or []
-    if anomalies:
-        st.subheader("Recent anomalies")
-        for row in anomalies:
-            st.write(f"**{row.get('date')}** {row.get('metric')}: {row.get('description')}")
+    # --- Alerts & sync ---
+    st.markdown("#### Alerts & sync")
+    a1, a2 = st.columns(2)
+    with a1:
+        with st.container(border=True):
+            st.markdown("**🔌 Sync health**")
+            sync_rows = ctx.get("sync_health") or []
+            if sync_rows:
+                for row in sync_rows:
+                    emoji = _SYNC_STATUS_EMOJI.get(str(row.get("status", "")).lower(), "⚪")
+                    provider = str(row.get("provider") or "—").replace("_", " ").title()
+                    last_sync = row.get("last_sync_at") or "never"
+                    st.markdown(f"{emoji} **{provider}** — {row.get('status')} · last sync {last_sync}")
+                    if row.get("last_error"):
+                        st.caption(f"⚠️ {row['last_error']}")
+            else:
+                st.caption("No providers connected yet.")
+    with a2:
+        with st.container(border=True):
+            st.markdown("**🚨 Recent anomalies**")
+            anomalies = ctx.get("recent_anomalies") or []
+            if anomalies:
+                for row in anomalies:
+                    sev = _SEVERITY_EMOJI.get(str(row.get("severity", "")).lower(), "•")
+                    st.markdown(f"{sev} **{row.get('date')}** · {row.get('metric')}")
+                    if row.get("description"):
+                        st.caption(row["description"])
+            else:
+                st.caption("No anomalies detected ✅")
 
 
 def _history_query_all(user_id: str, mode: str) -> QueryAll:
@@ -470,7 +713,7 @@ def _render_query_details(query_results: list[dict[str, Any]]) -> None:
 
 
 def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> None:
-    st.subheader("Coaching chat")
+    st.markdown("#### 💬 Coaching chat")
     st.caption(
         "Ask about today's briefing or your history (e.g. \"how has my sleep trended "
         "over 30 days?\") — trend questions run a read-only, schema-bound query and "
@@ -529,8 +772,8 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
                 st.rerun()
             except Exception as exc:
                 st.error(f"Failed to save: {exc}")
-        elif pending and turn.get("tool_results"):
-            with st.expander("Tool calls (fixture — not saved)"):
+        elif pending and turn.get("tool_results") and _debug_enabled():
+            with st.expander("🛠 Tool calls (developer — not saved)"):
                 st.json(turn["tool_results"])
         elif mode == "live":
             try:
@@ -547,8 +790,12 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
             except Exception:
                 pass
 
+    if not st.session_state.chat_messages:
+        st.info("👋 Ask Soma anything about your training, recovery, or trends to get started.")
+
     for msg in st.session_state.chat_messages:
-        with st.chat_message(msg["role"]):
+        avatar = "🧑" if msg["role"] == "user" else "🧬"
+        with st.chat_message(msg["role"], avatar=avatar):
             st.write(msg["content"])
 
     _render_query_details(st.session_state.get("_last_query_results") or [])
@@ -578,20 +825,23 @@ def main() -> None:
 
     guidelines = _load_guidelines(ctx["user_id"])
     _render_sidebar(mode, ctx, guidelines)
+    _render_top_header(ctx, mode)
 
-    page = st.radio(
+    page = st.segmented_control(
         "Navigate",
-        ["Dashboard", "Coaching chat"],
-        horizontal=True,
+        ["📊 Dashboard", "💬 Coaching chat"],
+        default="📊 Dashboard",
         label_visibility="collapsed",
     )
-    if page == "Dashboard":
-        _page_dashboard(ctx, mode)
-    else:
+    if page == "💬 Coaching chat":
         _page_chat(ctx, mode, guidelines)
+    else:
+        _page_dashboard(ctx, mode)
 
-    with st.expander("Raw dashboard context"):
-        st.code(json.dumps(ctx, indent=2, default=str))
+    if _debug_enabled():
+        st.divider()
+        with st.expander("🛠 Raw dashboard context (developer)"):
+            st.code(json.dumps(ctx, indent=2, default=str), language="json")
 
 
 if __name__ == "__main__":
