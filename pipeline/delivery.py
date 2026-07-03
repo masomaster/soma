@@ -106,7 +106,7 @@ def coaching_note_to_html(note: str, *, dashboard_url: str | None = None) -> str
 
 
 def _subject(briefing: Briefing, env: Environment) -> str:
-    prefix = "" if env is Environment.PROD else f"[{env.value.upper()}] "
+    prefix = "" if env is Environment.CLOUD else f"[{env.value.upper()}] "
     return f"{prefix}Soma briefing — {briefing.briefing_date.isoformat()}"
 
 

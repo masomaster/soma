@@ -14,6 +14,7 @@ from aws_cdk import aws_scheduler_targets as scheduler_targets
 from aws_cdk import aws_sns as sns
 from constructs import Construct
 
+from soma_cdk.config import DEPLOYED_ENV
 from soma_cdk.runtime_secrets import RuntimeSecrets
 
 _WEEKLY_ASSET = os.path.join(os.path.dirname(__file__), "..", "lambda", "weekly_signal")
@@ -27,7 +28,6 @@ class WeeklySignalPipeline(Construct):
         scope: Construct,
         construct_id: str,
         *,
-        env_name: str,
         deps_layer: lambda_.ILayerVersion,
         runtime_secrets: RuntimeSecrets,
         schedule_hour_utc: int = 12,
@@ -37,8 +37,9 @@ class WeeklySignalPipeline(Construct):
     ) -> None:
         super().__init__(scope, construct_id)
 
+        base_name = "soma-weekly-signal"
         env_vars = {
-            "ENV": env_name,
+            "ENV": DEPLOYED_ENV,
             **runtime_secrets.env_weekly_signal(),
         }
         if extra_env:
@@ -47,7 +48,7 @@ class WeeklySignalPipeline(Construct):
         fn = lambda_.Function(
             self,
             "WeeklySignalFn",
-            function_name=f"soma-{env_name}-weekly-signal",
+            function_name=base_name,
             runtime=lambda_.Runtime.PYTHON_3_14,
             architecture=lambda_.Architecture.X86_64,
             handler="handler.handler",
@@ -60,7 +61,7 @@ class WeeklySignalPipeline(Construct):
         )
         runtime_secrets.grant_weekly_signal(fn)
 
-        schedule_name = f"soma-{env_name}-weekly-signal"
+        schedule_name = base_name
         self.schedule: scheduler.Schedule | None = None
         if schedule_enabled:
             self.schedule = scheduler.Schedule(
@@ -83,7 +84,7 @@ class WeeklySignalPipeline(Construct):
             cloudwatch.Alarm(
                 self,
                 "WeeklyLambdaErrors",
-                alarm_name=f"soma-{env_name}-weekly-signal-lambda-errors",
+                alarm_name=f"{base_name}-lambda-errors",
                 metric=fn.metric_errors(statistic=cloudwatch.Stats.SUM, period=Duration.minutes(5)),
                 threshold=1,
                 evaluation_periods=1,

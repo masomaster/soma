@@ -33,6 +33,7 @@ from aws_cdk import aws_sns as sns
 from aws_cdk import aws_sns_subscriptions as sns_subs
 from constructs import Construct
 
+from soma_cdk.config import DEPLOYED_ENV
 from soma_cdk.pipeline_layer import build_pipeline_deps_layer
 from soma_cdk.runtime_secrets import RuntimeSecrets
 
@@ -40,14 +41,13 @@ _LAMBDA_ASSET = os.path.join(os.path.dirname(__file__), "..", "lambda", "briefin
 
 
 class DailyBriefingPipeline(Construct):
-    """EventBridge **Scheduler** daily cron → briefing Lambda for one environment."""
+    """EventBridge **Scheduler** daily cron → briefing Lambda."""
 
     def __init__(
         self,
         scope: Construct,
         construct_id: str,
         *,
-        env_name: str,
         runtime_secrets: RuntimeSecrets,
         schedule_hour_utc: int = 11,
         deps_layer: lambda_.ILayerVersion | None = None,
@@ -59,11 +59,10 @@ class DailyBriefingPipeline(Construct):
         else:
             layer = build_pipeline_deps_layer(self, construct_id="PipelineDepsLayer")
 
-        fn_name = f"soma-{env_name}-daily-briefing"
         self.function = lambda_.Function(
             self,
             "BriefingFunction",
-            function_name=fn_name,
+            function_name="soma-daily-briefing",
             runtime=lambda_.Runtime.PYTHON_3_14,
             architecture=lambda_.Architecture.X86_64,
             handler="handler.handler",
@@ -73,8 +72,7 @@ class DailyBriefingPipeline(Construct):
             memory_size=512,
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
-                "ENV": env_name,
-                "SOMA_RULES_PREFIX": f"/soma/{env_name}/",
+                "ENV": DEPLOYED_ENV,
                 **runtime_secrets.env_briefing(),
             },
         )
@@ -84,7 +82,7 @@ class DailyBriefingPipeline(Construct):
         self.function.add_to_role_policy(
             iam.PolicyStatement(
                 actions=["ssm:GetParametersByPath", "ssm:GetParameter", "ssm:GetParameters"],
-                resources=[f"arn:aws:ssm:{region}:{account}:parameter/soma/{env_name}/*"],
+                resources=[f"arn:aws:ssm:{region}:{account}:parameter/soma/*"],
             )
         )
         runtime_secrets.grant_briefing(self.function)
@@ -92,7 +90,7 @@ class DailyBriefingPipeline(Construct):
             iam.PolicyStatement(actions=["ses:SendEmail"], resources=["*"])
         )
 
-        schedule_name = f"soma-{env_name}-daily-pipeline"
+        schedule_name = "soma-daily-pipeline"
         # Id ``SchedulerDailyCron`` (not ``DailySchedule``): new CFN logical id so Rule→Schedule is not an in-place type swap.
         self.schedule = scheduler.Schedule(
             self,
@@ -112,8 +110,8 @@ class DailyBriefingPipeline(Construct):
         alarm_topic = sns.Topic(
             self,
             "PipelineAlarmTopic",
-            topic_name=f"soma-{env_name}-daily-pipeline-alarms",
-            display_name=f"Soma {env_name} daily pipeline alarms",
+            topic_name="soma-daily-pipeline-alarms",
+            display_name="Soma daily pipeline alarms",
         )
         alarm_email = stack.node.try_get_context("soma:pipelineAlarmEmail")
         if isinstance(alarm_email, str) and alarm_email.strip():
@@ -132,7 +130,7 @@ class DailyBriefingPipeline(Construct):
         cloudwatch.Alarm(
             self,
             "SchedulerTargetErrors",
-            alarm_name=f"soma-{env_name}-daily-pipeline-scheduler-target-errors",
+            alarm_name="soma-daily-pipeline-scheduler-target-errors",
             metric=scheduler_target_errors,
             threshold=1,
             evaluation_periods=1,
@@ -154,7 +152,7 @@ class DailyBriefingPipeline(Construct):
         cloudwatch.Alarm(
             self,
             "SchedulerInvocationDropped",
-            alarm_name=f"soma-{env_name}-daily-pipeline-scheduler-invocations-dropped",
+            alarm_name="soma-daily-pipeline-scheduler-invocations-dropped",
             metric=scheduler_invocation_dropped,
             threshold=1,
             evaluation_periods=1,
@@ -169,7 +167,7 @@ class DailyBriefingPipeline(Construct):
         cloudwatch.Alarm(
             self,
             "BriefingLambdaErrors",
-            alarm_name=f"soma-{env_name}-daily-briefing-lambda-errors",
+            alarm_name="soma-daily-briefing-lambda-errors",
             metric=self.function.metric_errors(
                 statistic=cloudwatch.Stats.SUM,
                 period=Duration.minutes(5),
@@ -184,7 +182,7 @@ class DailyBriefingPipeline(Construct):
         cloudwatch.Alarm(
             self,
             "BriefingLambdaThrottles",
-            alarm_name=f"soma-{env_name}-daily-briefing-lambda-throttles",
+            alarm_name="soma-daily-briefing-lambda-throttles",
             metric=self.function.metric_throttles(
                 statistic=cloudwatch.Stats.SUM,
                 period=Duration.minutes(5),
@@ -213,7 +211,7 @@ class DailyBriefingPipeline(Construct):
         cloudwatch.Alarm(
             self,
             "BriefingUserPipelineFailures",
-            alarm_name=f"soma-{env_name}-daily-briefing-user-pipeline-failures",
+            alarm_name="soma-daily-briefing-user-pipeline-failures",
             metric=user_pipeline_failures.metric(
                 statistic=cloudwatch.Stats.SUM,
                 period=Duration.minutes(5),

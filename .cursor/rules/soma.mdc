@@ -19,17 +19,17 @@ Architecture: AWS Lambda + EventBridge + Supabase PostgreSQL + Anthropic API.
 
 ## Key Architectural Rules
 - Every ETL adapter writes raw JSON to S3 BEFORE normalizing. Never normalize in place.
-- All thresholds live in SSM Parameter Store at /soma/{env}/{user_id}/rules/. Never hardcode.
+- All thresholds live in SSM Parameter Store at /soma/{user_id}/rules/. Never hardcode.
 - Every table has user_id. RLS enforces isolation — never filter by user_id in application code.
 - The LLM explains pre-computed conclusions. It never reasons over raw data.
 - Schema is service-agnostic: strength_events not hevy_events, cardio_events not strava_events.
 - Canonical metric names for biometrics: hrv_rmssd, resting_hr, sleep_hours, body_weight_lbs, etc.
 
 ## Environments
+Soma is single-user with **one deployed environment** — no staging/prod split.
 - local: developer machine — **no Docker required**; validate APIs with **Bruno** (`.bruno/`), validate schema against **hosted Supabase** (SQL editor / migrations). Optional: Homebrew Postgres only if you need offline DB without Supabase.
-- staging: soma-staging Supabase project + AWS soma-staging-* resources
-- prod: soma-prod Supabase project + AWS soma-prod-* resources
-- ENV variable controls behavior. When ENV=local, print to stdout instead of sending email.
+- cloud: the deployed AWS resources (un-suffixed `soma-*` names) + the single Supabase project. One `SomaStack` (CloudFormation stack id `SomaStagingStack`, kept for in-place updates).
+- `ENV` (`local` | `cloud`) controls behavior. When `ENV=local`, print to stdout instead of sending email. Migrations still rehearse via Supabase branching + backups, not a second env.
 
 ## ETL Adapter Pattern
 Each adapter in pipeline/adapters/ must:

@@ -21,6 +21,7 @@ from aws_cdk import aws_scheduler_targets as scheduler_targets
 from aws_cdk import aws_sns as sns
 from constructs import Construct
 
+from soma_cdk.config import DEPLOYED_ENV
 from soma_cdk.runtime_secrets import RuntimeSecrets
 
 _HEVY_ASSET = os.path.join(os.path.dirname(__file__), "..", "lambda", "hevy_ingest")
@@ -38,7 +39,6 @@ class HevyScheduledIngest(Construct):
         scope: Construct,
         construct_id: str,
         *,
-        env_name: str,
         deps_layer: lambda_.ILayerVersion,
         runtime_secrets: RuntimeSecrets,
         raw_bucket: s3.IBucket,
@@ -51,7 +51,7 @@ class HevyScheduledIngest(Construct):
         fn = lambda_.Function(
             self,
             "HevyIngestFn",
-            function_name=f"soma-{env_name}-hevy-ingest",
+            function_name="soma-hevy-ingest",
             runtime=lambda_.Runtime.PYTHON_3_14,
             architecture=lambda_.Architecture.X86_64,
             handler="handler.handler",
@@ -61,7 +61,7 @@ class HevyScheduledIngest(Construct):
             memory_size=512,
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
-                "ENV": env_name,
+                "ENV": DEPLOYED_ENV,
                 "RAW_BUCKET": raw_bucket.bucket_name,
                 **runtime_secrets.env_hevy(),
             },
@@ -69,7 +69,7 @@ class HevyScheduledIngest(Construct):
         raw_bucket.grant_put(fn)
         runtime_secrets.grant_hevy(fn)
 
-        schedule_name = f"soma-{env_name}-hevy-ingest"
+        schedule_name = "soma-hevy-ingest"
         self.schedule: scheduler.Schedule | None = None
         if schedule_enabled:
             # Id ``SchedulerHevyCron`` (not ``HevyIngestSchedule``): new CFN logical id so Rule→Schedule is not an in-place type swap.
@@ -95,7 +95,7 @@ class HevyScheduledIngest(Construct):
                 cloudwatch.Alarm(
                     self,
                     "HevySchedulerTargetErrors",
-                    alarm_name=f"soma-{env_name}-hevy-ingest-scheduler-target-errors",
+                    alarm_name="soma-hevy-ingest-scheduler-target-errors",
                     metric=cloudwatch.Metric(
                         namespace="AWS/Scheduler",
                         metric_name="TargetErrorCount",
@@ -112,7 +112,7 @@ class HevyScheduledIngest(Construct):
                 cloudwatch.Alarm(
                     self,
                     "HevySchedulerInvocationDropped",
-                    alarm_name=f"soma-{env_name}-hevy-ingest-scheduler-invocations-dropped",
+                    alarm_name="soma-hevy-ingest-scheduler-invocations-dropped",
                     metric=cloudwatch.Metric(
                         namespace="AWS/Scheduler",
                         metric_name="InvocationDroppedCount",
@@ -129,7 +129,7 @@ class HevyScheduledIngest(Construct):
             cloudwatch.Alarm(
                 self,
                 "HevyLambdaErrors",
-                alarm_name=f"soma-{env_name}-hevy-ingest-lambda-errors",
+                alarm_name="soma-hevy-ingest-lambda-errors",
                 metric=fn.metric_errors(statistic=cloudwatch.Stats.SUM, period=Duration.minutes(5)),
                 threshold=1,
                 evaluation_periods=1,

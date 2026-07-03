@@ -1,4 +1,11 @@
-"""Staging environment stack (stable id: **SomaStagingStack**)."""
+"""Single Soma environment stack.
+
+Soma is a single-user system with one deployed environment (no staging/prod
+split). All resources use un-suffixed ``soma-*`` names. Stateful resources
+(the raw S3 bucket and the ``soma-*`` secrets) use ``RETAIN`` removal policies and
+the stack enables **termination protection** so an accidental ``cdk destroy`` /
+stack delete cannot wipe ingested data or the Supabase connection secret.
+"""
 
 from __future__ import annotations
 
@@ -16,34 +23,30 @@ from soma_cdk.scheduled_source_ingest import ScheduledSourceIngest
 from soma_cdk.weekly_signal_pipeline import WeeklySignalPipeline
 
 
-class SomaStagingStack(Stack):
-    """AWS resources for Soma **staging** — add Lambda, S3, EventBridge, etc. here."""
+class SomaStack(Stack):
+    """All AWS resources for Soma — Lambda, S3, EventBridge, secrets, alarms."""
 
     def __init__(self, scope: Construct, construct_id: str, **kwargs: Any) -> None:
-        super().__init__(scope, construct_id, **kwargs)
+        super().__init__(scope, construct_id, termination_protection=True, **kwargs)
         Tags.of(self).add("Project", "Soma")
-        Tags.of(self).add("Environment", "staging")
 
         pipeline_layer = build_pipeline_deps_layer(self, construct_id="PipelineDeps")
         runtime_secrets = RuntimeSecrets(self, "RuntimeSecrets", manage_secrets=True)
         briefing = DailyBriefingPipeline(
             self,
             "DailyBriefing",
-            env_name="staging",
             runtime_secrets=runtime_secrets,
             deps_layer=pipeline_layer,
         )
         apple = AppleHealthIngestApi(
             self,
             "AppleHealthIngest",
-            env_name="staging",
             deps_layer=pipeline_layer,
             runtime_secrets=runtime_secrets,
         )
         HevyScheduledIngest(
             self,
             "HevyScheduledIngest",
-            env_name="staging",
             deps_layer=pipeline_layer,
             runtime_secrets=runtime_secrets,
             raw_bucket=apple.raw_bucket,
@@ -53,7 +56,6 @@ class SomaStagingStack(Stack):
         ScheduledSourceIngest(
             self,
             "StravaScheduledIngest",
-            env_name="staging",
             source_slug="strava",
             handler_asset_subdir="strava_ingest",
             deps_layer=pipeline_layer,
@@ -68,7 +70,6 @@ class SomaStagingStack(Stack):
         ScheduledSourceIngest(
             self,
             "CalDavScheduledIngest",
-            env_name="staging",
             source_slug="caldav",
             handler_asset_subdir="caldav_ingest",
             deps_layer=pipeline_layer,
@@ -82,7 +83,6 @@ class SomaStagingStack(Stack):
         WeeklySignalPipeline(
             self,
             "WeeklySignal",
-            env_name="staging",
             deps_layer=pipeline_layer,
             runtime_secrets=runtime_secrets,
             pipeline_alarm_topic=briefing.alarm_topic,

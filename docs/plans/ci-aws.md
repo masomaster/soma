@@ -7,8 +7,10 @@ How pushes turn into deploys, and the **one-time setup** you do in AWS and GitHu
 | File | Trigger | What it does |
 |------|---------|--------------|
 | [`ci.yml`](../../.github/workflows/ci.yml) | every PR + push to `main` (also reusable) | `pytest` on Python 3.14 + `cdk synth` (no AWS creds) |
-| [`deploy-staging.yml`](../../.github/workflows/deploy-staging.yml) | push to `main`, manual | runs CI, then `cdk deploy SomaStagingStack` |
-| [`deploy-prod.yml`](../../.github/workflows/deploy-prod.yml) | `v*` tag, manual dispatch | runs CI, waits for environment approval, then `cdk deploy SomaProdStack` |
+| [`deploy.yml`](../../.github/workflows/deploy.yml) | push to `main`, manual dispatch | runs CI, then `cdk deploy --all` |
+
+Soma has **one deployed environment**, so there is a single deploy workflow and a
+single stack (see [infrastructure/README.md](../../infrastructure/README.md)).
 
 Auth is **GitHub OIDC → an AWS IAM role** — no long-lived AWS keys are stored anywhere.
 
@@ -28,7 +30,7 @@ aws iam create-open-id-connect-provider \
 
 **b. Create the deploy role `soma-github-deploy`** with this trust policy (`trust.json`).
 
-> **Security:** scope the `sub` claim to the two **deployment environments**, not `repo:masomaster/soma:*`. Both deploy jobs declare `environment: staging`/`production`, so their OIDC subject is the `…:environment:<name>` form. Restricting to these subjects means an arbitrary branch or pull request (which has no environment) cannot assume this role, and the `production` environment's required-reviewer gate becomes a real prerequisite for obtaining prod credentials.
+> **Security:** scope the `sub` claim to the **deploy environment**, not `repo:masomaster/soma:*`. The deploy job declares `environment: deploy`, so its OIDC subject is the `…:environment:deploy` form. Restricting to this subject means an arbitrary branch or pull request (which has no environment) cannot assume this role.
 
 ```json
 {
@@ -40,17 +42,14 @@ aws iam create-open-id-connect-provider \
     "Condition": {
       "StringEquals": {
         "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
-        "token.actions.githubusercontent.com:sub": [
-          "repo:masomaster/soma:environment:staging",
-          "repo:masomaster/soma:environment:production"
-        ]
+        "token.actions.githubusercontent.com:sub": "repo:masomaster/soma:environment:deploy"
       }
     }
   }]
 }
 ```
 
-> Already created the role with the broader `repo:masomaster/soma:*`? Update the trust policy in IAM → Roles → `soma-github-deploy` → Trust relationships to the scoped version above. For stronger isolation you can instead create **two** roles (`soma-github-deploy-staging` / `-prod`), each trusting only its own `environment:` subject, and point the matching GitHub Environment variable at it.
+> Already created the role with the broader `repo:masomaster/soma:*`? Update the trust policy in IAM → Roles → `soma-github-deploy` → Trust relationships to the scoped version above.
 
 ```bash
 aws iam create-role --role-name soma-github-deploy \
@@ -87,15 +86,13 @@ Copy the role ARN — it looks like `arn:aws:iam::<ACCOUNT_ID>:role/soma-github-
 
 ## 2. GitHub — one time
 
-Repo → **Settings → Environments**, create two:
+Repo → **Settings → Environments**, create one:
 
-**`staging`**
+**`deploy`**
 - Variable `AWS_DEPLOY_ROLE_ARN` = the role ARN from step 1.
 - Variable `AWS_REGION` = `us-west-2` (optional; this is the default).
-
-**`production`**
-- Same two variables.
-- Under **Deployment protection rules**, enable **Required reviewers** (add yourself). This is the approval gate before prod deploys.
+- Variable `SOMA_ALARM_EMAIL` (optional) = inbox for pipeline CloudWatch alarms. When set, each deploy (re)creates the SNS email subscription; AWS emails a one-time confirmation you must click. Leave unset to manage alarm subscriptions manually.
+- (Optional) Under **Deployment protection rules**, enable **Required reviewers** if you want a manual approval gate before every deploy.
 
 > These are GitHub **Variables**, not Secrets — a role ARN and region are not sensitive. Add real Secrets (e.g. `SUPABASE_SERVICE_ROLE_KEY`) only when a deploy step actually needs them.
 
@@ -127,7 +124,7 @@ export CDK_DEFAULT_REGION=us-west-2
 ## Quick test checklist (after setup)
 
 1. Open a PR → **CI** runs (`pytest` + `cdk synth`).
-2. Merge to `main` → **Deploy staging** runs CI then `cdk deploy SomaStagingStack`.
-3. Push a tag `vX.Y.Z` (or use **Run workflow**) → **Deploy production** runs CI, pauses for your approval, then `cdk deploy SomaProdStack`.
+2. Merge to `main` (or use **Run workflow**) → **Deploy** runs CI then `cdk deploy --all`.
 
-Stacks are tags-only today, so a successful deploy creates two near-empty CloudFormation stacks named `SomaStagingStack` / `SomaProdStack` — proof the pipeline works before real resources land in later phases.
+The single CloudFormation stack keeps the id `SomaStagingStack` so deploys update the
+existing environment in place (see [infrastructure/README.md](../../infrastructure/README.md)).

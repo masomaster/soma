@@ -892,31 +892,31 @@ The key insight from the feedback: **the feature store (`daily_features`) is the
 All thresholds are SSM standard parameters — free, and editable from the AWS console with no redeploy.
 
 ```
-Path structure: /soma/{env}/{user_id}/rules/
+Path structure: /soma/{user_id}/rules/
 
-/soma/prod/{user_id}/rules/cardio_gap_flag_days          7
-/soma/prod/{user_id}/rules/cardio_weekly_min             3
-/soma/prod/{user_id}/rules/strength_weekly_goal          4
-/soma/prod/{user_id}/rules/consecutive_strength_max      2
-/soma/prod/{user_id}/rules/hrv_recovery_threshold        0.85
-/soma/prod/{user_id}/rules/hrv_baseline_days             30
-/soma/prod/{user_id}/rules/sleep_minimum_hours           6.5
-/soma/prod/{user_id}/rules/weight_trend_flag_lbs         2.0
-/soma/prod/{user_id}/rules/deload_consecutive_suppress   3
+/soma/{user_id}/rules/cardio_gap_flag_days          7
+/soma/{user_id}/rules/cardio_weekly_min             3
+/soma/{user_id}/rules/strength_weekly_goal          4
+/soma/{user_id}/rules/consecutive_strength_max      2
+/soma/{user_id}/rules/hrv_recovery_threshold        0.85
+/soma/{user_id}/rules/hrv_baseline_days             30
+/soma/{user_id}/rules/sleep_minimum_hours           6.5
+/soma/{user_id}/rules/weight_trend_flag_lbs         2.0
+/soma/{user_id}/rules/deload_consecutive_suppress   3
 ```
 
 To change a threshold: AWS Console → SSM Parameter Store → edit value. Next Lambda run picks it up with no code change.
 
 ```python
-def load_thresholds(env: str, user_id: str) -> dict:
+def load_thresholds(user_id: str) -> dict:
     ssm = boto3.client("ssm")
     response = ssm.get_parameters_by_path(
-        Path=f"/soma/{env}/{user_id}/rules/"
+        Path=f"/soma/{user_id}/rules/"
     )
     return {p["Name"].split("/")[-1]: float(p["Value"]) for p in response["Parameters"]}
 
-def compute_daily_context(db, user_id: str, env: str) -> dict:
-    t = load_thresholds(env, user_id)
+def compute_daily_context(db, user_id: str) -> dict:
+    t = load_thresholds(user_id)
     metrics = {}
     flags = []
     today = date.today()

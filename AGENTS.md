@@ -8,12 +8,12 @@ This repo is **greenfield**: improve structure, names, and boundaries as you lea
 
 | Task type | Prefer |
 |-----------|--------|
-| Supabase schema, RLS, migrations, advisors | **Supabase** skill; **Supabase MCP** (`search_docs`, project read tools, `execute_sql` where appropriate) for staging inspection and doc-backed answers — **avoid blind `apply_migration` on prod**. Prefer MCP over guessing when the agent has Supabase MCP enabled. |
+| Supabase schema, RLS, migrations, advisors | **Supabase** skill; **Supabase MCP** (`search_docs`, project read tools, `execute_sql` where appropriate) for inspection and doc-backed answers. Soma runs a **single Supabase project** (no staging/prod split) — rehearse risky migrations via **Supabase branching** + backups, and **avoid blind `apply_migration`** on the live project. Prefer MCP over guessing when the agent has Supabase MCP enabled. |
 | Postgres query shape, indexes | **supabase-postgres-best-practices** skill. |
 | Lambda handlers, EventBridge, Step Functions | **aws-lambda** / **aws-serverless-deployment** skills. |
 | AWS CDK (Python) stacks / stages | **deployment-engineer** / AWS CDK docs; deploy-on-aws plugin if used for design review — **no Terraform** in Soma. |
 | GitHub Actions, OIDC → AWS, deploy workflows | **deployment-engineer** / **deploy-ci-cd-agent**; AWS IAM OIDC provider for GitHub. |
-| After auth, webhooks, secrets, or SES | **security-review** (or equivalent) pass before prod. |
+| After auth, webhooks, secrets, or SES | **security-review** (or equivalent) pass before deploying. |
 
 **Phase 0 scope:** Python package + tests + docs only — no cloud provisioning in this repo step.
 

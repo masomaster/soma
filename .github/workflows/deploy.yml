@@ -1,19 +1,18 @@
-name: Deploy production
+name: Deploy
 
-# Production is never deployed silently: it runs only on a manual dispatch or a
-# version tag push, and the `production` GitHub Environment should require
-# reviewer approval. The reusable CI gate must pass first. Auth is GitHub OIDC
-# -> AWS IAM role. Configure the `production` GitHub Environment with:
-#   - AWS_DEPLOY_ROLE_ARN  (IAM role the production environment may assume)
+# Single deployed environment. Auto-deploys on every push to main, but only
+# AFTER the reusable CI gate (tests + synth) passes. Auth is GitHub OIDC -> AWS
+# IAM role (no stored AWS keys). Configure a GitHub Environment named `deploy`
+# with these variables:
+#   - AWS_DEPLOY_ROLE_ARN  (IAM role the deploy environment may assume)
 #   - AWS_REGION           (optional; defaults to us-west-2)
-#   - required reviewers (Settings -> Environments -> production)
 on:
-  workflow_dispatch:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 concurrency:
-  group: deploy-prod
+  group: deploy
   cancel-in-progress: false
 
 permissions:
@@ -24,10 +23,10 @@ jobs:
     uses: ./.github/workflows/ci.yml
 
   deploy:
-    name: cdk deploy SomaProdStack
+    name: cdk deploy
     needs: ci
     runs-on: ubuntu-latest
-    environment: production
+    environment: deploy
     permissions:
       id-token: write # required for OIDC token
       contents: read
@@ -48,8 +47,18 @@ jobs:
           aws-region: ${{ vars.AWS_REGION || 'us-west-2' }}
       - name: Resolve account id for CDK env
         run: echo "CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
-      - name: Deploy SomaProdStack
+      - name: Deploy stack
         working-directory: infrastructure
         env:
           CDK_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
-        run: npx --yes aws-cdk@2 deploy SomaProdStack --require-approval never
+          # Optional: set repo/environment Variable SOMA_ALARM_EMAIL to (re)create the
+          # pipeline-alarm SNS email subscription on every deploy. AWS emails a
+          # one-time confirmation the first time; without it the alarm topic has no
+          # subscribers and pipeline alarms notify no one.
+          SOMA_ALARM_EMAIL: ${{ vars.SOMA_ALARM_EMAIL }}
+        run: |
+          ctx=()
+          if [ -n "$SOMA_ALARM_EMAIL" ]; then
+            ctx+=(-c "soma:pipelineAlarmEmail=$SOMA_ALARM_EMAIL")
+          fi
+          npx --yes aws-cdk@2 deploy --all --require-approval never "${ctx[@]}"
