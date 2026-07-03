@@ -361,11 +361,14 @@ def _page_dashboard(ctx: dict, mode: str) -> None:
 
     weekly = ctx.get("weekly_summary")
     if weekly:
+        tonnage = weekly.get("strength_short_tons")
+        tonnage_part = f" · {tonnage} short tons lifted" if tonnage is not None else ""
         st.caption(
             f"Calendar week (Mon {weekly.get('week_start')}): "
             f"{weekly.get('strength_sessions')} strength · "
             f"{weekly.get('running_km')} km · "
             f"{weekly.get('cardio_minutes')} cardio min"
+            f"{tonnage_part}"
         )
 
     sync_rows = ctx.get("sync_health") or []

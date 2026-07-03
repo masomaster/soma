@@ -74,3 +74,46 @@ def test_build_daily_goal_snapshot_shape():
     assert "goals_status" in snap
     assert "mileage_check" in snap
     assert isinstance(snap["todays_focus"], str)
+
+
+def test_compute_weekly_activity_summary_calendar_strength_tonnage():
+    from pipeline.goal_progress import compute_weekly_activity_summary
+
+    week_start = date(2024, 6, 3)  # Monday
+    strength = [
+        {
+            "event_date": date(2024, 6, 4),
+            "set_type": "working",
+            "reps": 10,
+            "weight_lbs": 200,
+        },
+        {
+            "event_date": date(2024, 6, 4),
+            "set_type": "working",
+            "reps": 8,
+            "weight_lbs": 225,
+        },
+        {
+            "event_date": date(2024, 6, 4),
+            "set_type": "warmup",
+            "reps": 12,
+            "weight_lbs": 135,
+        },
+        {
+            "event_date": date(2024, 6, 10),
+            "set_type": "working",
+            "reps": 5,
+            "weight_lbs": 315,
+        },
+    ]
+    row = compute_weekly_activity_summary(
+        user_id="u1",
+        week_start=week_start,
+        strength_events=strength,
+        running_sessions=[],
+    )
+    assert row["strength_sessions"] == 1
+    summary = row["summary_json"]
+    assert summary["strength_hard_sets"] == 2
+    assert summary["strength_volume_lbs"] == 3800.0
+    assert summary["strength_short_tons"] == 1.9

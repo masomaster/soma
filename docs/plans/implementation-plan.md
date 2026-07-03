@@ -315,6 +315,8 @@ User (chat / dashboard / email)
 
 **Planned enhancement:** **Calendar Mon–Sun strength tonnage** in `weekly_activity_summary.summary_json` (working-set volume for `[week_start, week_start + 6]`; same semantics as `training_load_strength_short_tons_*` but calendar-bound). Unblocks “how much did I lift this week?” in dashboard/chat without text-to-SQL. Details: [workload-indicators.md](./workload-indicators.md) § Implementation phasing.
 
+**Status (2026-07):** Shipped in `pipeline/goal_progress.compute_weekly_activity_summary` (`strength_short_tons`, `strength_hard_sets`, `strength_volume_lbs` in `summary_json`); surfaced in dashboard context + caption.
+
 Ship Slice A deliverables (full schema SQL can live in a future `docs/plans/goals-running-daily-planning.md` or migration comments):
 
 - Migration: `goals`, `running_sessions`, `daily_goal_snapshot`, `weekly_activity_summary` + RLS tests
@@ -369,7 +371,7 @@ Go beyond week-level `suggest_todays_focus` when life interrupts the plan:
 
 ### Phase 9 — User app: homepage / dashboard + bounded queries (optional stack)
 
-**Repo status (2026-06):** Streamlit dashboard spike (`dashboard/app.py`) with fixture mode + coaching chat wired to `pipeline/coaching_chat.py`. `provider_connections` table for sync health. **Operator next:** apply `0005`, connect live Supabase + auth; multi-user provider OAuth still manual (see below).
+**Repo status (2026-07):** Streamlit dashboard (`dashboard/app.py`) with fixture mode, live Supabase + Auth sign-in, coaching chat + bounded history queries, calendar-week strength tonnage in weekly summary. **Public hosting:** AWS **App Runner** (`soma-dashboard`) via CDK — stack output **`DashboardUrl`**; briefing email footer wired via **`BRIEFING_EMAIL_DASHBOARD_URL`**. Operator: fill **`soma-dashboard`** secret; apply `0005`+. Multi-user provider OAuth still manual (see below). Next.js PWA deferred.
 
 **Product shape:** Not only an NL-query playground — ship a **homepage / dashboard** the user actually opens: key **daily features** and trends, **latest briefing** (link, excerpt, or light embed), **integration / sync health** (connected sources, last successful pull), **weekly / monthly training load** (modality-split external load first — see [workload-indicators.md](./workload-indicators.md) and the **Weekly / monthly workload** section above), **weekly goal progress** ([Slice A](#slice-a--structured-goals--daily-plan-build-first)), and simple tables or charts where they add clarity. Layer **[Slice C](#slice-c--dashboard-bounded-queries--coaching-chat)** on top: bounded natural-language history queries **and** multi-turn coaching chat with validated write tools — same auth and RLS-backed or read-only DB path, not instead of the dashboard shell.
 
@@ -379,7 +381,7 @@ Go beyond week-level `suggest_todays_focus` when life interrupts the plan:
 
 ### Phase 10 — Integrated delivery refinement (guidelines, corpus, operator polish, recurring)
 
-**When:** After **Phase 7** (additional sources + backfill on **staging**) and **Phase 8** (statistical anomalies in the briefing prompt)—so the model already sees **mixed sources** and **anomaly blocks** before you grow prompt context. **Production** and dual-environment operations wait until **Phase 11**. **Phase 6.6** shipped the first quality bar (sparse recovery, HTML shell, checklist + failure-mode docs). Phase 10 adds **personal + expert narrative context** and then runs **ongoing** SES / prompt / template maturation—not a second “Phase 6” scope.
+**Repo status (2026-07):** Runtime wiring shipped (`pipeline/guidelines.py`, S3 bucket + IAM on briefing Lambda, dashboard read/write for `append_goal_note`, prompt injection tests). Corpus operator docs: [`scripts/guidelines-corpus.md`](../../scripts/guidelines-corpus.md) + `expert-principles.md` skeleton under fixtures. **Recurring:** inbox/HTML/prompt polish per operator traffic — not a code gate.
 
 **Training guidelines + expert transcript corpus** (briefing context — **Guidelines Files** and **Prompt Template & LLM Call** in [project-overview.md](./project-overview.md)):
 

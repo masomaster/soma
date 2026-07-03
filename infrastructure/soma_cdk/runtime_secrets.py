@@ -34,9 +34,18 @@ _CALDAV_PLACEHOLDER = json.dumps(
     }
 )
 
+_DASHBOARD_PLACEHOLDER = json.dumps(
+    {
+        "SUPABASE_URL": _PLACEHOLDER,
+        "SUPABASE_ANON_KEY": _PLACEHOLDER,
+        "ANTHROPIC_API_KEY": _PLACEHOLDER,
+    }
+)
+
 # Fixed Secrets Manager names (no env suffix).
 NAME_DB = "soma-db"
 NAME_BRIEFING = "soma-briefing"
+NAME_DASHBOARD = "soma-dashboard"
 NAME_TENANT = "soma-tenant"
 NAME_HEVY = "soma-hevy"
 NAME_CALDAV = "soma-caldav"
@@ -118,6 +127,12 @@ class RuntimeSecrets(Construct):
             "Anthropic API key + SES From address (JSON)",
             _BRIEFING_PLACEHOLDER,
         )
+        self.dashboard_arn = _bind(
+            "DashboardSecret",
+            NAME_DASHBOARD,
+            "Supabase Auth + Anthropic API key for the Streamlit dashboard (JSON)",
+            _DASHBOARD_PLACEHOLDER,
+        )
         self.tenant_arn = _bind(
             "TenantSecret",
             NAME_TENANT,
@@ -174,6 +189,15 @@ class RuntimeSecrets(Construct):
 
     def grant_weekly_signal(self, fn: lambda_.IFunction) -> None:
         self._grant(fn, self.db_arn, self.briefing_arn, self.tenant_arn)
+
+    def grant_dashboard(self, principal: iam.IPrincipal) -> None:
+        for arn in (self.db_arn, self.dashboard_arn):
+            principal.add_to_principal_policy(
+                iam.PolicyStatement(
+                    actions=["secretsmanager:GetSecretValue"],
+                    resources=[arn],
+                )
+            )
 
     def env_briefing(self) -> dict[str, str]:
         return {

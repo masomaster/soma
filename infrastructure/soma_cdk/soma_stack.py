@@ -16,6 +16,7 @@ from constructs import Construct
 
 from soma_cdk.apple_health_ingest import AppleHealthIngestApi
 from soma_cdk.daily_pipeline import DailyBriefingPipeline
+from soma_cdk.dashboard_service import DashboardService
 from soma_cdk.hevy_scheduled_ingest import HevyScheduledIngest
 from soma_cdk.pipeline_layer import build_pipeline_deps_layer
 from soma_cdk.runtime_secrets import RuntimeSecrets
@@ -38,6 +39,15 @@ class SomaStack(Stack):
             runtime_secrets=runtime_secrets,
             deps_layer=pipeline_layer,
         )
+        dashboard_enabled = self.node.try_get_context("soma:dashboardEnabled")
+        if dashboard_enabled is None or str(dashboard_enabled).lower() != "false":
+            DashboardService(
+                self,
+                "Dashboard",
+                runtime_secrets=runtime_secrets,
+                guidelines_bucket=briefing.guidelines_bucket,
+                briefing_function=briefing.function,
+            )
         apple = AppleHealthIngestApi(
             self,
             "AppleHealthIngest",

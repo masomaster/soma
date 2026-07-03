@@ -8,6 +8,7 @@ explicit user filter.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -112,11 +113,20 @@ def build_dashboard_context(
         ctx["todays_focus"] = goal_snapshot.get("todays_focus")
         ctx["mileage_check"] = goal_snapshot.get("mileage_check")
     if weekly_summary:
+        summary_json = weekly_summary.get("summary_json") or {}
+        if isinstance(summary_json, str):
+            try:
+                summary_json = json.loads(summary_json)
+            except json.JSONDecodeError:
+                summary_json = {}
         ctx["weekly_summary"] = {
             "week_start": _iso(weekly_summary.get("week_start")),
             "strength_sessions": weekly_summary.get("strength_sessions"),
             "running_km": weekly_summary.get("running_km"),
             "cardio_minutes": weekly_summary.get("cardio_minutes"),
+            "strength_short_tons": summary_json.get("strength_short_tons"),
+            "strength_hard_sets": summary_json.get("strength_hard_sets"),
+            "strength_volume_lbs": summary_json.get("strength_volume_lbs"),
         }
     if provider_connections:
         ctx["sync_health"] = [
@@ -179,7 +189,7 @@ def fetch_dashboard_source_rows(
         (user_id, as_of),
     )
     weekly_summary = query_one(
-        "SELECT week_start, strength_sessions, running_km, cardio_minutes "
+        "SELECT week_start, strength_sessions, running_km, cardio_minutes, summary_json "
         "FROM weekly_activity_summary "
         "WHERE user_id = %s AND week_start <= %s "
         "ORDER BY week_start DESC LIMIT 1",

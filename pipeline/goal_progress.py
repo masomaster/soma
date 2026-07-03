@@ -16,6 +16,9 @@ from pipeline.mileage_ramp import check_mileage_ramp, iso_week_start
 from pipeline.schedule_context import apply_schedule_to_focus_parts, is_goal_blocked
 
 STRENGTH_GOAL = "strength"
+# Working-set volume uses the same semantics as ``pipeline.features`` tonnage.
+LBS_PER_SHORT_TON = 2000
+_HARD_SET_TYPES = frozenset({"working"})
 RUNNING_GOAL_TYPES = ("running_long", "running_easy", "running_interval")
 RUN_TYPE_BY_GOAL = {
     "running_long": "long",
@@ -43,6 +46,33 @@ def _parse_date(raw: Any) -> date | None:
 
 def _week_dates(week_start: date) -> set[date]:
     return {week_start + timedelta(days=i) for i in range(7)}
+
+
+def _calendar_week_strength_volume(
+    strength_events: Sequence[Mapping[str, Any]],
+    week_start: date,
+) -> dict[str, float | int]:
+    """Sum working-set volume for Mon–Sun ``week_start`` (calendar week, not trailing 7d)."""
+    week = _week_dates(week_start)
+    hard_sets = 0
+    vol_lb = 0.0
+    for row in strength_events:
+        ed = _parse_date(row.get("event_date"))
+        if ed not in week:
+            continue
+        set_type = str(row.get("set_type") or "").strip().lower()
+        if set_type not in _HARD_SET_TYPES:
+            continue
+        hard_sets += 1
+        reps = row.get("reps")
+        weight = row.get("weight_lbs")
+        if reps is not None and weight is not None:
+            vol_lb += float(reps) * float(weight)
+    return {
+        "strength_short_tons": round(vol_lb / LBS_PER_SHORT_TON, 3),
+        "strength_hard_sets": hard_sets,
+        "strength_volume_lbs": round(vol_lb, 1),
+    }
 
 
 def _strength_session_dates(
@@ -275,6 +305,7 @@ def compute_weekly_activity_summary(
         running_sessions=running_sessions,
         cardio_events=cardio_events,
     )
+    strength_volume = _calendar_week_strength_volume(strength_events, week_start)
     return {
         "user_id": user_id,
         "week_start": week_start,
@@ -283,6 +314,7 @@ def compute_weekly_activity_summary(
         "cardio_minutes": round(cardio_min, 1),
         "summary_json": {
             "strength_session_dates": sorted(d.isoformat() for d in strength_dates),
+            **strength_volume,
         },
     }
 
