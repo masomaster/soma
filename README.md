@@ -10,7 +10,7 @@
 - **Compute** daily features, run a rules engine and anomaly layer, then **synthesize** coaching copy with an LLM (the model narrates pre-computed signals; it does not replace the logic layer).
 - **Deliver** a daily briefing (e.g. email via SES) on a schedule.
 
-The design targets multiple users and isolated staging and production environments. **Local development** is documented without Docker: Bruno for vendor APIs, hosted Supabase for schema and PostgREST — see [docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md).
+The design targets a **single deployed environment** (one AWS stack + one Supabase project) with **local development** documented without Docker: Bruno for vendor APIs, hosted Supabase for schema and PostgREST — see [docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md).
 
 ## Documentation
 
@@ -79,12 +79,7 @@ SOMA_DASHBOARD_FIXTURE=1 .venv/bin/streamlit run dashboard/app.py   # fixture
 SOMA_DASHBOARD_FIXTURE=0 .venv/bin/streamlit run dashboard/app.py   # live
 ```
 
-**Public URL (AWS):** `cdk deploy` provisions **ECS Fargate + ALB** (`soma-dashboard`) with a
-public HTTP endpoint (Streamlit needs WebSockets — App Runner is not supported). Stack output
-**`DashboardUrl`**; the briefing Lambda gets the same value as `BRIEFING_EMAIL_DASHBOARD_URL`.
-Fill **`soma-dashboard`** secret (Supabase URL + anon key + Anthropic key) and **`soma-db`**.
-Cloud dashboard disables self-service sign-up (`SOMA_CLOUD_DASHBOARD=1`). Skip deploy with
-`-c soma:dashboardEnabled=false`. Add ACM + Route53 later for HTTPS on a custom domain.
+**Public URL (free):** deploy `dashboard/app.py` to **[Streamlit Community Cloud](https://streamlit.io/cloud)** — HTTPS, $0 hobby tier, Supabase Auth in the app. Step-by-step: [`docs/plans/dashboard-hosting.md`](docs/plans/dashboard-hosting.md). After deploy, set GitHub variable **`SOMA_DASHBOARD_URL`** (or `cdk deploy -c soma:dashboardUrl=…`) so briefing emails link to the same URL.
 
 Copy [`.env.example`](.env.example) to `.env` for local secrets (gitignored). `ENV` defaults to `local`; see `pipeline.settings`. For **Phase 3 Hevy smoke** (live API, raw files on disk, optional Supabase upsert), see [`scripts/README.md`](scripts/README.md) and [docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md) § Phase 3 smoke.
 

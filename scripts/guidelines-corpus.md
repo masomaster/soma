@@ -34,14 +34,6 @@ Repeat for `my-goals.md` and `injury-history.md` as needed.
 
 ## Dashboard + email link
 
-After `cdk deploy`, the stack emits **`DashboardUrl`** (ALB HTTP endpoint). The briefing
-Lambda receives the same value as `BRIEFING_EMAIL_DASHBOARD_URL` so morning emails include
-an “Open your dashboard” footer. Add ACM + Route53 on your domain for HTTPS when ready.
-
-Fill **`soma-dashboard`** in Secrets Manager with:
-
-- `SUPABASE_URL` — project URL from Supabase Dashboard
-- `SUPABASE_ANON_KEY` — publishable anon key (RLS protects rows)
-- `ANTHROPIC_API_KEY` — for coaching chat and history queries
-
-`SOMA_DATABASE_URL` is injected from the existing **`soma-db`** secret (session pooler URI).
+Deploy the dashboard on **Streamlit Community Cloud** (free), then wire the URL into the
+briefing Lambda via `cdk deploy -c soma:dashboardUrl=https://YOUR-APP.streamlit.app` or
+GitHub variable **`SOMA_DASHBOARD_URL`**. See [`docs/plans/dashboard-hosting.md`](../docs/plans/dashboard-hosting.md).

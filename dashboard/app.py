@@ -54,6 +54,30 @@ def _load_dotenv() -> None:
     load_dotenv(_REPO_ROOT / ".env")
 
 
+def _apply_streamlit_secrets() -> None:
+    """Map Streamlit Community Cloud secrets into ``os.environ`` when unset."""
+    try:
+        secrets = st.secrets
+    except Exception:
+        return
+    for key in (
+        "ENV",
+        "SOMA_DASHBOARD_FIXTURE",
+        "SOMA_CLOUD_DASHBOARD",
+        "SOMA_DATABASE_URL",
+        "DB_CONNECT_STRING",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "ANTHROPIC_API_KEY",
+        "SOMA_GUIDELINES_BUCKET",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_DEFAULT_REGION",
+    ):
+        if key in secrets and not os.environ.get(key, "").strip():
+            os.environ[key] = str(secrets[key])
+
+
 def _resolve_db_url() -> str:
     for key in ("SOMA_DATABASE_URL", "DB_CONNECT_STRING", "DATABASE_URL"):
         value = os.environ.get(key, "").strip()
@@ -532,6 +556,7 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
 
 def main() -> None:
     _load_dotenv()
+    _apply_streamlit_secrets()
     st.set_page_config(page_title="Soma", layout="wide", initial_sidebar_state="expanded")
 
     if not _render_auth_gate():

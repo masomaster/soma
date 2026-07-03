@@ -56,9 +56,13 @@ jobs:
           # one-time confirmation the first time; without it the alarm topic has no
           # subscribers and pipeline alarms notify no one.
           SOMA_ALARM_EMAIL: ${{ vars.SOMA_ALARM_EMAIL }}
+          SOMA_DASHBOARD_URL: ${{ vars.SOMA_DASHBOARD_URL }}
         run: |
           ctx=()
           if [ -n "$SOMA_ALARM_EMAIL" ]; then
             ctx+=(-c "soma:pipelineAlarmEmail=$SOMA_ALARM_EMAIL")
+          fi
+          if [ -n "$SOMA_DASHBOARD_URL" ]; then
+            ctx+=(-c "soma:dashboardUrl=$SOMA_DASHBOARD_URL")
           fi
           npx --yes aws-cdk@2 deploy --all --require-approval never "${ctx[@]}"

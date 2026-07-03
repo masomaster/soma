@@ -28,7 +28,7 @@ All resources use **un-suffixed** `soma-*` names.
 
 **Weekly signal job:** Scheduler `soma-weekly-signal` (**Sunday 12:00 UTC**) recomputes **`metric_patterns`** and optional Sonnet **`llm_pattern`** rows (`ENABLE_WEEKLY_PATTERN_LLM` on the weekly Lambda only).
 
-**Streamlit dashboard (public):** ECS Fargate + ALB service **`soma-dashboard`** serves `dashboard/app.py` at a public HTTP URL (WebSockets required — not App Runner). CDK output **`DashboardUrl`**; briefing Lambda env **`BRIEFING_EMAIL_DASHBOARD_URL`** matches it. Secrets: **`soma-db`**, **`soma-dashboard`** (JSON: `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `ANTHROPIC_API_KEY`). Instance role read/writes the **guidelines** S3 bucket. Cloud UI disables sign-up (`SOMA_CLOUD_DASHBOARD`). Skip with `-c soma:dashboardEnabled=false`. Deploy needs **Docker** on the host. Add ACM + custom domain for HTTPS.
+**Dashboard (not in this stack):** the Streamlit UI deploys separately on **[Streamlit Community Cloud](https://streamlit.io/cloud)** (free). Pass the public URL to CDK with `-c soma:dashboardUrl=https://….streamlit.app` or GitHub variable **`SOMA_DASHBOARD_URL`** — see [`docs/plans/dashboard-hosting.md`](../docs/plans/dashboard-hosting.md).
 
 ## Prereqs
 
