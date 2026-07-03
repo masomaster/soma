@@ -14,6 +14,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
+from pipeline.cardio_quality import (
+    DEFAULT_RUN_PACE_MAX_SEC_MI,
+    DEFAULT_RUN_PACE_MIN_SEC_MI,
+)
+
 logger = logging.getLogger(__name__)
 
 # Threshold name -> default value. Operators override per user in SSM; these
@@ -26,6 +31,10 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "max_hrv_suppressed_days": 2,
     "max_acute_chronic_ratio": 1.5,
     "min_readiness_score": 60.0,
+    # Plausible run pace band (sec/mi); outside it the recorded distance is
+    # treated as suspect. Defaults live in pipeline.cardio_quality (single source).
+    "cardio_run_pace_min_sec_mi": DEFAULT_RUN_PACE_MIN_SEC_MI,
+    "cardio_run_pace_max_sec_mi": DEFAULT_RUN_PACE_MAX_SEC_MI,
 }
 
 # Severity ordering for sorting / "worst first" presentation.
@@ -202,6 +211,22 @@ def evaluate(
                     f"{th['min_readiness_score']:.0f} target — consider an easier day."
                 ),
                 evidence={"overall_readiness_score": readiness, "min_readiness_score": th["min_readiness_score"]},
+            )
+        )
+
+    suspect_cardio = _f(features, "cardio_distance_suspect_7d")
+    if suspect_cardio is not None and suspect_cardio > 0:
+        n = int(suspect_cardio)
+        flags.append(
+            Flag(
+                code="DATA_QUALITY_CARDIO_DISTANCE",
+                severity="info",
+                message=(
+                    f"{n} run{'s' if n != 1 else ''} in the last 7 days recorded an "
+                    "implausible pace — the distance was likely mis-measured, so it is "
+                    "excluded from weekly mileage. Worth verifying at the source app."
+                ),
+                evidence={"cardio_distance_suspect_7d": n},
             )
         )
 

@@ -142,6 +142,8 @@ def run_daily_pipeline(
             target_sleep_hours=thresholds["target_sleep_hours"],
             hrv_suppressed_ratio=thresholds["hrv_suppressed_ratio"],
             max_acute_chronic_ratio=thresholds["max_acute_chronic_ratio"],
+            run_pace_min_sec_mi=thresholds["cardio_run_pace_min_sec_mi"],
+            run_pace_max_sec_mi=thresholds["cardio_run_pace_max_sec_mi"],
         )
         if io.persist_features is not None:
             io.persist_features(result.features)
@@ -184,6 +186,8 @@ def run_daily_pipeline(
             cardio_events=cardio,
             exceptions=exceptions,
             interventions=interventions,
+            run_pace_min_sec_mi=thresholds["cardio_run_pace_min_sec_mi"],
+            run_pace_max_sec_mi=thresholds["cardio_run_pace_max_sec_mi"],
         )
         if io.persist_goal_snapshot is not None:
             io.persist_goal_snapshot(result.goal_snapshot)
@@ -195,6 +199,8 @@ def run_daily_pipeline(
                 strength_events=strength,
                 running_sessions=running,
                 cardio_events=cardio,
+                run_pace_min_sec_mi=thresholds["cardio_run_pace_min_sec_mi"],
+                run_pace_max_sec_mi=thresholds["cardio_run_pace_max_sec_mi"],
             )
             io.persist_weekly_summary(summary)
 

@@ -103,6 +103,49 @@ def test_ses_email_sender_includes_html_when_provided():
     assert "Html" in body and "<p>Hi</p>" in body["Html"]["Data"]
 
 
+class _FakeCursor:
+    def __init__(self, sink: list[tuple[str, tuple]]) -> None:
+        self._sink = sink
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def execute(self, sql, params):
+        self._sink.append((sql, params))
+
+    def fetchall(self):
+        return []
+
+
+class _FakeConn:
+    def __init__(self) -> None:
+        self.queries: list[tuple[str, tuple]] = []
+
+    def cursor(self, cursor_factory=None):
+        return _FakeCursor(self.queries)
+
+
+def test_load_cardio_events_selects_run_detection_columns():
+    """Regression: run detection needs activity_type + distance_miles.
+
+    Omitting them (the loader once selected only event_date/duration_min/
+    session_rpe) makes every cardio row look like a non-run, so a real run
+    reads as 0 runs / 0 km / goals "behind" in the briefing.
+    """
+    from datetime import date
+
+    conn = _FakeConn()
+    loaders = clients.build_db_loaders(conn)
+    loaders["load_cardio_events"]("u1", date(2026, 7, 3))
+
+    sql = conn.queries[0][0]
+    assert "activity_type" in sql
+    assert "distance_miles" in sql
+
+
 def test_ssm_threshold_loader_flattens_pages():
     class FakePaginator:
         def paginate(self, **kwargs):

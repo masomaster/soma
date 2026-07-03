@@ -10,6 +10,13 @@ from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
 from typing import Any
 
+from pipeline.cardio_quality import (
+    DEFAULT_RUN_PACE_MAX_SEC_MI,
+    DEFAULT_RUN_PACE_MIN_SEC_MI,
+    assess_cardio_quality,
+    has_suspect_distance,
+)
+
 # Default max week-over-week increase before flagging (percent).
 DEFAULT_MAX_WEEKLY_INCREASE_PCT = 15.0
 
@@ -34,8 +41,14 @@ def sum_running_km(
     week_start: date,
     running_sessions: Sequence[Mapping[str, Any]],
     cardio_events: Sequence[Mapping[str, Any]] | None = None,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
 ) -> float:
-    """Sum running km for ``[week_start, week_start + 6]`` from sessions + cardio."""
+    """Sum running km for ``[week_start, week_start + 6]`` from sessions + cardio.
+
+    Pace bands (defaulting to the module constants; SSM-overridable upstream) tag
+    which cardio runs have an implausible distance so it is left out of the total.
+    """
     week_end = week_start + timedelta(days=6)
     total = 0.0
     for row in running_sessions:
@@ -54,6 +67,15 @@ def sum_running_km(
             ed = date.fromisoformat(ed[:10])
         activity = str(row.get("activity_type") or "").lower()
         if week_start <= ed <= week_end and "run" in activity:
+            # Suspect distance (impossible pace) would corrupt weekly mileage;
+            # skip its distance — the run still counts for frequency elsewhere.
+            quality = assess_cardio_quality(
+                row,
+                run_pace_min_sec_mi=run_pace_min_sec_mi,
+                run_pace_max_sec_mi=run_pace_max_sec_mi,
+            )
+            if has_suspect_distance(quality):
+                continue
             total += _km_from_row(row)
     return round(total, 2)
 
@@ -64,6 +86,8 @@ def check_mileage_ramp(
     running_sessions: Sequence[Mapping[str, Any]],
     cardio_events: Sequence[Mapping[str, Any]] | None = None,
     max_increase_pct: float = DEFAULT_MAX_WEEKLY_INCREASE_PCT,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
 ) -> dict[str, Any]:
     """Return mileage_check block for briefing / daily_goal_snapshot."""
     this_start = iso_week_start(run_date)
@@ -72,11 +96,15 @@ def check_mileage_ramp(
         week_start=this_start,
         running_sessions=running_sessions,
         cardio_events=cardio_events,
+        run_pace_min_sec_mi=run_pace_min_sec_mi,
+        run_pace_max_sec_mi=run_pace_max_sec_mi,
     )
     last_km = sum_running_km(
         week_start=last_start,
         running_sessions=running_sessions,
         cardio_events=cardio_events,
+        run_pace_min_sec_mi=run_pace_min_sec_mi,
+        run_pace_max_sec_mi=run_pace_max_sec_mi,
     )
     change_pct: float | None = None
     if last_km > 0:

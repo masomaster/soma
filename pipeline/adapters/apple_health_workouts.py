@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any
 
+from pipeline.cardio_quality import assess_cardio_quality
 from pipeline.source_priority import best_cardio_source_app
 from pipeline.timeparse import parse_iso_datetime_utc
 
@@ -353,6 +354,7 @@ def normalize_hae_workouts(workouts: Any, user_id: str) -> list[dict[str, Any]]:
         else:
             row = _normalize_workout_v1(item, user_id)
         if row is not None:
+            row["quality_flags"] = assess_cardio_quality(row) or None
             rows.append(row)
     return rows
 
