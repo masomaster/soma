@@ -12,6 +12,12 @@ from collections.abc import Mapping, Sequence
 from datetime import date, timedelta
 from typing import Any
 
+from pipeline.cardio_quality import (
+    DEFAULT_RUN_PACE_MAX_SEC_MI,
+    DEFAULT_RUN_PACE_MIN_SEC_MI,
+    assess_cardio_quality,
+    has_suspect_distance,
+)
 from pipeline.mileage_ramp import check_mileage_ramp, iso_week_start
 from pipeline.schedule_context import apply_schedule_to_focus_parts, is_goal_blocked
 
@@ -64,6 +70,8 @@ def _running_done(
     week_start: date,
     running_sessions: Sequence[Mapping[str, Any]],
     cardio_events: Sequence[Mapping[str, Any]] | None = None,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
 ) -> bool:
     run_type = RUN_TYPE_BY_GOAL.get(goal_type)
     if run_type is None:
@@ -80,8 +88,19 @@ def _running_done(
         activity = str(row.get("activity_type") or "").lower()
         if "run" not in activity:
             continue
-        if run_type == "long" and ("long" in activity or (row.get("distance_miles") or 0) >= 6):
-            return True
+        if run_type == "long":
+            if "long" in activity:
+                return True
+            # Only trust distance for the long-run threshold when it is not
+            # flagged suspect (a corrupt-high distance must not fake a long run).
+            if (row.get("distance_miles") or 0) >= 6 and not has_suspect_distance(
+                assess_cardio_quality(
+                    row,
+                    run_pace_min_sec_mi=run_pace_min_sec_mi,
+                    run_pace_max_sec_mi=run_pace_max_sec_mi,
+                )
+            ):
+                return True
         if run_type == "interval" and ("interval" in activity or "tempo" in activity):
             return True
         if run_type == "easy" and run_type in activity:
@@ -136,6 +155,8 @@ def compute_goal_status(
     running_sessions: Sequence[Mapping[str, Any]],
     cardio_events: Sequence[Mapping[str, Any]] | None = None,
     exceptions: Sequence[Mapping[str, Any]] | None = None,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
 ) -> dict[str, Any]:
     """Build ``goals_status`` JSON for briefing / snapshot."""
     week_start = iso_week_start(run_date)
@@ -179,6 +200,8 @@ def compute_goal_status(
                 week_start=week_start,
                 running_sessions=running_sessions,
                 cardio_events=cardio_events,
+                run_pace_min_sec_mi=run_pace_min_sec_mi,
+                run_pace_max_sec_mi=run_pace_max_sec_mi,
             )
             st = "done" if done else "not_yet"
             if not done:
@@ -257,6 +280,8 @@ def compute_weekly_activity_summary(
     strength_events: Sequence[Mapping[str, Any]],
     running_sessions: Sequence[Mapping[str, Any]],
     cardio_events: Sequence[Mapping[str, Any]] | None = None,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
 ) -> dict[str, Any]:
     """Build a ``weekly_activity_summary`` row dict."""
     from pipeline.mileage_ramp import sum_running_km
@@ -274,6 +299,8 @@ def compute_weekly_activity_summary(
         week_start=week_start,
         running_sessions=running_sessions,
         cardio_events=cardio_events,
+        run_pace_min_sec_mi=run_pace_min_sec_mi,
+        run_pace_max_sec_mi=run_pace_max_sec_mi,
     )
     return {
         "user_id": user_id,
@@ -297,6 +324,8 @@ def build_daily_goal_snapshot(
     cardio_events: Sequence[Mapping[str, Any]] | None = None,
     exceptions: Sequence[Mapping[str, Any]] | None = None,
     interventions: Sequence[Mapping[str, Any]] | None = None,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
 ) -> dict[str, Any]:
     """Full snapshot row for ``daily_goal_snapshot`` + briefing injection."""
     goals_status = compute_goal_status(
@@ -306,11 +335,15 @@ def build_daily_goal_snapshot(
         running_sessions=running_sessions,
         cardio_events=cardio_events,
         exceptions=exceptions,
+        run_pace_min_sec_mi=run_pace_min_sec_mi,
+        run_pace_max_sec_mi=run_pace_max_sec_mi,
     )
     mileage_check = check_mileage_ramp(
         run_date=run_date,
         running_sessions=running_sessions,
         cardio_events=cardio_events,
+        run_pace_min_sec_mi=run_pace_min_sec_mi,
+        run_pace_max_sec_mi=run_pace_max_sec_mi,
     )
     todays_focus = suggest_todays_focus(
         goals_status=goals_status,

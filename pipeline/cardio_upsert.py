@@ -27,7 +27,12 @@ _CARDIO_COLUMNS: tuple[str, ...] = (
     "effort_zone",
     "session_rpe",
     "notes",
+    "quality_flags",
 )
+
+# Columns tolerated as absent on an incoming row (defaulted to NULL). Additive
+# fields so older producers (e.g. the source_app backfill) keep working.
+_OPTIONAL_CARDIO_COLUMNS: frozenset[str] = frozenset({"quality_flags"})
 
 
 def upsert_cardio_events(cur: Any, rows: list[dict[str, Any]]) -> None:
@@ -40,10 +45,12 @@ def upsert_cardio_events(cur: Any, rows: list[dict[str, Any]]) -> None:
     if not rows:
         return
     for row in rows:
-        missing = [c for c in _CARDIO_COLUMNS if c not in row]
+        missing = [
+            c for c in _CARDIO_COLUMNS if c not in row and c not in _OPTIONAL_CARDIO_COLUMNS
+        ]
         if missing:
             raise KeyError(f"cardio_events row missing keys: {missing}")
-    values = [tuple(row[c] for c in _CARDIO_COLUMNS) for row in rows]
+    values = [tuple(row.get(c) for c in _CARDIO_COLUMNS) for row in rows]
     col_sql = ", ".join(_CARDIO_COLUMNS)
     sql = (
         f"INSERT INTO cardio_events ({col_sql}) VALUES %s "

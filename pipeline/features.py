@@ -24,6 +24,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from datetime import date, datetime, timedelta
 from typing import Any
 
+from pipeline.cardio_quality import (
+    DEFAULT_RUN_PACE_MAX_SEC_MI,
+    DEFAULT_RUN_PACE_MIN_SEC_MI,
+    assess_cardio_quality,
+)
+
 # Canonical biometric metric names that map 1:1 onto ``daily_health_metrics``
 # columns (see schema/migrations/0001_initial.sql). Anything else is ignored by
 # the rollup so unknown vendor metrics never silently land in the wide table.
@@ -205,6 +211,33 @@ def _cardio_training_load(
     }
 
 
+def _cardio_quality_features(
+    cardio_events: Sequence[Mapping[str, Any]],
+    *,
+    as_of: date,
+    run_pace_min_sec_mi: float,
+    run_pace_max_sec_mi: float,
+) -> dict[str, Any]:
+    """Count 7d cardio sessions whose recorded distance is physically implausible.
+
+    Re-tags from the row's own duration/distance (not a stored flag) so an SSM
+    band change takes effect without re-ingesting. Feeds the briefing's
+    data-quality note; the session still counts elsewhere for frequency/duration.
+    """
+    suspect = 0
+    for ev in cardio_events:
+        d = _as_date(ev.get("event_date"))
+        if d is None or not _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS):
+            continue
+        if assess_cardio_quality(
+            ev,
+            run_pace_min_sec_mi=run_pace_min_sec_mi,
+            run_pace_max_sec_mi=run_pace_max_sec_mi,
+        ):
+            suspect += 1
+    return {"cardio_distance_suspect_7d": suspect}
+
+
 def _effort_foster_strength_au(
     strength_events: Sequence[Mapping[str, Any]], *, as_of: date, days: int
 ) -> float | None:
@@ -370,6 +403,8 @@ def compute_daily_features(
     target_sleep_hours: float = 8.0,
     hrv_suppressed_ratio: float = 0.85,
     max_acute_chronic_ratio: float = 1.5,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
 ) -> dict[str, Any]:
     """Compute a deterministic ``daily_features`` row from windowed event/metric rows.
 
@@ -381,6 +416,14 @@ def compute_daily_features(
     features: dict[str, Any] = {"user_id": user_id, "feature_date": feature_date}
     features.update(_strength_training_load(strength_events, as_of=feature_date))
     features.update(_cardio_training_load(cardio_events, as_of=feature_date))
+    features.update(
+        _cardio_quality_features(
+            cardio_events,
+            as_of=feature_date,
+            run_pace_min_sec_mi=run_pace_min_sec_mi,
+            run_pace_max_sec_mi=run_pace_max_sec_mi,
+        )
+    )
     features.update(
         _effort_features(
             strength_events,

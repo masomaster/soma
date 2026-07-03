@@ -20,6 +20,7 @@ from collections.abc import Callable, Mapping
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from pipeline.cardio_quality import assess_cardio_quality
 from pipeline.raw_storage import format_raw_object_key
 from pipeline.timeparse import parse_iso_datetime_utc
 
@@ -188,6 +189,7 @@ def normalize_strava_activities(activities: Any, user_id: str) -> list[dict[str,
             continue
         row = _normalize_strava_activity(item, user_id)
         if row is not None:
+            row["quality_flags"] = assess_cardio_quality(row) or None
             rows.append(row)
     return rows
 
