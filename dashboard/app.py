@@ -54,6 +54,30 @@ def _load_dotenv() -> None:
     load_dotenv(_REPO_ROOT / ".env")
 
 
+def _apply_streamlit_secrets() -> None:
+    """Map Streamlit Community Cloud secrets into ``os.environ`` when unset."""
+    try:
+        secrets = st.secrets
+    except Exception:
+        return
+    for key in (
+        "ENV",
+        "SOMA_DASHBOARD_FIXTURE",
+        "SOMA_CLOUD_DASHBOARD",
+        "SOMA_DATABASE_URL",
+        "DB_CONNECT_STRING",
+        "SUPABASE_URL",
+        "SUPABASE_ANON_KEY",
+        "ANTHROPIC_API_KEY",
+        "SOMA_GUIDELINES_BUCKET",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_DEFAULT_REGION",
+    ):
+        if key in secrets and not os.environ.get(key, "").strip():
+            os.environ[key] = str(secrets[key])
+
+
 def _resolve_db_url() -> str:
     for key in ("SOMA_DATABASE_URL", "DB_CONNECT_STRING", "DATABASE_URL"):
         value = os.environ.get(key, "").strip()
@@ -205,8 +229,9 @@ def _load_live_context(user_id: str, as_of_iso: str) -> dict:
         )
 
 
-def _load_guidelines(user_id: str) -> GuidelinesContext | None:
-    if _fixture_mode_enabled():
+@st.cache_data(ttl=300)
+def _load_guidelines_cached(user_id: str, fixture: bool) -> GuidelinesContext | None:
+    if fixture:
         return _fixture_guidelines()
     ctx = load_guidelines_from_env(user_id)
     if ctx is not None:
@@ -217,6 +242,10 @@ def _load_guidelines(user_id: str) -> GuidelinesContext | None:
     get_object, _ = storage
     loaded = load_guidelines(user_id, get_object=get_object)
     return loaded if loaded.has_content() else None
+
+
+def _load_guidelines(user_id: str) -> GuidelinesContext | None:
+    return _load_guidelines_cached(user_id, _fixture_mode_enabled())
 
 
 def _persist_coaching_writes(user_id: str, pending_writes: list[dict]) -> list[str]:
@@ -239,6 +268,14 @@ def _persist_coaching_writes(user_id: str, pending_writes: list[dict]) -> list[s
         return applied
 
 
+def _cloud_dashboard() -> bool:
+    return os.environ.get("SOMA_CLOUD_DASHBOARD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+
+
 def _render_auth_gate() -> bool:
     """Return True when the user may proceed to the app."""
     from dashboard.auth import (
@@ -258,22 +295,40 @@ def _render_auth_gate() -> bool:
         "Sign in with Supabase Auth. Every query runs under the `authenticated` "
         "role scoped to your user id, so row-level security isolates your data."
     )
-    tab_in, tab_up = st.tabs(["Sign in", "Create account"])
     url = os.environ["SUPABASE_URL"].strip()
     key = os.environ["SUPABASE_ANON_KEY"].strip()
+
+    def _try_sign_in(email: str, password: str) -> None:
+        session = sign_in_with_password(
+            email=email, password=password, supabase_url=url, anon_key=key
+        )
+        st.session_state.auth_user_id = session["user_id"]
+        st.session_state.auth_email = session["email"]
+        st.session_state.auth_token = session["access_token"]
+        st.rerun()
+
+    if _cloud_dashboard():
+        email = st.text_input("Email", key="signin_email")
+        password = st.text_input("Password", type="password", key="signin_pw")
+        if st.button("Sign in", key="signin_btn"):
+            try:
+                _try_sign_in(email, password)
+            except Exception as exc:
+                st.error(str(exc))
+        st.info(
+            "Self-service sign-up is disabled on the cloud dashboard. "
+            "Create accounts in Supabase Dashboard → Authentication."
+        )
+        st.stop()
+
+    tab_in, tab_up = st.tabs(["Sign in", "Create account"])
 
     with tab_in:
         email = st.text_input("Email", key="signin_email")
         password = st.text_input("Password", type="password", key="signin_pw")
         if st.button("Sign in", key="signin_btn"):
             try:
-                session = sign_in_with_password(
-                    email=email, password=password, supabase_url=url, anon_key=key
-                )
-                st.session_state.auth_user_id = session["user_id"]
-                st.session_state.auth_email = session["email"]
-                st.session_state.auth_token = session["access_token"]
-                st.rerun()
+                _try_sign_in(email, password)
             except Exception as exc:
                 st.error(str(exc))
 
@@ -297,7 +352,6 @@ def _render_auth_gate() -> bool:
         "or SOMA_DASHBOARD_FIXTURE=1 for demo data."
     )
     st.stop()
-    return False
 
 
 def _render_sidebar(mode: str, ctx: dict, guidelines: GuidelinesContext | None) -> None:
@@ -361,11 +415,14 @@ def _page_dashboard(ctx: dict, mode: str) -> None:
 
     weekly = ctx.get("weekly_summary")
     if weekly:
+        tonnage = weekly.get("strength_short_tons")
+        tonnage_part = f" · {tonnage} short tons lifted" if tonnage is not None else ""
         st.caption(
             f"Calendar week (Mon {weekly.get('week_start')}): "
             f"{weekly.get('strength_sessions')} strength · "
             f"{weekly.get('running_km')} km · "
             f"{weekly.get('cardio_minutes')} cardio min"
+            f"{tonnage_part}"
         )
 
     sync_rows = ctx.get("sync_health") or []
@@ -499,6 +556,7 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
 
 def main() -> None:
     _load_dotenv()
+    _apply_streamlit_secrets()
     st.set_page_config(page_title="Soma", layout="wide", initial_sidebar_state="expanded")
 
     if not _render_auth_gate():

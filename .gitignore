@@ -13,6 +13,7 @@ token.json
 .bruno/environments/*.local.bru
 .bruno/.env
 local_data/
+.streamlit/secrets.toml
 
 # --- Python ---
 __pycache__/

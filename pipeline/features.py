@@ -175,6 +175,37 @@ def _strength_training_load(
     }
 
 
+def calendar_week_strength_volume(
+    strength_events: Sequence[Mapping[str, Any]],
+    *,
+    week_start: date,
+) -> dict[str, Any]:
+    """Mon–Sun working-set volume for ``week_start`` (calendar week, not trailing 7d)."""
+    week = {week_start + timedelta(days=i) for i in range(7)}
+    session_dates: set[date] = set()
+    hard_sets = 0
+    vol_lb = 0.0
+    for ev in strength_events:
+        d = _as_date(ev.get("event_date"))
+        if d not in week:
+            continue
+        session_dates.add(d)
+        set_type = str(ev.get("set_type") or "").strip().lower()
+        if set_type not in _HARD_SET_TYPES:
+            continue
+        hard_sets += 1
+        reps = _num(ev.get("reps"))
+        weight = _num(ev.get("weight_lbs"))
+        if reps is not None and weight is not None:
+            vol_lb += reps * weight
+    return {
+        "session_dates": session_dates,
+        "strength_short_tons": round(vol_lb / LBS_PER_SHORT_TON, 3),
+        "strength_hard_sets": hard_sets,
+        "strength_volume_lbs": round(vol_lb, 1),
+    }
+
+
 def _cardio_training_load(
     cardio_events: Sequence[Mapping[str, Any]], *, as_of: date
 ) -> dict[str, Any]:

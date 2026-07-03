@@ -8,6 +8,7 @@ explicit user filter.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
@@ -42,6 +43,22 @@ ALLOWED_QUERY_TABLES = frozenset(
 
 # Maximum rows a bounded NL query may return (enforced by validate_bounded_sql).
 MAX_QUERY_ROWS = 500
+
+
+def _coerce_json_mapping(value: Any) -> dict[str, Any]:
+    """Normalize JSONB values that may arrive as dict or serialized string."""
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
 
 # Minimal schema hint for text-to-SQL prompts.
 BOUNDED_SCHEMA_HINT = f"""
@@ -108,15 +125,20 @@ def build_dashboard_context(
             "resting_hr": latest_metrics.get("resting_hr"),
         }
     if goal_snapshot:
-        ctx["goals_status"] = goal_snapshot.get("goals_status")
+        ctx["goals_status"] = _coerce_json_mapping(goal_snapshot.get("goals_status")) or None
         ctx["todays_focus"] = goal_snapshot.get("todays_focus")
-        ctx["mileage_check"] = goal_snapshot.get("mileage_check")
+        mileage = _coerce_json_mapping(goal_snapshot.get("mileage_check"))
+        ctx["mileage_check"] = mileage or goal_snapshot.get("mileage_check")
     if weekly_summary:
+        summary_json = _coerce_json_mapping(weekly_summary.get("summary_json"))
         ctx["weekly_summary"] = {
             "week_start": _iso(weekly_summary.get("week_start")),
             "strength_sessions": weekly_summary.get("strength_sessions"),
             "running_km": weekly_summary.get("running_km"),
             "cardio_minutes": weekly_summary.get("cardio_minutes"),
+            "strength_short_tons": summary_json.get("strength_short_tons"),
+            "strength_hard_sets": summary_json.get("strength_hard_sets"),
+            "strength_volume_lbs": summary_json.get("strength_volume_lbs"),
         }
     if provider_connections:
         ctx["sync_health"] = [
@@ -179,7 +201,7 @@ def fetch_dashboard_source_rows(
         (user_id, as_of),
     )
     weekly_summary = query_one(
-        "SELECT week_start, strength_sessions, running_km, cardio_minutes "
+        "SELECT week_start, strength_sessions, running_km, cardio_minutes, summary_json "
         "FROM weekly_activity_summary "
         "WHERE user_id = %s AND week_start <= %s "
         "ORDER BY week_start DESC LIMIT 1",

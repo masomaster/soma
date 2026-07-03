@@ -28,6 +28,8 @@ All resources use **un-suffixed** `soma-*` names.
 
 **Weekly signal job:** Scheduler `soma-weekly-signal` (**Sunday 12:00 UTC**) recomputes **`metric_patterns`** and optional Sonnet **`llm_pattern`** rows (`ENABLE_WEEKLY_PATTERN_LLM` on the weekly Lambda only).
 
+**Dashboard (not in this stack):** the Streamlit UI deploys separately on **[Streamlit Community Cloud](https://streamlit.io/cloud)** (free). Pass the public URL to CDK with `-c soma:dashboardUrl=https://….streamlit.app` or GitHub variable **`SOMA_DASHBOARD_URL`** — see [`docs/plans/dashboard-hosting.md`](../docs/plans/dashboard-hosting.md).
+
 ## Prereqs
 
 - Python **3.14+** (same as repo `pyproject.toml`)

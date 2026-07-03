@@ -14,7 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "sqlglot>=26", "python-dotenv>=1.0", "boto3>=1.34", "icalendar>=6"]
-dashboard = ["streamlit>=1.40", "python-dotenv>=1.0", "sqlglot>=26"]
+dashboard = ["streamlit>=1.40", "python-dotenv>=1.0", "sqlglot>=26", "boto3>=1.34"]
 cdk = [
     "aws-cdk-lib>=2.160,<3",
     "constructs>=10.3,<11",

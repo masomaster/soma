@@ -38,6 +38,13 @@ class SomaStack(Stack):
             runtime_secrets=runtime_secrets,
             deps_layer=pipeline_layer,
         )
+        dashboard_url = self.node.try_get_context("soma:dashboardUrl")
+        if isinstance(dashboard_url, str) and dashboard_url.strip().startswith(
+            ("http://", "https://")
+        ):
+            briefing.function.add_environment(
+                "BRIEFING_EMAIL_DASHBOARD_URL", dashboard_url.strip()
+            )
         apple = AppleHealthIngestApi(
             self,
             "AppleHealthIngest",

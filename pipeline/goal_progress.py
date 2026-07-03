@@ -20,6 +20,7 @@ from pipeline.cardio_quality import (
 )
 from pipeline.mileage_ramp import check_mileage_ramp, iso_week_start
 from pipeline.schedule_context import apply_schedule_to_focus_parts, is_goal_blocked
+from pipeline.features import calendar_week_strength_volume
 
 STRENGTH_GOAL = "strength"
 RUNNING_GOAL_TYPES = ("running_long", "running_easy", "running_interval")
@@ -27,12 +28,6 @@ RUN_TYPE_BY_GOAL = {
     "running_long": "long",
     "running_easy": "easy",
     "running_interval": "interval",
-}
-GOAL_LABELS = {
-    "strength": "Strength",
-    "running_long": "Long run",
-    "running_easy": "Easy run",
-    "running_interval": "Interval run",
 }
 
 
@@ -49,19 +44,6 @@ def _parse_date(raw: Any) -> date | None:
 
 def _week_dates(week_start: date) -> set[date]:
     return {week_start + timedelta(days=i) for i in range(7)}
-
-
-def _strength_session_dates(
-    strength_events: Sequence[Mapping[str, Any]],
-    week_start: date,
-) -> set[date]:
-    dates: set[date] = set()
-    week = _week_dates(week_start)
-    for row in strength_events:
-        ed = _parse_date(row.get("event_date"))
-        if ed is not None and ed in week:
-            dates.add(ed)
-    return dates
 
 
 def _running_done(
@@ -160,7 +142,9 @@ def compute_goal_status(
 ) -> dict[str, Any]:
     """Build ``goals_status`` JSON for briefing / snapshot."""
     week_start = iso_week_start(run_date)
-    strength_dates = _strength_session_dates(strength_events, week_start)
+    strength_dates = calendar_week_strength_volume(
+        strength_events, week_start=week_start
+    )["session_dates"]
     strength_completed = len(strength_dates)
     status: dict[str, Any] = {}
 
@@ -286,7 +270,6 @@ def compute_weekly_activity_summary(
     """Build a ``weekly_activity_summary`` row dict."""
     from pipeline.mileage_ramp import sum_running_km
 
-    strength_dates = _strength_session_dates(strength_events, week_start)
     week = _week_dates(week_start)
     cardio_min = 0.0
     for row in cardio_events or ():
@@ -302,6 +285,10 @@ def compute_weekly_activity_summary(
         run_pace_min_sec_mi=run_pace_min_sec_mi,
         run_pace_max_sec_mi=run_pace_max_sec_mi,
     )
+    strength_volume = calendar_week_strength_volume(
+        strength_events, week_start=week_start
+    )
+    strength_dates = strength_volume["session_dates"]
     return {
         "user_id": user_id,
         "week_start": week_start,
@@ -310,6 +297,9 @@ def compute_weekly_activity_summary(
         "cardio_minutes": round(cardio_min, 1),
         "summary_json": {
             "strength_session_dates": sorted(d.isoformat() for d in strength_dates),
+            "strength_short_tons": strength_volume["strength_short_tons"],
+            "strength_hard_sets": strength_volume["strength_hard_sets"],
+            "strength_volume_lbs": strength_volume["strength_volume_lbs"],
         },
     }
 
