@@ -25,6 +25,7 @@ from typing import Any
 from pipeline import features as features_mod
 from pipeline import metric_baselines as metric_baselines_mod
 from pipeline import metric_patterns as metric_patterns_mod
+from pipeline import metrics_summary as metrics_summary_mod
 from pipeline import rules as rules_mod
 from pipeline import goal_progress as goal_progress_mod
 from pipeline import stat_anomalies as stat_anomalies_mod
@@ -227,6 +228,16 @@ def run_daily_pipeline(
                 io.load_active_patterns(user_id, run_date)
             )
         guidelines = io.load_guidelines(user_id) if io.load_guidelines is not None else None
+        running = (
+            list(io.load_running_sessions(user_id, run_date))
+            if io.load_running_sessions is not None
+            else []
+        )
+        run_sessions_7d = metrics_summary_mod.count_run_sessions_7d(
+            io.load_cardio_events(user_id, run_date),
+            running,
+            as_of=run_date,
+        )
         result.briefing = generate_briefing(
             user_id=user_id,
             feature_date=run_date,
@@ -238,6 +249,7 @@ def run_daily_pipeline(
             active_patterns=active_patterns,
             goal_snapshot=result.goal_snapshot,
             guidelines=guidelines,
+            run_sessions_7d=run_sessions_7d,
         )
         if io.persist_briefing is not None:
             io.persist_briefing(result.briefing.to_row())

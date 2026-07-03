@@ -94,7 +94,11 @@ def test_generate_briefing_uses_llm_and_maps_to_row():
         llm=fake_llm,
     )
     assert briefing.coaching_note == (
-        "# Morning Check-In · Saturday, June 8\n\nTake it easy today; HRV is down."
+        "# Morning Check-In · Saturday, June 8\n\n"
+        "## At a Glance\n\n"
+        "- **Readiness:** 44/100\n"
+        "- **Red flags:** 1 — LOW_HRV\n\n"
+        "Take it easy today; HRV is down."
     )
     assert briefing.flags == ["LOW_HRV"]
     assert briefing.model_used == B.DEFAULT_BRIEFING_MODEL
@@ -108,6 +112,44 @@ def test_generate_briefing_uses_llm_and_maps_to_row():
     assert row["features_json"]["overall_readiness_score"] == 44.0
     assert row["features_json"]["stat_signals"]["anomalies"] == []
     assert row["features_json"]["stat_signals"]["trends"] == []
+
+
+def test_generate_briefing_leads_with_glance_summary():
+    flags = [
+        Flag(code="HIGH_TRAINING_LOAD", severity="alert", message="ACWR high."),
+        Flag(code="SPARSE_RECOVERY_DATA", severity="info", message="No recovery data."),
+    ]
+    briefing = B.generate_briefing(
+        user_id="u1",
+        feature_date=RUN,
+        flags=flags,
+        features={
+            "strength_sessions_7d": 3,
+            "strength_hard_sets_7d": 42,
+            "strength_tonnage_7d": 12.5,
+            "cardio_sessions_7d": 2,
+            "cardio_minutes_7d": 95.0,
+            "overall_readiness_score": 71.0,
+        },
+        daily_metrics={"resting_hr": 52, "hrv_rmssd": 48.0, "sleep_hours": 7.5},
+        run_sessions_7d=4,
+        llm=lambda system, user: "Load is up; keep cardio easy today.",
+    )
+    note = briefing.coaching_note
+    glance_idx = note.index("## At a Glance")
+    prose_idx = note.index("Load is up")
+    # Summary comes first, prose afterwards.
+    assert note.index("# Morning Check-In") < glance_idx < prose_idx
+    assert "- **Runs (7d):** 4" in note
+    assert "- **Strength (7d):** 3 sessions · 42 hard sets" in note
+    assert "- **Cardio (7d):** 2 sessions · 95 min" in note
+    assert "- **Lifting tonnage (7d):** 12.5 short tons (25,000 lb)" in note
+    assert "- **Resting HR:** 52 bpm" in note
+    assert "- **HRV (last night):** 48 ms" in note
+    assert "- **Sleep (last night):** 7.5 h" in note
+    assert "- **Readiness:** 71/100" in note
+    # Only warning/alert severities are "red flags"; the info flag is excluded.
+    assert "- **Red flags:** 1 — HIGH_TRAINING_LOAD" in note
 
 
 def test_generate_briefing_rejects_empty_note():
@@ -136,7 +178,10 @@ def test_generate_briefing_replaces_llm_supplied_title():
     )
     # The model's own heading is dropped; the canonical title is enforced once.
     assert briefing.coaching_note == (
-        "# Morning Check-In · Thursday, July 2\n\nSolid recovery overnight."
+        "# Morning Check-In · Thursday, July 2\n\n"
+        "## At a Glance\n\n"
+        "- **Red flags:** None\n\n"
+        "Solid recovery overnight."
     )
     assert briefing.coaching_note.count("Morning Check-In") == 1
 
@@ -150,7 +195,10 @@ def test_generate_briefing_strips_trailing_question():
         llm=lambda system, user: "Recovery looks solid. How are you feeling?",
     )
     assert briefing.coaching_note == (
-        "# Morning Check-In · Thursday, July 2\n\nRecovery looks solid."
+        "# Morning Check-In · Thursday, July 2\n\n"
+        "## At a Glance\n\n"
+        "- **Red flags:** None\n\n"
+        "Recovery looks solid."
     )
     assert "?" not in briefing.coaching_note
 
