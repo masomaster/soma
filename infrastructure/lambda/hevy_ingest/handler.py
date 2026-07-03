@@ -2,7 +2,7 @@
 
 Environment (set by CDK):
 
-    ENV                     staging|prod
+    ENV                     local|cloud (CDK sets cloud)
     SOMA_DB_SECRET_ARN      Postgres URI (plain string secret)
     SOMA_HEVY_SECRET_ARN    Hevy Pro API key (plain string secret)
     SOMA_TENANT_SECRET_ARN  Supabase auth.users UUID (plain string secret)

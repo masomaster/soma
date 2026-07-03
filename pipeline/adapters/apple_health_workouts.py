@@ -17,6 +17,8 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any
 
+from pipeline.timeparse import parse_iso_datetime_utc
+
 logger = logging.getLogger(__name__)
 
 APPLE_HEALTH_CARDIO_SOURCE = "apple_health"
@@ -53,6 +55,22 @@ def _parse_workout_timestamp(raw: str) -> date | None:
             return date.fromisoformat(m.group(1))
         except ValueError:
             return None
+    return None
+
+
+def _source_app(workout: Mapping[str, Any]) -> str | None:
+    """HealthKit source app name for the workout (e.g. "Nike Run Club", "Strava").
+
+    HAE exposes it as ``source`` (string) or, on some versions, a ``{name: ...}``
+    object. Returns ``None`` when absent so dedup falls back to a neutral rank.
+    """
+    raw = workout.get("source")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()[:200]
+    if isinstance(raw, dict):
+        name = raw.get("name")
+        if isinstance(name, str) and name.strip():
+            return name.strip()[:200]
     return None
 
 
@@ -238,8 +256,10 @@ def _normalize_workout_v2(w: Mapping[str, Any], user_id: str) -> dict[str, Any] 
     return {
         "user_id": user_id,
         "source": APPLE_HEALTH_CARDIO_SOURCE,
+        "source_app": _source_app(w),
         "source_id": _apple_source_id(w, start_s=start.strip(), name_s=name_s),
         "event_date": event_date,
+        "started_at": parse_iso_datetime_utc(start),
         "activity_type": activity_type,
         "duration_min": duration_min,
         "distance_miles": dist_mi,
@@ -283,8 +303,10 @@ def _normalize_workout_v1(w: Mapping[str, Any], user_id: str) -> dict[str, Any] 
     return {
         "user_id": user_id,
         "source": APPLE_HEALTH_CARDIO_SOURCE,
+        "source_app": _source_app(w),
         "source_id": _apple_source_id(w, start_s=start.strip(), name_s=name_s),
         "event_date": event_date,
+        "started_at": parse_iso_datetime_utc(start),
         "activity_type": (name_s[:200] if name_s else "Workout"),
         "duration_min": duration_min,
         "distance_miles": dist_mi,

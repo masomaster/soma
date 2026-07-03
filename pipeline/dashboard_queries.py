@@ -9,10 +9,15 @@ explicit user filter.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pipeline.features import ACUTE_WINDOW_DAYS
+
+
+def _utc_today() -> date:
+    """Today's calendar date in UTC (consistent with the rest of the pipeline)."""
+    return datetime.now(timezone.utc).date()
 
 QueryOne = Callable[[str, tuple[Any, ...]], Mapping[str, Any] | None]
 QueryAll = Callable[[str, tuple[Any, ...]], Sequence[Mapping[str, Any]]]
@@ -218,7 +223,7 @@ def load_dashboard_context_from_db(
     """
     from psycopg2.extras import RealDictCursor
 
-    effective = as_of or date.today()
+    effective = as_of or _utc_today()
 
     def query_one(sql: str, params: tuple[Any, ...]) -> Mapping[str, Any] | None:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -245,18 +250,23 @@ def fetch_cardio_breakdown_7d(
     user_id: str,
     as_of: date | None = None,
 ) -> list[dict[str, Any]]:
-    """Per-day cardio totals by source + activity (rolling 7d, matches features window)."""
+    """Per-day cardio totals by source + source_app + activity (rolling 7d).
+
+    ``source_app`` surfaces the originating HealthKit app (Nike Run Club / Strava /
+    Health Sync) so surviving duplicates are attributable. Matches the features window.
+    """
     from psycopg2.extras import RealDictCursor
 
-    effective = as_of or date.today()
+    effective = as_of or _utc_today()
     window_start = effective - timedelta(days=ACUTE_WINDOW_DAYS - 1)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            "SELECT event_date, source, activity_type, "
+            "SELECT event_date, source, "
+            "COALESCE(source_app, '(unknown)') AS source_app, activity_type, "
             "COUNT(*) AS row_count, ROUND(SUM(duration_min)::numeric, 1) AS minutes "
             "FROM cardio_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
-            "GROUP BY event_date, source, activity_type "
+            "GROUP BY event_date, source, source_app, activity_type "
             "ORDER BY event_date DESC, minutes DESC",
             (user_id, window_start, effective),
         )

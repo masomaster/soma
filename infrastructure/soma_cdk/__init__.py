@@ -1,1 +1,1 @@
-"""Soma CDK constructs — staging and production stacks."""
+"""Soma CDK constructs — the single Soma environment stack (no staging/prod split)."""

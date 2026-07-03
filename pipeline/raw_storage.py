@@ -5,6 +5,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 
+def raw_prefix(user_id: str, source: str) -> str:
+    """Return the ``raw/{user_id}/{source}/`` key prefix (for listing raw objects)."""
+    return f"raw/{user_id}/{source}/"
+
+
 def format_raw_object_key(user_id: str, source: str, at: datetime) -> str:
     """Return ``raw/{user_id}/{source}/{YYYY-MM-DD}/{HHMMSS_micro}.json`` (UTC).
 
