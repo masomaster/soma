@@ -177,9 +177,13 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
         )
 
     def load_cardio_events(user_id: str, d: date) -> list[dict[str, Any]]:
+        # activity_type + distance_miles are required by run detection
+        # (count_run_sessions_7d, goal_progress._running_done, mileage_ramp);
+        # omitting them makes every cardio row look like a non-run so runs,
+        # running-goal completion, and weekly run distance all read as zero.
         return _query(
-            "SELECT event_date, duration_min, session_rpe FROM cardio_events "
-            "WHERE user_id = %s AND event_date BETWEEN %s AND %s",
+            "SELECT event_date, activity_type, distance_miles, duration_min, session_rpe "
+            "FROM cardio_events WHERE user_id = %s AND event_date BETWEEN %s AND %s",
             (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
         )
 
