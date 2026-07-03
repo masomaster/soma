@@ -69,6 +69,7 @@ _TABLES: dict[str, dict[str, Any]] = {
                 "cardio_minutes_7d",
                 "cardio_minutes_14d",
                 "cardio_trimp_7d",
+                "cardio_distance_suspect_7d",
                 "acute_chronic_ratio",
                 "strength_sessions_7d",
                 "strength_hard_sets_7d",
