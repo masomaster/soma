@@ -57,12 +57,22 @@ Health Sync and multiple apps can create **duplicate** representations of the sa
 | Layer | Behavior |
 |-------|----------|
 | **`biometrics`** | Upsert on `(user_id, source, event_date, metric)` — last POST wins for a given day/metric. **`sleep_hours`** (and sleep stage columns) use **max** per day when HAE sends multiple same-night entries (avoids averaging duplicate full-night totals). |
-| **`cardio_events`** | `ON CONFLICT (user_id, source_id) DO NOTHING` for exact UUID retries. **Near-duplicate filter** (`pipeline/apple_health_cardio_dedup.py`): same calendar day + activity type + duration ±5 min (+ distance ±0.15 mi when both present) → keep the richer row; skip duplicates already in Postgres. |
+| **`cardio_events`** | `ON CONFLICT (user_id, source_id) DO NOTHING` for exact UUID retries, plus a **source-aware near-duplicate filter** (`pipeline/apple_health_cardio_dedup.py`) — see below. |
 | **Hevy strength** | Apple strength-style workouts dropped when Hevy logged sets that day (`pipeline/apple_hevy_cardio_dedup.py`). |
 
-Webhook JSON responses include **`cardio_events_dropped_hub_near_dup`** and **`cardio_events_dropped_hevy_strength_dup`**.
+Webhook JSON responses include **`cardio_events_dropped_hub_near_dup`**, **`cardio_events_dropped_hevy_strength_dup`**, and **`cardio_events_superseded_lower_priority`**.
 
 Tune Health Sync to avoid writing the same metric from two Google sources when possible; Soma’s filters are a safety net, not a substitute for clean HealthKit permissions.
+
+#### Source-aware cardio dedup (why the same run appears up to 3×)
+
+One run can land in Apple Health from **Nike Run Club** (logged), **Strava** (NRC mirrors to it), and **Fitbit/Google via Health Sync** — all as `source = 'apple_health'` with distinct UUIDs. Migration **`0006`** adds `cardio_events.source_app` (the originating HealthKit app name) and `started_at` (full start timestamp) so dedup can:
+
+- **Match by start-time proximity** (same day + same *activity family* run/walk/ride/… + starts within **±15 min**) instead of the old duration/distance tolerance. Fitbit's duration/distance is wildly inaccurate, so it used to escape the ±5 min / ±0.15 mi window; start time does not lie.
+- **Resolve by source priority** (`pipeline/source_priority.py` → `CARDIO_SOURCE_APP_PRIORITY`): **NRC > Strava > native Apple Watch/iPhone > Fitbit/Google**. The highest-priority row in a cluster wins; a higher-priority **incoming** row *supersedes* (deletes) an already-stored lower-priority duplicate. A Fitbit workout with **no** higher-priority overlap is **kept** (e.g. a walk you didn't log in NRC).
+- Rows without `started_at`/`source_app` (pre-0006 or non-HAE) fall back to the legacy duration ±5 min / distance ±0.15 mi rule and a neutral priority.
+
+**Backfill existing rows:** `scripts/backfill_cardio_source_app.py` re-reads raw HAE payloads from S3 (or a local dir), enriches stored rows with `source_app`/`started_at`, and cleans duplicate clusters by priority. Dry-run by default; pass `--apply` (and optionally `--reinsert-missing` to recover an accurate row a prior dedup dropped). The Streamlit **Cardio breakdown** expander groups by `source_app` so surviving duplicates are attributable.
 
 ---
 
@@ -165,7 +175,9 @@ See **`infrastructure/lambda/apple_health_webhook/README.md`** for a short opera
 | `pipeline/adapters/apple_health_workouts.py` | HAE `data.workouts` (v2 + v1-style) → `cardio_events`. |
 | `pipeline/biometrics_upsert.py` | `ON CONFLICT DO UPDATE` on `biometrics`. |
 | `pipeline/apple_hevy_cardio_dedup.py` | Before cardio upsert: skip Apple strength ``cardio_events`` on days Hevy already has sets. |
-| `pipeline/apple_health_cardio_dedup.py` | Near-duplicate hub workouts (Health Sync / multi-writer UUIDs). |
+| `pipeline/apple_health_cardio_dedup.py` | Source-aware near-duplicate hub workouts: start-time + activity-family match, resolved by `source_app` priority (NRC > Strava > Watch > Fitbit). |
+| `pipeline/source_priority.py` | `CARDIO_SOURCE_APP_PRIORITY` + `cardio_source_app_rank()` for cross-app cardio dedup. |
+| `scripts/backfill_cardio_source_app.py` | Backfill `source_app`/`started_at` from raw S3 + clean existing duplicate clusters. |
 | `pipeline/lambda_secrets.py` | `resolve_db_connect_string()`; optional `APPLE_HEALTH_WEBHOOK_SECRET` from same JSON or env. |
 | `infrastructure/soma_cdk/apple_health_ingest.py` | S3 bucket + HTTP API + webhook Lambda (shares pipeline layer with briefing). |
 | `pipeline/apple_health_webhook_event.py` | API Gateway event parsing (headers, body, JSON) for the Apple Health webhook. |

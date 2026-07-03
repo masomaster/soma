@@ -81,8 +81,10 @@ def test_upsert_cardio_events_uses_on_conflict_do_nothing() -> None:
     row = {
         "user_id": _USER,
         "source": "strava",
+        "source_app": None,
         "source_id": "strava:999",
         "event_date": date(2024, 6, 1),
+        "started_at": None,
         "activity_type": "Run",
         "duration_min": 30.0,
         "distance_miles": 3.0,
@@ -103,7 +105,7 @@ def test_upsert_cardio_events_uses_on_conflict_do_nothing() -> None:
     assert "ON CONFLICT (user_id, source_id) DO NOTHING" in sql
     assert len(values) == 1
     assert values[0][0] == _USER
-    assert values[0][2] == "strava:999"
+    assert values[0][3] == "strava:999"
 
 
 def test_fetch_strava_activities_page_builds_request(monkeypatch: pytest.MonkeyPatch) -> None:

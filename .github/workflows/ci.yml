@@ -38,6 +38,6 @@ jobs:
           node-version: "22"
       - name: Install CDK deps
         run: pip install -e ".[cdk]"
-      - name: Synthesize both stacks (no AWS credentials needed)
+      - name: Synthesize the stack (no AWS credentials needed)
         working-directory: infrastructure
-        run: npx --yes aws-cdk@2 synth SomaStagingStack SomaProdStack
+        run: npx --yes aws-cdk@2 synth --all

@@ -2,7 +2,7 @@
 
 Environment (set by CDK):
 
-    ENV                     staging|prod
+    ENV                     local|cloud (CDK sets cloud)
     SOMA_DB_SECRET_ARN              Postgres URI (plain string secret)
     SOMA_APPLE_WEBHOOK_SECRET_ARN   Optional webhook HMAC (plain; update_me = disabled)
     RAW_BUCKET                      S3 bucket for ``raw/{user_id}/...`` JSON
@@ -47,7 +47,7 @@ from pipeline.apple_health_webhook_event import (
     raw_body_bytes,
 )
 from pipeline.biometrics_upsert import upsert_biometrics
-from pipeline.cardio_upsert import upsert_cardio_events
+from pipeline.cardio_upsert import delete_cardio_events_by_source_id, upsert_cardio_events
 from pipeline.lambda_secrets import (
     resolve_apple_health_webhook_secret_optional,
     resolve_db_connect_string,
@@ -82,6 +82,9 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
     headers = merge_api_gateway_headers(event)
 
     expected = resolve_apple_health_webhook_secret_optional()
+    # A configured, matching secret authenticates the tenant. Without it we cannot
+    # trust the client-supplied X-Soma-User-Id, so destructive dedup is disabled below.
+    authenticated = bool(expected)
     if expected:
         got = header_first(headers, "x-soma-webhook-secret") or ""
         if not secrets.compare_digest(expected, got):
@@ -144,8 +147,16 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
                 cardio_for_db, cardio_dropped_hevy = filter_apple_strength_cardio_when_hevy_present(
                     cur, user_id=user_id, cardio_rows=cardio_rows
                 )
-                cardio_for_db, cardio_dropped_hub = filter_near_duplicate_apple_cardio(
-                    cur, user_id=user_id, cardio_rows=cardio_for_db
+                cardio_for_db, cardio_dropped_hub, superseded_ids = (
+                    filter_near_duplicate_apple_cardio(
+                        cur,
+                        user_id=user_id,
+                        cardio_rows=cardio_for_db,
+                        allow_supersede=authenticated,
+                    )
+                )
+                cardio_superseded = delete_cardio_events_by_source_id(
+                    cur, user_id=user_id, source_ids=superseded_ids
                 )
                 upsert_cardio_events(cur, cardio_for_db)
     except Exception as exc:
@@ -155,12 +166,14 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         conn.close()
 
     logger.info(
-        "Apple Health webhook ok user=%s biometrics=%d cardio=%d (dropped_hevy_dup=%d hub_dup=%d)",
+        "Apple Health webhook ok user=%s biometrics=%d cardio=%d "
+        "(dropped_hevy_dup=%d hub_dup=%d superseded=%d)",
         user_id,
         len(bio_rows),
         len(cardio_for_db),
         cardio_dropped_hevy,
         cardio_dropped_hub,
+        cardio_superseded,
     )
     return _response(
         200,
@@ -170,5 +183,6 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
             "cardio_events_upserted": len(cardio_for_db),
             "cardio_events_dropped_hevy_strength_dup": cardio_dropped_hevy,
             "cardio_events_dropped_hub_near_dup": cardio_dropped_hub,
+            "cardio_events_superseded_lower_priority": cardio_superseded,
         },
     )

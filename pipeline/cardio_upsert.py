@@ -12,8 +12,10 @@ logger = logging.getLogger(__name__)
 _CARDIO_COLUMNS: tuple[str, ...] = (
     "user_id",
     "source",
+    "source_app",
     "source_id",
     "event_date",
+    "started_at",
     "activity_type",
     "duration_min",
     "distance_miles",
@@ -49,3 +51,24 @@ def upsert_cardio_events(cur: Any, rows: list[dict[str, Any]]) -> None:
     )
     execute_values(cur, sql, values, page_size=len(values))
     logger.debug("Upserted %s cardio_events row(s)", len(rows))
+
+
+def delete_cardio_events_by_source_id(
+    cur: Any, *, user_id: str, source_ids: list[str]
+) -> int:
+    """Delete ``cardio_events`` rows for ``user_id`` matching ``source_ids``.
+
+    Used when a higher-priority incoming duplicate supersedes rows already stored
+    (e.g. a Nike Run Club run replacing a previously stored Fitbit copy). Returns
+    the number of rows deleted.
+    """
+    if not source_ids:
+        return 0
+    cur.execute(
+        "DELETE FROM cardio_events WHERE user_id = %s::uuid AND source_id = ANY(%s)",
+        (user_id, source_ids),
+    )
+    deleted = max(cur.rowcount or 0, 0)
+    if deleted:
+        logger.info("Deleted %s superseded cardio_events row(s) for user %s", deleted, user_id)
+    return deleted

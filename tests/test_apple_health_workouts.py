@@ -39,6 +39,44 @@ def test_normalize_hae_workouts_v2_and_v1() -> None:
     assert ride["distance_miles"] == pytest.approx(25.0 * apple_health_workouts.KM_TO_MILES, rel=1e-3)
 
 
+def test_started_at_parsed_and_source_app_defaults_none() -> None:
+    payload = _load("health_auto_export_workouts_redacted.json")
+    rows = apple_health_workouts.normalize_apple_health_cardio_from_payload(payload, _USER)
+    run = next(r for r in rows if r["activity_type"] == "Outdoor Run")
+    # Fixture omits per-workout ``source`` → source_app is None (neutral rank in dedup).
+    assert run["source_app"] is None
+    assert run["started_at"] is not None
+    assert run["started_at"].isoformat() == "2024-06-01T07:30:00+00:00"
+
+
+def test_source_app_captured_from_workout() -> None:
+    payload = {
+        "data": {
+            "metrics": [],
+            "workouts": [
+                {
+                    "id": "nrc-1",
+                    "name": "Outdoor Run",
+                    "source": "Nike Run Club",
+                    "start": "2026-07-02 06:30:00 +0000",
+                    "end": "2026-07-02 06:56:54 +0000",
+                    "duration": 1614,
+                    "distance": {"qty": 3.1, "units": "mi"},
+                },
+                {
+                    "name": "Outdoor Run",
+                    "source": {"name": "Strava"},
+                    "start": "2026-07-02 06:30:05 +0000",
+                    "end": "2026-07-02 06:57:00 +0000",
+                },
+            ],
+        }
+    }
+    rows = apple_health_workouts.normalize_apple_health_cardio_from_payload(payload, _USER)
+    assert rows[0]["source_app"] == "Nike Run Club"
+    assert rows[1]["source_app"] == "Strava"  # object {name: ...} form
+
+
 def test_ingest_payload_complete_includes_cardio() -> None:
     payload = _load("health_auto_export_workouts_redacted.json")
     payload["data"]["metrics"] = [

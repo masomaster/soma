@@ -16,6 +16,7 @@ from aws_cdk import aws_scheduler_targets as scheduler_targets
 from aws_cdk import aws_sns as sns
 from constructs import Construct
 
+from soma_cdk.config import DEPLOYED_ENV
 from soma_cdk.runtime_secrets import RuntimeSecrets
 
 _SecretProfile = Literal["caldav", "strava"]
@@ -29,7 +30,6 @@ class ScheduledSourceIngest(Construct):
         scope: Construct,
         construct_id: str,
         *,
-        env_name: str,
         source_slug: str,
         handler_asset_subdir: str,
         deps_layer: lambda_.ILayerVersion,
@@ -49,7 +49,7 @@ class ScheduledSourceIngest(Construct):
         asset_path = os.path.join(
             os.path.dirname(__file__), "..", "lambda", handler_asset_subdir
         )
-        fn_name = f"soma-{env_name}-{source_slug}-ingest"
+        base_name = f"soma-{source_slug}-ingest"
         if secret_profile == "caldav":
             secret_env = runtime_secrets.env_caldav()
             grant_fn = runtime_secrets.grant_caldav
@@ -60,7 +60,7 @@ class ScheduledSourceIngest(Construct):
             raise ValueError(f"Unsupported secret_profile: {secret_profile!r}")
 
         env_vars = {
-            "ENV": env_name,
+            "ENV": DEPLOYED_ENV,
             "RAW_BUCKET": raw_bucket.bucket_name,
             **secret_env,
         }
@@ -70,7 +70,7 @@ class ScheduledSourceIngest(Construct):
         fn = lambda_.Function(
             self,
             "IngestFn",
-            function_name=fn_name,
+            function_name=base_name,
             runtime=lambda_.Runtime.PYTHON_3_14,
             architecture=lambda_.Architecture.X86_64,
             handler="handler.handler",
@@ -84,7 +84,7 @@ class ScheduledSourceIngest(Construct):
         raw_bucket.grant_put(fn)
         grant_fn(fn)
 
-        schedule_name = f"soma-{env_name}-{source_slug}-ingest"
+        schedule_name = base_name
         self.schedule: scheduler.Schedule | None = None
         if schedule_enabled:
             self.schedule = scheduler.Schedule(
@@ -109,7 +109,7 @@ class ScheduledSourceIngest(Construct):
                 cloudwatch.Alarm(
                     self,
                     "SchedulerTargetErrors",
-                    alarm_name=f"soma-{env_name}-{source_slug}-ingest-scheduler-target-errors",
+                    alarm_name=f"{base_name}-scheduler-target-errors",
                     metric=cloudwatch.Metric(
                         namespace="AWS/Scheduler",
                         metric_name="TargetErrorCount",
@@ -125,7 +125,7 @@ class ScheduledSourceIngest(Construct):
             cloudwatch.Alarm(
                 self,
                 "LambdaErrors",
-                alarm_name=f"soma-{env_name}-{source_slug}-ingest-lambda-errors",
+                alarm_name=f"{base_name}-lambda-errors",
                 metric=fn.metric_errors(statistic=cloudwatch.Stats.SUM, period=Duration.minutes(5)),
                 threshold=1,
                 evaluation_periods=1,

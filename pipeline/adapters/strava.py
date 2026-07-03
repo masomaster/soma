@@ -21,6 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pipeline.raw_storage import format_raw_object_key
+from pipeline.timeparse import parse_iso_datetime_utc
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +88,15 @@ def _parse_event_date(obj: Mapping[str, Any]) -> date | None:
             return datetime.fromisoformat(s).date()
         except ValueError:
             continue
+    return None
+
+
+def _parse_start_dt(obj: Mapping[str, Any]) -> datetime | None:
+    """Timezone-aware workout start (prefer UTC ``start_date``)."""
+    for key in ("start_date", "start_date_local"):
+        dt = parse_iso_datetime_utc(obj.get(key))
+        if dt is not None:
+            return dt
     return None
 
 
@@ -218,8 +228,10 @@ def _normalize_strava_activity(obj: Mapping[str, Any], user_id: str) -> dict[str
     return {
         "user_id": user_id,
         "source": CARDIO_SOURCE,
+        "source_app": None,
         "source_id": strava_source_id(activity_id),
         "event_date": event_date,
+        "started_at": _parse_start_dt(obj),
         "activity_type": act_type.strip(),
         "duration_min": duration_min,
         "distance_miles": dist_mi,

@@ -24,11 +24,11 @@ Phased implementation plan, orchestration/timing notes, and doc validation:
 - **[docs/plans/project-overview-supplement.md](docs/plans/project-overview-supplement.md)** — pipeline timing, inconsistencies flagged, open questions  
 - **[docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md)** — no-Docker workflow, Bruno, Supabase REST mapping  
 - **[docs/plans/integrations-checklist.md](docs/plans/integrations-checklist.md)** — services to integrate (confirm / edit)  
-- **[infrastructure/README.md](infrastructure/README.md)** — CDK app: `SomaStagingStack` / `SomaProdStack`, synth & deploy  
+- **[infrastructure/README.md](infrastructure/README.md)** — CDK app: single `SomaStack`, synth & deploy  
 
 ## Status
 
-This repository holds the product and technical plan, the **`pipeline`** Python package (installable via `pyproject.toml`), **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, **AGENTS.md**, Bruno guidance (`.bruno/README.md`), and a minimal **AWS CDK (Python)** app under **`infrastructure/`** (`SomaStagingStack`, `SomaProdStack`). Deployed AWS resources beyond synth still require your account bootstrap + `cdk deploy`.
+This repository holds the product and technical plan, the **`pipeline`** Python package (installable via `pyproject.toml`), **planned SQL DDL** (`schema/soma-planned-schema.sql`), schema docs under `docs/schema/`, **AGENTS.md**, Bruno guidance (`.bruno/README.md`), and a minimal **AWS CDK (Python)** app under **`infrastructure/`** (single `SomaStack`). Deployed AWS resources beyond synth still require your account bootstrap + `cdk deploy`.
 
 ## Development
 
@@ -47,17 +47,43 @@ python3.14 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 Or with Make (`python3.14` by default; override with `PYTHON=…` if needed):
 
 ```bash
-make install    # one-time: create .venv + pip install -e ".[dev]"
-make            # same as `make test` — pytest
-make compile    # bytecode compile check for pipeline/
-make cdk-synth  # pip install .[cdk] + CDK synth (local pip builds Lambda layer; Python 3.14 + PyPI)
+make install        # one-time: create .venv + pip install -e ".[dev]"
+make                # same as `make test` — pytest
+make compile        # bytecode compile check for pipeline/
+make dashboard      # launch Streamlit dashboard (fixture mode; no DB needed)
+make dashboard-live # launch Streamlit dashboard against your Supabase data
+make cdk-synth      # pip install .[cdk] + CDK synth (local pip builds Lambda layer; Python 3.14 + PyPI)
+```
+
+### Dashboard (Streamlit)
+
+Braindead-simple launch — from the repo root, just run:
+
+```bash
+make dashboard
+```
+
+That creates `.venv` if it is missing, installs the `dashboard` extra, and opens the app at **http://localhost:8501** in **fixture mode** (bundled sample data — no database, secrets, or `.env` required).
+
+For **live data** from your Supabase project (reads `SOMA_USER_ID` + `SOMA_DATABASE_URL`, or `DB_CONNECT_STRING`, from repo-root `.env`):
+
+```bash
+make dashboard-live
+```
+
+Prefer raw commands instead of Make? The equivalent is:
+
+```bash
+.venv/bin/pip install -e ".[dashboard]"
+SOMA_DASHBOARD_FIXTURE=1 .venv/bin/streamlit run dashboard/app.py   # fixture
+SOMA_DASHBOARD_FIXTURE=0 .venv/bin/streamlit run dashboard/app.py   # live
 ```
 
 Copy [`.env.example`](.env.example) to `.env` for local secrets (gitignored). `ENV` defaults to `local`; see `pipeline.settings`. For **Phase 3 Hevy smoke** (live API, raw files on disk, optional Supabase upsert), see [`scripts/README.md`](scripts/README.md) and [docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md) § Phase 3 smoke.
 
 ### AWS CDK (Python)
 
-Infra code lives in [`infrastructure/`](infrastructure/). Stable stack names: **`SomaStagingStack`**, **`SomaProdStack`**.
+Infra code lives in [`infrastructure/`](infrastructure/). Single stack: **`SomaStack`** (CloudFormation id `SomaStagingStack`, kept for in-place updates — see [infrastructure/README.md](infrastructure/README.md)).
 
 ```bash
 pip install -e ".[cdk]"          # aws-cdk-lib + constructs (from repo root)
