@@ -74,6 +74,90 @@ def test_fetch_dashboard_source_rows_from_injected_queries():
     assert ctx["sync_health"][0]["provider"] == "hevy"
 
 
+def test_build_dashboard_context_includes_correlations():
+    ctx = build_dashboard_context(
+        user_id="u1",
+        as_of=date(2024, 6, 8),
+        latest_briefing=None,
+        latest_features=None,
+        latest_metrics=None,
+        goal_snapshot=None,
+        weekly_summary=None,
+        metric_patterns=[
+            {
+                "metric_a": "sleep_hours",
+                "metric_b": "strength_tonnage_7d",
+                "lag_days": 1,
+                "correlation": 0.72,
+                "sample_n": 21,
+                "status": "active",
+                "description": "sleep hours vs 7d strength tonnage (lag 1d): r=0.72 (positive, n=21)",
+            },
+            {
+                "metric_a": "sleep_hours",
+                "metric_b": "resting_hr",
+                "lag_days": 0,
+                "correlation": -0.55,
+                "sample_n": 30,
+                "status": "active",
+                "description": "sleep hours vs resting HR (lag 0d): r=-0.55 (negative, n=30)",
+            },
+        ],
+    )
+    corrs = ctx["correlations"]
+    assert len(corrs) == 2
+    strength = next(c for c in corrs if c["metric_b"] == "strength_tonnage_7d")
+    assert strength["direction"] == "positive"
+    assert strength["correlation"] == 0.72
+    assert strength["lag_days"] == 1
+    assert strength["sample_n"] == 21
+    rhr = next(c for c in corrs if c["metric_b"] == "resting_hr")
+    assert rhr["direction"] == "negative"
+
+
+def test_build_dashboard_context_omits_empty_correlations():
+    ctx = build_dashboard_context(
+        user_id="u1",
+        as_of=date(2024, 6, 8),
+        latest_briefing=None,
+        latest_features=None,
+        latest_metrics=None,
+        goal_snapshot=None,
+        weekly_summary=None,
+        metric_patterns=[],
+    )
+    assert "correlations" not in ctx
+
+
+def test_fetch_dashboard_source_rows_surfaces_metric_patterns():
+    def query_one(sql: str, params: tuple) -> dict | None:
+        return None
+
+    def query_all(sql: str, params: tuple) -> list[dict]:
+        if "metric_patterns" in sql:
+            return [
+                {
+                    "metric_a": "sleep_hours",
+                    "metric_b": "cardio_minutes_7d",
+                    "lag_days": 0,
+                    "correlation": 0.63,
+                    "sample_n": 18,
+                    "status": "active",
+                    "description": "sleep hours vs 7d cardio minutes (lag 0d): r=0.63 (positive, n=18)",
+                }
+            ]
+        return []
+
+    ctx = fetch_dashboard_source_rows(
+        user_id="u1",
+        as_of=date(2024, 6, 8),
+        query_one=query_one,
+        query_all=query_all,
+    )
+    assert ctx["correlations"][0]["metric_b"] == "cardio_minutes_7d"
+    assert ctx["correlations"][0]["direction"] == "positive"
+
+
 def test_build_dashboard_context_weekly_summary_json_string():
     ctx = build_dashboard_context(
         user_id="u1",

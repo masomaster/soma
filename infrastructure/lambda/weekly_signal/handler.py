@@ -47,8 +47,14 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
             uid = str(user_id)
             try:
                 window = list(loaders["load_daily_metrics_window"](uid, run_date))
-                patterns = metric_patterns_mod.compute_metric_patterns(
-                    user_id=uid, as_of=run_date, daily_metrics_history=window
+                features_window = list(
+                    loaders["load_daily_features_window"](uid, run_date)
+                )
+                patterns = metric_patterns_mod.compute_all_metric_patterns(
+                    user_id=uid,
+                    as_of=run_date,
+                    daily_metrics_history=window,
+                    daily_features_history=features_window,
                 )
                 with conn.cursor() as cur:
                     persistence.replace_metric_patterns(cur, user_id=uid, rows=patterns)

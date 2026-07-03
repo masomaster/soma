@@ -169,6 +169,13 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
             (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
         )
 
+    def load_daily_features_window(user_id: str, d: date) -> list[dict[str, Any]]:
+        return _query(
+            "SELECT * FROM daily_features "
+            "WHERE user_id = %s AND feature_date BETWEEN %s AND %s",
+            (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
+        )
+
     def load_strength_events(user_id: str, d: date) -> list[dict[str, Any]]:
         return _query(
             "SELECT event_date, set_type, reps, weight_lbs, rpe FROM strength_events "
@@ -229,6 +236,7 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
     return {
         "load_biometrics_today": load_biometrics_today,
         "load_daily_metrics_window": load_daily_metrics_window,
+        "load_daily_features_window": load_daily_features_window,
         "load_strength_events": load_strength_events,
         "load_cardio_events": load_cardio_events,
         "load_active_patterns": load_active_patterns,

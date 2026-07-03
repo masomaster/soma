@@ -70,11 +70,47 @@ Tables (all have user_id; always filter by user_id):
 - weekly_activity_summary(week_start, strength_sessions, running_km, cardio_minutes)
 - strength_events(event_date, exercise_name, reps, weight_lbs)
 - cardio_events(event_date, activity_type, duration_min, distance_miles)
+- metric_patterns(metric_a, metric_b, lag_days, correlation, sample_n, status, description)
 - goals(goal_type, target_min, target_max, is_active)
 - running_sessions(session_date, run_type, distance_km)
 - provider_connections(provider, status, last_sync_at)
 Only SELECT. No INSERT/UPDATE/DELETE. Limit {MAX_QUERY_ROWS} rows.
 """.strip()
+
+
+def _correlation_entries(
+    patterns: Sequence[Mapping[str, Any]] | None,
+) -> list[dict[str, Any]]:
+    """Shape stored ``metric_patterns`` rows into a narratable correlations block.
+
+    These are the deterministic, pre-computed cross-metric correlations the chat
+    is allowed to cite (r, direction, lag, sample size, plain-English text). The
+    LLM narrates them; it must not recompute its own statistics from raw history.
+    """
+    entries: list[dict[str, Any]] = []
+    for p in patterns or ():
+        if p.get("status") not in (None, "active"):
+            continue
+        corr = p.get("correlation")
+        try:
+            corr_val = float(corr) if corr is not None else None
+        except (TypeError, ValueError):
+            corr_val = None
+        direction = None
+        if corr_val is not None:
+            direction = "positive" if corr_val > 0 else "negative"
+        entries.append(
+            {
+                "metric_a": p.get("metric_a"),
+                "metric_b": p.get("metric_b"),
+                "lag_days": p.get("lag_days"),
+                "correlation": corr_val,
+                "direction": direction,
+                "sample_n": p.get("sample_n"),
+                "summary": p.get("description"),
+            }
+        )
+    return entries
 
 
 def build_dashboard_context(
@@ -88,6 +124,7 @@ def build_dashboard_context(
     weekly_summary: Mapping[str, Any] | None,
     provider_connections: Sequence[Mapping[str, Any]] | None = None,
     recent_anomalies: Sequence[Mapping[str, Any]] | None = None,
+    metric_patterns: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble homepage JSON for dashboard or coaching chat context."""
     ctx: dict[str, Any] = {
@@ -160,6 +197,9 @@ def build_dashboard_context(
             }
             for a in recent_anomalies
         ]
+    correlations = _correlation_entries(metric_patterns)
+    if correlations:
+        ctx["correlations"] = correlations
     return ctx
 
 
@@ -223,6 +263,15 @@ def fetch_dashboard_source_rows(
             (user_id, as_of),
         )
     )
+    metric_patterns = list(
+        query_all(
+            "SELECT metric_a, metric_b, lag_days, correlation, sample_n, "
+            "status, description FROM metric_patterns "
+            "WHERE user_id = %s AND status = %s "
+            "ORDER BY ABS(correlation) DESC NULLS LAST LIMIT 12",
+            (user_id, "active"),
+        )
+    )
     return build_dashboard_context(
         user_id=user_id,
         as_of=as_of,
@@ -233,6 +282,7 @@ def fetch_dashboard_source_rows(
         weekly_summary=weekly_summary,
         provider_connections=provider_connections,
         recent_anomalies=recent_anomalies,
+        metric_patterns=metric_patterns,
     )
 
 
