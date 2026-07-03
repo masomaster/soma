@@ -13,11 +13,19 @@ from typing import Any
 from pipeline.briefing import LLMClient, SYSTEM_GUIDELINES
 from pipeline.goal_tools import COACHING_TOOL_SCHEMAS, apply_tool_call
 from pipeline.guidelines import GuidelinesContext, format_guidelines_for_prompt
+from pipeline.history_query import QueryAll, run_history_query, summarize_query_result
+
+QUERY_HISTORY_TOOL = "query_history"
 
 CHAT_SYSTEM = (
     f"{SYSTEM_GUIDELINES}\n\n"
     "You are also in a coaching chat. Answer using the DASHBOARD_CONTEXT JSON and any "
     "PERSONAL GOALS / INJURY HISTORY blocks above it. Respect injury constraints. "
+    "DASHBOARD_CONTEXT only holds the latest snapshot; when the athlete asks about "
+    "history or trends over time (sleep, HRV, resting HR, weight, cardio, strength), "
+    f"call the {QUERY_HISTORY_TOOL!r} tool with a natural-language 'question' instead "
+    "of guessing or claiming you lack the data — the results are fetched and summarized "
+    "for you. "
     "For goal or run changes, respond with a JSON block on its own line: "
     '{"tool_calls": [{"name": "...", "arguments": {...}}]}. '
     "Use tools from the fixed list only. Confirm material changes briefly."
@@ -74,8 +82,15 @@ def run_coaching_turn(
     messages: Sequence[Mapping[str, Any]],
     llm: LLMClient,
     guidelines: GuidelinesContext | None = None,
+    query_all: QueryAll | None = None,
 ) -> dict[str, Any]:
-    """One chat turn: LLM reply + optional validated tool invocations."""
+    """One chat turn: LLM reply + optional validated tool invocations.
+
+    Two-step for reads: when the model calls ``query_history`` and a ``query_all``
+    executor is supplied, the bounded SELECT runs and its rows are summarized into
+    the visible reply (text-to-SQL folded into the chat). Write tools are validated
+    into ``pending_writes`` for the caller to persist, exactly as before.
+    """
     prompt = format_chat_prompt(
         dashboard_context=dashboard_context,
         messages=messages,
@@ -83,28 +98,58 @@ def run_coaching_turn(
         guidelines=guidelines,
     )
     reply = llm(CHAT_SYSTEM, prompt).strip()
-    tool_calls_raw = extract_tool_calls(reply)
+
+    tool_calls = extract_tool_calls(reply)
     tool_results: list[dict[str, Any]] = []
     pending_writes: list[dict[str, Any]] = []
-    for tc in tool_calls_raw:
+    query_results: list[dict[str, Any]] = []
+    history_answers: list[str] = []
+    for tc in tool_calls:
         name = tc.get("name")
         args = tc.get("arguments") or {}
         if not isinstance(name, str) or not isinstance(args, dict):
             continue
+        if name == QUERY_HISTORY_TOOL:
+            # One read per turn bounds LLM+DB fan-out from a single model reply.
+            if query_all is None or query_results:
+                continue
+            question = str(args.get("question") or user_message).strip()
+            result = run_history_query(
+                question, user_id=user_id, llm=llm, query_all=query_all
+            )
+            query_results.append(result)
+            if result["ok"]:
+                history_answers.append(
+                    summarize_query_result(
+                        question, result["sql"], result["rows"], llm=llm
+                    )
+                )
+            else:
+                history_answers.append(f"I couldn't run that lookup: {result['error']}")
+            continue
         try:
-            result = apply_tool_call(name, args, user_id=user_id)
-            tool_results.append({"tool": name, "ok": True, "result": result})
-            pending_writes.append(result)
+            write = apply_tool_call(name, args, user_id=user_id)
+            tool_results.append({"tool": name, "ok": True, "result": write})
+            pending_writes.append(write)
         except (ValueError, TypeError) as exc:
             tool_results.append({"tool": name, "ok": False, "error": str(exc)})
-    # Strip JSON tool block from user-visible reply
+
+    # Strip the JSON tool block from any prose the model returned, then append the
+    # row-grounded history answer (if any) rather than discarding a write confirmation.
     visible = "\n".join(
         ln for ln in reply.splitlines() if not ln.strip().startswith('{"tool_calls"')
     ).strip()
+    answer = "\n\n".join(a for a in history_answers if a.strip())
+    if answer:
+        visible = f"{visible}\n\n{answer}".strip() if visible else answer
+    if not visible:
+        # Never surface the raw tool-call JSON; writes are confirmed by the caller.
+        visible = "Done." if tool_calls else reply
     return {
-        "reply": visible or reply,
+        "reply": visible,
         "tool_results": tool_results,
         "pending_writes": pending_writes,
+        "query_results": query_results,
     }
 
 

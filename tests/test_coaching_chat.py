@@ -36,3 +36,48 @@ def test_run_coaching_turn_mock_llm():
         llm=lambda s, p: "You're on track for recovery.",
     )
     assert "track" in turn["reply"].lower()
+
+
+UID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
+
+def _history_llm(system: str, prompt: str) -> str:
+    """Dispatch the three LLM calls of a query_history turn by their system prompt."""
+    if "PostgreSQL SELECT" in system:  # generate_bounded_sql
+        return (
+            "SELECT metric_date, sleep_hours FROM daily_health_metrics "
+            f"WHERE user_id = '{UID}' LIMIT 30"
+        )
+    if "query results" in system:  # summarize_query_result
+        return "Your sleep averaged 8.2 h over the last 30 days."
+    return '{"tool_calls": [{"name": "query_history", "arguments": {"question": "sleep 30d?"}}]}'
+
+
+def test_query_history_tool_runs_and_summarizes() -> None:
+    rows = [{"metric_date": "2026-07-02", "sleep_hours": 7.4}]
+    turn = run_coaching_turn(
+        user_id=UID,
+        user_message="How has my sleep trended over 30 days?",
+        dashboard_context={"user_id": UID},
+        messages=[],
+        llm=_history_llm,
+        query_all=lambda sql, params: rows,
+    )
+    assert "8.2" in turn["reply"]
+    assert turn["pending_writes"] == []
+    assert len(turn["query_results"]) == 1
+    assert turn["query_results"][0]["ok"] is True
+    assert turn["query_results"][0]["row_count"] == 1
+
+
+def test_query_history_tool_noop_without_executor() -> None:
+    turn = run_coaching_turn(
+        user_id=UID,
+        user_message="sleep trend?",
+        dashboard_context={"user_id": UID},
+        messages=[],
+        llm=_history_llm,
+        query_all=None,
+    )
+    assert turn["query_results"] == []
+    assert turn["pending_writes"] == []
