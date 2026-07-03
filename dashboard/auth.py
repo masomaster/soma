@@ -79,6 +79,37 @@ def sign_in_with_password(
     }
 
 
+def refresh_session(
+    *,
+    refresh_token: str,
+    supabase_url: str,
+    anon_key: str,
+) -> dict[str, str]:
+    """Exchange a stored refresh token for a fresh session (sticky sessions).
+
+    Supabase rotates refresh tokens on each use, so the returned
+    ``refresh_token`` must replace the one that was persisted.
+    """
+    data = _auth_request(
+        supabase_url,
+        anon_key,
+        "/auth/v1/token?grant_type=refresh_token",
+        {"refresh_token": refresh_token},
+    )
+    user = data.get("user") or {}
+    user_id = user.get("id")
+    token = data.get("access_token")
+    new_refresh = data.get("refresh_token")
+    if not user_id or not token:
+        raise AuthError("Refresh response missing user or token")
+    return {
+        "access_token": str(token),
+        "refresh_token": str(new_refresh or refresh_token),
+        "user_id": str(user_id),
+        "email": str(user.get("email") or ""),
+    }
+
+
 def sign_up_with_password(
     *,
     email: str,

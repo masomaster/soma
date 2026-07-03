@@ -14,7 +14,7 @@ import os
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -276,7 +276,76 @@ def _cloud_dashboard() -> bool:
     )
 
 
-def _render_auth_gate() -> bool:
+# Persist the Supabase refresh token in a browser cookie so a full page
+# reload (which discards st.session_state) can silently re-establish the
+# session instead of forcing another sign-in.
+_REFRESH_COOKIE = "soma_refresh_token"
+_REFRESH_COOKIE_DAYS = 30
+
+
+def _cookie_manager():
+    """Return a per-session CookieManager, or None if the component is missing."""
+    try:
+        import extra_streamlit_components as stx
+    except ImportError:
+        return None
+    if "_cookie_manager" not in st.session_state:
+        st.session_state._cookie_manager = stx.CookieManager(key="soma_cookies")
+    return st.session_state._cookie_manager
+
+
+def _store_refresh_cookie(cookie_manager, refresh_token: str) -> None:
+    if cookie_manager is None or not refresh_token:
+        return
+    secure = os.environ.get("SOMA_CLOUD_DASHBOARD", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    cookie_manager.set(
+        _REFRESH_COOKIE,
+        refresh_token,
+        key="soma_set_refresh",
+        expires_at=datetime.now(timezone.utc) + timedelta(days=_REFRESH_COOKIE_DAYS),
+        secure=secure or None,
+        same_site="strict",
+    )
+
+
+def _clear_refresh_cookie(cookie_manager) -> None:
+    if cookie_manager is None:
+        return
+    if cookie_manager.get(_REFRESH_COOKIE) is not None:
+        cookie_manager.delete(_REFRESH_COOKIE, key="soma_del_refresh")
+
+
+def _restore_session_from_cookie(cookie_manager) -> None:
+    """Rehydrate auth state from the refresh-token cookie on a fresh page load."""
+    from dashboard.auth import AuthError, auth_configured, refresh_session
+
+    if cookie_manager is None or st.session_state.get("auth_user_id"):
+        return
+    if not auth_configured() or _fixture_mode_enabled():
+        return
+    refresh_token = cookie_manager.get(_REFRESH_COOKIE)
+    if not refresh_token:
+        return
+    url = os.environ["SUPABASE_URL"].strip()
+    key = os.environ["SUPABASE_ANON_KEY"].strip()
+    try:
+        session = refresh_session(
+            refresh_token=str(refresh_token), supabase_url=url, anon_key=key
+        )
+    except AuthError:
+        _clear_refresh_cookie(cookie_manager)
+        return
+    st.session_state.auth_user_id = session["user_id"]
+    st.session_state.auth_email = session["email"]
+    st.session_state.auth_token = session["access_token"]
+    _store_refresh_cookie(cookie_manager, session["refresh_token"])
+
+
+def _render_auth_gate(cookie_manager) -> bool:
     """Return True when the user may proceed to the app."""
     from dashboard.auth import (
         auth_configured,
@@ -305,6 +374,7 @@ def _render_auth_gate() -> bool:
         st.session_state.auth_user_id = session["user_id"]
         st.session_state.auth_email = session["email"]
         st.session_state.auth_token = session["access_token"]
+        _store_refresh_cookie(cookie_manager, session.get("refresh_token", ""))
         st.rerun()
 
     if _cloud_dashboard():
@@ -343,6 +413,7 @@ def _render_auth_gate() -> bool:
                 st.session_state.auth_user_id = session["user_id"]
                 st.session_state.auth_email = session["email"]
                 st.session_state.auth_token = session["access_token"]
+                _store_refresh_cookie(cookie_manager, session.get("refresh_token", ""))
                 st.rerun()
             except Exception as exc:
                 st.error(str(exc))
@@ -354,13 +425,16 @@ def _render_auth_gate() -> bool:
     st.stop()
 
 
-def _render_sidebar(mode: str, ctx: dict, guidelines: GuidelinesContext | None) -> None:
+def _render_sidebar(
+    mode: str, ctx: dict, guidelines: GuidelinesContext | None, cookie_manager=None
+) -> None:
     with st.sidebar:
         st.header("Soma")
         st.caption(f"Data: **{mode}**")
         if st.session_state.get("auth_email"):
             st.caption(f"Signed in: {st.session_state.auth_email}")
             if st.button("Sign out"):
+                _clear_refresh_cookie(cookie_manager)
                 for key in ("auth_user_id", "auth_email", "auth_token", "chat_messages"):
                     st.session_state.pop(key, None)
                 st.rerun()
@@ -559,7 +633,10 @@ def main() -> None:
     _apply_streamlit_secrets()
     st.set_page_config(page_title="Soma", layout="wide", initial_sidebar_state="expanded")
 
-    if not _render_auth_gate():
+    cookie_manager = _cookie_manager()
+    _restore_session_from_cookie(cookie_manager)
+
+    if not _render_auth_gate(cookie_manager):
         return
 
     mode = "fixture" if _fixture_mode_enabled() else "live"
@@ -577,7 +654,7 @@ def main() -> None:
             st.stop()
 
     guidelines = _load_guidelines(ctx["user_id"])
-    _render_sidebar(mode, ctx, guidelines)
+    _render_sidebar(mode, ctx, guidelines, cookie_manager)
 
     page = st.radio(
         "Navigate",
