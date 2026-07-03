@@ -21,12 +21,13 @@ from __future__ import annotations
 
 import os
 
-from aws_cdk import Duration, Stack, TimeZone
+from aws_cdk import CfnOutput, Duration, RemovalPolicy, Stack, TimeZone
 from aws_cdk import aws_cloudwatch as cloudwatch
 from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
+from aws_cdk import aws_s3 as s3
 from aws_cdk import aws_scheduler as scheduler
 from aws_cdk import aws_scheduler_targets as scheduler_targets
 from aws_cdk import aws_sns as sns
@@ -59,6 +60,20 @@ class DailyBriefingPipeline(Construct):
         else:
             layer = build_pipeline_deps_layer(self, construct_id="PipelineDepsLayer")
 
+        # Phase 10 personal guidelines corpus (my-goals.md / injury-history.md /
+        # expert-principles.md at guidelines/{user_id}/...). RETAIN so hand-authored
+        # guidance is never destroyed on stack delete; the briefing reads it into prompts.
+        self.guidelines_bucket = s3.Bucket(
+            self,
+            "GuidelinesBucket",
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            enforce_ssl=True,
+            versioned=True,
+            removal_policy=RemovalPolicy.RETAIN,
+            auto_delete_objects=False,
+        )
+
         self.function = lambda_.Function(
             self,
             "BriefingFunction",
@@ -73,8 +88,17 @@ class DailyBriefingPipeline(Construct):
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
                 "ENV": DEPLOYED_ENV,
+                "SOMA_GUIDELINES_BUCKET": self.guidelines_bucket.bucket_name,
                 **runtime_secrets.env_briefing(),
             },
+        )
+        # Briefing only reads guidelines; chat-driven writes use a separate path.
+        self.guidelines_bucket.grant_read(self.function)
+        CfnOutput(
+            self,
+            "GuidelinesBucketName",
+            value=self.guidelines_bucket.bucket_name,
+            description="S3 bucket holding per-user guidelines markdown (guidelines/{user_id}/...)",
         )
 
         region = os.environ.get("CDK_DEFAULT_REGION", "us-west-2")
