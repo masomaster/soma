@@ -77,6 +77,21 @@ def test_source_app_captured_from_workout() -> None:
     assert rows[1]["source_app"] == "Strava"  # object {name: ...} form
 
 
+def test_source_app_from_nested_sample_provenance_chains() -> None:
+    """HAE API export nests provenance as ``Device|App|App`` on per-sample sources.
+
+    The run's samples chain through Health Sync/NRC/Strava — NRC (highest cardio
+    priority) must win — while the walk only ever sees Health Sync (Fitbit/Google
+    bridge), which is still recognized so it dedups at the Fitbit tier.
+    """
+    payload = _load("health_auto_export_workouts_api_source_chains.json")
+    rows = apple_health_workouts.normalize_apple_health_cardio_from_payload(payload, _USER)
+    run = next(r for r in rows if r["activity_type"] == "Outdoor Run")
+    walk = next(r for r in rows if r["activity_type"] == "Outdoor Walk")
+    assert run["source_app"] == "Nike Run Club"
+    assert walk["source_app"] == "Health Sync"
+
+
 def test_ingest_payload_complete_includes_cardio() -> None:
     payload = _load("health_auto_export_workouts_redacted.json")
     payload["data"]["metrics"] = [

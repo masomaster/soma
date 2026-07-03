@@ -17,6 +17,7 @@ from collections.abc import Mapping
 from datetime import date, datetime
 from typing import Any
 
+from pipeline.source_priority import best_cardio_source_app
 from pipeline.timeparse import parse_iso_datetime_utc
 
 logger = logging.getLogger(__name__)
@@ -59,19 +60,31 @@ def _parse_workout_timestamp(raw: str) -> date | None:
 
 
 def _source_app(workout: Mapping[str, Any]) -> str | None:
-    """HealthKit source app name for the workout (e.g. "Nike Run Club", "Strava").
+    """Best-known HealthKit source app for the workout (e.g. "Nike Run Club").
 
-    HAE exposes it as ``source`` (string) or, on some versions, a ``{name: ...}``
-    object. Returns ``None`` when absent so dedup falls back to a neutral rank.
+    HAE's API export does **not** put a single app on the workout; instead each
+    nested sample (``activeEnergy``, ``heartRate``, …) carries a pipe-delimited
+    provenance chain such as ``"SuperPhone|Health Sync|Nike Run Club"``. We union
+    those chains (plus any legacy top-level ``source`` string/``{name}`` object),
+    split on ``|``, and let :func:`best_cardio_source_app` choose the highest
+    priority recognized app. Returns ``None`` when no known app is present.
     """
+    chains: set[str] = set()
     raw = workout.get("source")
     if isinstance(raw, str) and raw.strip():
-        return raw.strip()[:200]
-    if isinstance(raw, dict):
-        name = raw.get("name")
-        if isinstance(name, str) and name.strip():
-            return name.strip()[:200]
-    return None
+        chains.add(raw)
+    elif isinstance(raw, dict) and isinstance(raw.get("name"), str) and raw["name"].strip():
+        chains.add(raw["name"])
+    for value in workout.values():
+        if not isinstance(value, list):
+            continue
+        for item in value:
+            if isinstance(item, dict):
+                src = item.get("source")
+                if isinstance(src, str) and src.strip():
+                    chains.add(src)
+    candidates = [token for chain in chains for token in chain.split("|")]
+    return best_cardio_source_app(candidates)
 
 
 def _num(value: Any) -> float | None:

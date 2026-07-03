@@ -20,6 +20,8 @@ it overlaps another source (but is kept when it is the only record of a session)
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 # App-name (HealthKit ``source_app``) priority for apple_health cardio dedup.
 # Keys are matched as normalized substrings (see :func:`cardio_source_app_rank`),
 # so device names like "Mason's Apple Watch" match the "apple watch" key.
@@ -72,3 +74,31 @@ def cardio_source_app_rank(source_app: object) -> int:
             best_keyword_len = len(keyword)
             best_rank = rank
     return best_rank
+
+
+def best_cardio_source_app(candidates: Iterable[object]) -> str | None:
+    """Pick the highest-priority *recognized* app among candidate source names.
+
+    HAE's API export records workout provenance as pipe-delimited chains on the
+    nested per-sample ``source`` fields (e.g. ``"SuperPhone|Health Sync|Nike Run
+    Club"``), not a single top-level app. Callers split those chains into tokens
+    and pass them here. Tokens that rank at :data:`DEFAULT_CARDIO_SOURCE_APP_RANK`
+    (device names like ``"SuperPhone"`` and unknown apps) are skipped so a phone
+    name never outranks a real app; ties keep the first seen. Returns the winning
+    app string, or ``None`` when no token maps to a known app.
+    """
+    best_name: str | None = None
+    best_rank = -1
+    for cand in candidates:
+        if not isinstance(cand, str):
+            continue
+        name = cand.strip()
+        if not name:
+            continue
+        rank = cardio_source_app_rank(name)
+        if rank == DEFAULT_CARDIO_SOURCE_APP_RANK:
+            continue
+        if rank > best_rank:
+            best_rank = rank
+            best_name = name[:200]
+    return best_name
