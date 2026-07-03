@@ -2,7 +2,43 @@
 
 from __future__ import annotations
 
-from pipeline.coaching_chat import extract_tool_calls, run_coaching_turn
+from pipeline.coaching_chat import (
+    CHAT_SYSTEM,
+    extract_tool_calls,
+    format_chat_prompt,
+    run_coaching_turn,
+)
+
+
+def test_chat_system_has_correlation_guidance():
+    lower = CHAT_SYSTEM.lower()
+    assert "correlat" in lower
+    # explicitly instructs the model NOT to refuse correlation questions
+    assert "do not refuse" in lower
+    assert "correlations" in lower  # points at the DASHBOARD_CONTEXT block
+
+
+def test_chat_prompt_includes_precomputed_correlations():
+    prompt = format_chat_prompt(
+        dashboard_context={
+            "user_id": "u1",
+            "correlations": [
+                {
+                    "metric_a": "sleep_hours",
+                    "metric_b": "strength_tonnage_7d",
+                    "lag_days": 1,
+                    "correlation": 0.72,
+                    "direction": "positive",
+                    "sample_n": 21,
+                    "summary": "sleep hours vs 7d strength tonnage (lag 1d)",
+                }
+            ],
+        },
+        messages=[],
+        user_message="how does my sleep correlate with my lifting gains?",
+    )
+    assert "correlations" in prompt
+    assert "strength_tonnage_7d" in prompt
 
 
 def test_extract_tool_calls():
