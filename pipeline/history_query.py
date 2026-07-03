@@ -16,6 +16,7 @@ from pipeline.briefing import LLMClient
 from pipeline.dashboard_queries import (
     ALLOWED_QUERY_TABLES,
     BOUNDED_SCHEMA_HINT,
+    MAX_QUERY_ROWS,
     validate_bounded_sql,
 )
 
@@ -26,7 +27,7 @@ SQL_GEN_SYSTEM = (
     "- Only SELECT (read-only).\n"
     "- Always filter by user_id = '{user_id}'.\n"
     "- Only use tables from the schema hint.\n"
-    "- LIMIT 500 or fewer rows.\n"
+    f"- LIMIT {MAX_QUERY_ROWS} or fewer rows.\n"
     "- Prefer aggregates (AVG, COUNT, SUM) for trends.\n"
     "- Use ISO dates (YYYY-MM-DD) for date literals.\n"
 )
@@ -91,8 +92,10 @@ def run_history_query(
 ) -> dict[str, Any]:
     """End-to-end: NL question → SQL → validated execution."""
     try:
+        # generate_bounded_sql already validates and normalizes; run it directly
+        # rather than re-validating via execute_bounded_query (avoids a second parse).
         sql = generate_bounded_sql(question, user_id=user_id, llm=llm)
-        rows = execute_bounded_query(sql, user_id=user_id, query_all=query_all)
+        rows = [dict(r) for r in query_all(sql, ())]
         return {"ok": True, "sql": sql, "rows": rows, "row_count": len(rows)}
     except (ValueError, RuntimeError) as exc:
         return {"ok": False, "error": str(exc), "sql": None, "rows": [], "row_count": 0}

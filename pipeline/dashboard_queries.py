@@ -8,7 +8,7 @@ explicit user filter.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
@@ -40,8 +40,11 @@ ALLOWED_QUERY_TABLES = frozenset(
     }
 )
 
+# Maximum rows a bounded NL query may return (enforced by validate_bounded_sql).
+MAX_QUERY_ROWS = 500
+
 # Minimal schema hint for text-to-SQL prompts.
-BOUNDED_SCHEMA_HINT = """
+BOUNDED_SCHEMA_HINT = f"""
 Tables (all have user_id; always filter by user_id):
 - daily_features(feature_date, strength_sessions_7d, cardio_minutes_7d, training_load_*)
 - daily_health_metrics(metric_date, hrv_rmssd, sleep_hours, resting_hr, ...)
@@ -53,7 +56,7 @@ Tables (all have user_id; always filter by user_id):
 - goals(goal_type, target_min, target_max, is_active)
 - running_sessions(session_date, run_type, distance_km)
 - provider_connections(provider, status, last_sync_at)
-Only SELECT. No INSERT/UPDATE/DELETE. Limit 500 rows.
+Only SELECT. No INSERT/UPDATE/DELETE. Limit {MAX_QUERY_ROWS} rows.
 """.strip()
 
 
@@ -219,7 +222,9 @@ def load_dashboard_context_from_db(
 ) -> dict[str, Any]:
     """Load dashboard context from Postgres using a psycopg2 connection.
 
-    Uses a service-role or pooler URI (same as smoke scripts / briefing Lambda).
+    For end-user surfaces the caller must first bind the transaction to the
+    requesting user with :func:`pipeline.db_session.apply_rls_scope` so RLS
+    enforces isolation; the ``user_id`` predicates below are defense in depth.
     """
     from psycopg2.extras import RealDictCursor
 
@@ -281,47 +286,59 @@ def _iso(val: Any) -> str | None:
     return str(val)[:10] if val else None
 
 
-def validate_bounded_sql(sql: str, *, user_id: str) -> str:
-    """Reject unsafe SQL before execution (Slice C read path).
+# Functions that can read files, sleep, exfiltrate, or reach outside the row set.
+# Blocked even inside an otherwise-valid SELECT (defense in depth alongside RLS).
+FORBIDDEN_SQL_FUNCTIONS = frozenset(
+    {
+        "pg_read_file",
+        "pg_read_binary_file",
+        "pg_ls_dir",
+        "pg_stat_file",
+        "pg_read_server_files",
+        "lo_import",
+        "lo_export",
+        "lo_get",
+        "dblink",
+        "dblink_exec",
+        "copy",
+        "pg_sleep",
+        "pg_sleep_for",
+        "pg_sleep_until",
+        "set_config",
+        "current_setting",
+        "query_to_xml",
+        "pg_terminate_backend",
+        "pg_cancel_backend",
+        "txid_current",
+        "has_table_privilege",
+    }
+)
 
-    Uses sqlglot AST checks when available; falls back to string guards.
+
+def validate_bounded_sql(sql: str, *, user_id: str) -> str:
+    """Reject unsafe SQL before execution and return a normalized, bounded SELECT.
+
+    This is the application-layer guard for the Slice C text-to-SQL read path;
+    it is defense in depth *in front of* RLS (see :mod:`pipeline.db_session`),
+    not a replacement for it. The statement must be a single ``SELECT`` over one
+    allow-listed table, filtered by the requesting user's ``user_id`` in the
+    ``WHERE`` clause, with no set operations, joins, subqueries, CTEs, ``OR``
+    branches, ``INTO``, locking, or file/side-effecting functions. The returned
+    SQL is re-rendered from the parsed AST (eliminating any parser differential
+    with Postgres) and capped at ``MAX_QUERY_ROWS``.
 
     Raises:
-        ValueError: If the statement is not a safe read-only SELECT.
+        ValueError: If the statement is not a safe, single-user, read-only SELECT
+            (including when ``sqlglot`` is unavailable — this fails closed).
     """
     cleaned = sql.strip().rstrip(";")
     if not cleaned:
         raise ValueError("Empty SQL")
     try:
-        return _validate_bounded_sql_ast(cleaned, user_id=user_id)
-    except ImportError:
-        return _validate_bounded_sql_string(cleaned, user_id=user_id)
-
-
-def _validate_bounded_sql_string(sql: str, *, user_id: str) -> str:
-    normalized = sql.lower()
-    if not normalized.startswith("select"):
-        raise ValueError("Only SELECT queries are allowed")
-    forbidden = (
-        "insert",
-        "update",
-        "delete",
-        "drop",
-        "alter",
-        "truncate",
-        "grant",
-        "revoke",
-        "create",
-        ";",
-    )
-    for token in forbidden:
-        if token in normalized:
-            raise ValueError(f"Forbidden SQL token: {token!r}")
-    if "user_id" not in normalized:
-        raise ValueError("Query must filter by user_id")
-    if user_id.lower() not in normalized.replace("'", ""):
-        raise ValueError("Query must include the requesting user's id")
-    return sql
+        import sqlglot  # noqa: F401
+    except ImportError as exc:
+        raise ValueError("SQL validation requires sqlglot") from exc
+    return _validate_bounded_sql_ast(cleaned, user_id=user_id)
 
 
 def _validate_bounded_sql_ast(sql: str, *, user_id: str) -> str:
@@ -329,13 +346,21 @@ def _validate_bounded_sql_ast(sql: str, *, user_id: str) -> str:
     from sqlglot import exp
 
     try:
-        parsed = sqlglot.parse_one(sql, read="postgres")
+        statements = [s for s in sqlglot.parse(sql, dialect="postgres") if s is not None]
     except Exception as exc:
         raise ValueError(f"Invalid SQL: {exc}") from exc
 
+    if len(statements) != 1:
+        raise ValueError("Exactly one statement is allowed")
+    parsed = statements[0]
+    # Top-level set operations parse to a non-Select root; check explicitly so the
+    # error is specific (nested ones are caught by the subquery/CTE rejection below).
+    if isinstance(parsed, (exp.Union, exp.Intersect, exp.Except)):
+        raise ValueError("Set operations (UNION/INTERSECT/EXCEPT) are not allowed")
     if not isinstance(parsed, exp.Select):
         raise ValueError("Only SELECT queries are allowed")
 
+    # Reject write/DDL and opaque commands anywhere in the tree.
     for node in parsed.walk():
         if isinstance(
             node,
@@ -349,45 +374,89 @@ def _validate_bounded_sql_ast(sql: str, *, user_id: str) -> str:
                 exp.TruncateTable,
                 exp.Grant,
                 exp.Revoke,
+                exp.Command,
             ),
         ):
             raise ValueError(f"Forbidden statement type: {type(node).__name__}")
 
+    if parsed.find(exp.With):
+        raise ValueError("CTEs (WITH) are not allowed")
+    if parsed.find(exp.Join):
+        raise ValueError("JOINs are not allowed")
+    # OR can widen a result past the user_id predicate (e.g. `user_id = x OR 1=1`).
+    if parsed.find(exp.Or):
+        raise ValueError("OR conditions are not allowed")
+    # Subqueries / derived tables could reference other users' rows.
+    if any(node is not parsed for node in parsed.find_all(exp.Select)):
+        raise ValueError("Subqueries are not allowed")
+    if parsed.args.get("into") or parsed.find(exp.Into):
+        raise ValueError("SELECT INTO is not allowed")
+    if parsed.args.get("locks"):
+        raise ValueError("Locking clauses (FOR UPDATE/SHARE) are not allowed")
+
+    for name in _function_names(parsed):
+        if name in FORBIDDEN_SQL_FUNCTIONS:
+            raise ValueError(f"Function not allowed: {name}")
+
     tables = {t.name.lower() for t in parsed.find_all(exp.Table) if t.name}
+    if len(tables) != 1:
+        raise ValueError("Exactly one table may be queried")
     unknown = tables - {t.lower() for t in ALLOWED_QUERY_TABLES}
     if unknown:
         raise ValueError(f"Table not allowed: {', '.join(sorted(unknown))}")
 
-    if not _sql_references_user_id(parsed, user_id=user_id):
+    if not _where_references_user_id(parsed, user_id=user_id):
         raise ValueError("Query must filter by user_id for the requesting user")
 
-    limit = parsed.args.get("limit")
-    if limit is not None:
-        try:
-            limit_val = int(limit.expression.this)  # type: ignore[union-attr]
-        except (AttributeError, TypeError, ValueError):
-            limit_val = None
-        if limit_val is not None and limit_val > 500:
-            raise ValueError("LIMIT must be 500 or fewer")
+    limit_val = _limit_value(parsed)
+    if limit_val is None or limit_val > MAX_QUERY_ROWS:
+        parsed = parsed.limit(MAX_QUERY_ROWS)
 
-    return sql
+    return parsed.sql(dialect="postgres")
 
 
-def _sql_references_user_id(parsed: Any, *, user_id: str) -> bool:
+def _function_names(parsed: Any) -> Iterator[str]:
+    """Yield normalized names of every function-like node (not just unknown ones)."""
     from sqlglot import exp
 
+    for fn in parsed.find_all(exp.Func):
+        name = str(fn.this) if isinstance(fn, exp.Anonymous) else fn.sql_name()
+        yield (name or "").lower()
+
+
+def _limit_value(parsed: Any) -> int | None:
+    limit = parsed.args.get("limit")
+    if limit is None:
+        return None
+    try:
+        return int(limit.expression.this)  # type: ignore[union-attr]
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _where_references_user_id(parsed: Any, *, user_id: str) -> bool:
+    """True when the WHERE clause pins ``user_id`` to the requesting user.
+
+    Only the WHERE subtree is inspected (not projections), and OR branches are
+    already rejected upstream, so a matching equality here is a dominant filter.
+    """
+    from sqlglot import exp
+
+    where = parsed.args.get("where")
+    if where is None:
+        return False
     uid = user_id.lower()
-    for node in parsed.walk():
-        if isinstance(node, exp.EQ):
-            left = node.left
-            right = node.right
-            if isinstance(left, exp.Column) and left.name and left.name.lower() == "user_id":
-                rval = _literal_text(right)
-                if rval and rval.lower() == uid:
-                    return True
-            if isinstance(right, exp.Column) and right.name and right.name.lower() == "user_id":
-                lval = _literal_text(left)
-                if lval and lval.lower() == uid:
+    for node in where.walk():
+        if not isinstance(node, exp.EQ):
+            continue
+        for col, other in ((node.left, node.right), (node.right, node.left)):
+            if (
+                isinstance(col, exp.Column)
+                and col.name
+                and col.name.lower() == "user_id"
+            ):
+                literal = _literal_text(other)
+                if literal and literal.lower() == uid:
                     return True
     return False
 

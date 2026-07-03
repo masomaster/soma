@@ -18,6 +18,7 @@ from pathlib import Path
 
 from pipeline.coaching_chat import load_chat_messages, run_coaching_turn, save_chat_messages
 from pipeline.dashboard_queries import load_dashboard_context_from_db
+from pipeline.db_session import apply_rls_scope
 from pipeline.goal_tools import apply_coaching_writes
 from pipeline.guidelines import (
     GuidelinesContext,
@@ -81,6 +82,14 @@ def _pg_conn() -> Iterator[object]:
         yield conn
     finally:
         conn.close()
+
+
+@contextmanager
+def _scoped_conn(user_id: str, *, read_only: bool = True) -> Iterator[object]:
+    """A live DB connection bound to ``user_id`` under RLS as its first statement."""
+    with _pg_conn() as conn:
+        apply_rls_scope(conn, user_id=user_id, read_only=read_only)
+        yield conn
 
 
 def _resolve_llm(ctx: dict):
@@ -173,7 +182,7 @@ def _fixture_guidelines() -> GuidelinesContext:
 
 @st.cache_data(ttl=60)
 def _load_live_context(user_id: str, as_of_iso: str) -> dict:
-    with _pg_conn() as conn:
+    with _scoped_conn(user_id) as conn:
         return load_dashboard_context_from_db(
             conn,
             user_id=user_id,
@@ -208,7 +217,7 @@ def _persist_coaching_writes(user_id: str, pending_writes: list[dict]) -> list[s
 
         append_note = _append
 
-    with _pg_conn() as conn:
+    with _scoped_conn(user_id, read_only=False) as conn:
         with conn.cursor() as cur:
             applied = apply_coaching_writes(cur, pending_writes, append_note=append_note)
         conn.commit()
@@ -230,7 +239,10 @@ def _render_auth_gate() -> bool:
         return True
 
     st.title("Soma — Sign in")
-    st.caption("Supabase Auth protects your health data (RLS).")
+    st.caption(
+        "Sign in with Supabase Auth. Every query runs under the `authenticated` "
+        "role scoped to your user id, so row-level security isolates your data."
+    )
     tab_in, tab_up = st.tabs(["Sign in", "Create account"])
     url = os.environ["SUPABASE_URL"].strip()
     key = os.environ["SUPABASE_ANON_KEY"].strip()
@@ -324,7 +336,7 @@ def _page_dashboard(ctx: dict, mode: str) -> None:
     m4.metric("Readiness", features.get("overall_readiness_score"))
 
     if mode == "live":
-        with _pg_conn() as conn:
+        with _scoped_conn(ctx["user_id"]) as conn:
             breakdown = fetch_cardio_breakdown_7d(conn, user_id=ctx["user_id"], as_of=as_of)
         with st.expander("Cardio breakdown (rolling 7d)"):
             if breakdown:
@@ -374,7 +386,7 @@ def _page_history(ctx: dict, mode: str) -> None:
         def query_all(sql: str, params: tuple) -> list:
             if mode != "live":
                 return [{"metric_date": "2026-06-01", "avg_sleep": 6.5}]
-            with _pg_conn() as conn:
+            with _scoped_conn(user_id) as conn:
                 from psycopg2.extras import RealDictCursor
 
                 with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -413,7 +425,7 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
     if "chat_messages" not in st.session_state:
         if mode == "live":
             try:
-                with _pg_conn() as conn:
+                with _scoped_conn(user_id) as conn:
                     st.session_state.chat_messages = load_chat_messages(
                         conn, user_id=user_id
                     )
@@ -443,7 +455,7 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
                 if applied:
                     _load_live_context.clear()
                     st.session_state["_coaching_saved"] = "; ".join(applied)
-                with _pg_conn() as conn:
+                with _scoped_conn(user_id, read_only=False) as conn:
                     save_chat_messages(
                         conn,
                         user_id=user_id,
@@ -461,7 +473,7 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
                 st.json(turn["tool_results"])
         elif mode == "live":
             try:
-                with _pg_conn() as conn:
+                with _scoped_conn(user_id, read_only=False) as conn:
                     save_chat_messages(
                         conn,
                         user_id=user_id,
