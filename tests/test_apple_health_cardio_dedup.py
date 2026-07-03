@@ -215,6 +215,50 @@ def test_no_supersede_when_disabled_keeps_stored_row() -> None:
     assert superseded == []
 
 
+def test_glitched_copy_loses_to_clean_same_app_despite_higher_id() -> None:
+    """Regression: a corrupt-distance run must not win a cluster on the UUID tiebreak.
+
+    All three copies are Nike Run Club (same source rank) with equal field richness,
+    so the pre-fix tiebreak fell through to ``str(source_id)`` descending and kept the
+    glitched 0.86 mi partial (``…A42DE…`` sorts above ``…799E…``/``…285B…``). Distance
+    trust now outranks the UUID tiebreak, so a real 2.625 mi copy wins.
+    """
+    d = date(2026, 7, 2)
+    t = datetime(2026, 7, 2, 17, 9, tzinfo=timezone.utc)
+    glitched = _row(source_id="apple_health:A42DE", event_date=d, duration_min=35.83,
+                    distance_miles=0.8642, source_app="Nike Run Club", started_at=t)
+    clean_a = _row(source_id="apple_health:799E", event_date=d, duration_min=27.6,
+                   distance_miles=2.625, source_app="Nike Run Club", started_at=t)
+    clean_b = _row(source_id="apple_health:285B", event_date=d, duration_min=26.9,
+                   distance_miles=2.625, source_app="Nike Run Club", started_at=t)
+    cur = _FakeCursor([])
+    kept, dropped, superseded = filter_near_duplicate_apple_cardio(
+        cur, user_id=_USER, cardio_rows=[glitched, clean_a, clean_b]
+    )
+    assert dropped == 2
+    assert len(kept) == 1
+    assert kept[0]["distance_miles"] == 2.625
+    assert kept[0]["source_id"] != "apple_health:A42DE"
+    assert superseded == []
+
+
+def test_clean_copy_supersedes_stored_glitched_same_app() -> None:
+    """A clean re-ingest heals a stored glitched row of the same session/app."""
+    d = date(2026, 7, 2)
+    t = datetime(2026, 7, 2, 17, 9, tzinfo=timezone.utc)
+    stored_glitched = _row(source_id="apple_health:A42DE", event_date=d, duration_min=35.83,
+                           distance_miles=0.8642, source_app="Nike Run Club", started_at=t)
+    incoming_clean = _row(source_id="apple_health:799E", event_date=d, duration_min=27.6,
+                          distance_miles=2.625, source_app="Nike Run Club", started_at=t)
+    cur = _FakeCursor([stored_glitched])
+    kept, dropped, superseded = filter_near_duplicate_apple_cardio(
+        cur, user_id=_USER, cardio_rows=[incoming_clean]
+    )
+    assert [r["source_id"] for r in kept] == ["apple_health:799E"]
+    assert dropped == 0
+    assert superseded == ["apple_health:A42DE"]
+
+
 def test_rows_to_drop_prefers_priority() -> None:
     d = date(2026, 7, 2)
     t = datetime(2026, 7, 2, 6, 30, tzinfo=timezone.utc)

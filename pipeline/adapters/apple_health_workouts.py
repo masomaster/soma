@@ -65,10 +65,11 @@ def _source_app(workout: Mapping[str, Any]) -> str | None:
 
     HAE's API export does **not** put a single app on the workout; instead each
     nested sample (``activeEnergy``, ``heartRate``, …) carries a pipe-delimited
-    provenance chain such as ``"SuperPhone|Health Sync|Nike Run Club"``. We union
-    those chains (plus any legacy top-level ``source`` string/``{name}`` object),
-    split on ``|``, and let :func:`best_cardio_source_app` choose the highest
-    priority recognized app. Returns ``None`` when no known app is present.
+    provenance chain such as ``"SuperPhone|Health Sync|Nike Run Club"``. We collect
+    those chains (plus any legacy top-level ``source`` string/``{name}`` object) and
+    let :func:`best_cardio_source_app` resolve them: a native recorder (a chain with
+    no Fitbit/Google bridge) wins over a bridged chain where app names only ride
+    along. Returns ``None`` when no known app is present.
     """
     chains: set[str] = set()
     raw = workout.get("source")
@@ -84,8 +85,7 @@ def _source_app(workout: Mapping[str, Any]) -> str | None:
                 src = item.get("source")
                 if isinstance(src, str) and src.strip():
                     chains.add(src)
-    candidates = [token for chain in chains for token in chain.split("|")]
-    return best_cardio_source_app(candidates)
+    return best_cardio_source_app(chains)
 
 
 def _num(value: Any) -> float | None:

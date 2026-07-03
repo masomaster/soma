@@ -28,6 +28,7 @@ import re
 from datetime import date, datetime
 from typing import Any
 
+from pipeline.cardio_quality import assess_cardio_quality, has_suspect_distance
 from pipeline.features import as_date
 from pipeline.source_priority import cardio_source_app_rank
 from pipeline.timeparse import ensure_utc, parse_iso_datetime_utc
@@ -105,10 +106,29 @@ def _row_richness(row: dict[str, Any]) -> int:
     return score
 
 
-def _resolution_key(row: dict[str, Any]) -> tuple[int, int, str]:
-    """Sort key (descending) for which row wins a duplicate cluster."""
+def _distance_is_trustworthy(row: dict[str, Any]) -> bool:
+    """False when the row is a run whose pace marks its distance as untrustworthy.
+
+    Non-runs (and runs without a computable pace) are always trustworthy here —
+    this only demotes runs flagged by :func:`assess_cardio_quality` (implausibly
+    fast *or* slow pace), which is exactly the corrupt-track case dedup must avoid
+    keeping over a clean duplicate of the same session.
+    """
+    return not has_suspect_distance(assess_cardio_quality(row))
+
+
+def _resolution_key(row: dict[str, Any]) -> tuple[int, int, int, str]:
+    """Sort key (descending) for which row wins a duplicate cluster.
+
+    Ordered by source-app priority, then whether the recorded distance is
+    trustworthy (a clean copy beats a glitched one of the same session), then
+    field richness, then ``source_id`` as a stable, deterministic final tiebreak.
+    Plausibility sits above richness so a corrupt-distance row can never win a
+    cluster on field count alone.
+    """
     return (
         cardio_source_app_rank(row.get("source_app")),
+        1 if _distance_is_trustworthy(row) else 0,
         _row_richness(row),
         str(row.get("source_id") or ""),
     )
@@ -281,16 +301,16 @@ def filter_near_duplicate_apple_cardio(
         if not matches:
             final.append(row)
             continue
-        row_rank = cardio_source_app_rank(row.get("source_app"))
-        # An existing row of equal-or-higher priority already covers this session.
-        # When supersede is disabled, treat *any* stored duplicate as blocking so
-        # the path never deletes — the stored row wins and the incoming is dropped.
-        if not allow_supersede or any(
-            cardio_source_app_rank(ex.get("source_app")) >= row_rank for ex in matches
-        ):
+        row_key = _resolution_key(row)
+        # An existing row that ranks equal-or-higher on the full resolution key
+        # (source priority, distance trust, richness, id) already covers this
+        # session. When supersede is disabled, treat *any* stored duplicate as
+        # blocking so the path never deletes — the stored row wins and the
+        # incoming is dropped.
+        if not allow_supersede or any(_resolution_key(ex) >= row_key for ex in matches):
             db_dropped += 1
             continue
-        # Incoming outranks every stored duplicate — supersede the lower-priority rows.
+        # Incoming outranks every stored duplicate — supersede the lower-ranked rows.
         for ex in matches:
             sid = ex.get("source_id")
             if isinstance(sid, str) and sid and sid not in superseded_seen:

@@ -43,6 +43,14 @@ CARDIO_SOURCE_APP_PRIORITY: dict[str, int] = {
 # unrecognized source is never silently dropped in favor of Fitbit.
 DEFAULT_CARDIO_SOURCE_APP_RANK = 15
 
+# Bridge apps copy third-party data (Fitbit / Google Fit) into Apple HealthKit.
+# When a workout's provenance chain passes through one of these, the origin-app
+# names that ride along the chain (e.g. "Nike Run Club", "Strava") did **not**
+# record it natively — the bridge is the real, less-reliable writer. Attributing
+# such a row to a mirror app would wrongly inflate its dedup priority and mislabel
+# its source, so bridge presence takes precedence in :func:`best_cardio_source_app`.
+BRIDGE_SOURCE_APPS: tuple[str, ...] = ("health sync", "fitbit", "google fit", "google")
+
 STRENGTH_SOURCE_PRIORITY: dict[str, int] = {
     "hevy": 30,
     "manual": 20,
@@ -76,29 +84,54 @@ def cardio_source_app_rank(source_app: object) -> int:
     return best_rank
 
 
-def best_cardio_source_app(candidates: Iterable[object]) -> str | None:
-    """Pick the highest-priority *recognized* app among candidate source names.
+def _is_bridge_app(name: str) -> bool:
+    """True when a source name is a Fitbit/Google → HealthKit bridge (see :data:`BRIDGE_SOURCE_APPS`)."""
+    normalized = _normalize_source_app(name)
+    return any(bridge in normalized for bridge in BRIDGE_SOURCE_APPS)
 
-    HAE's API export records workout provenance as pipe-delimited chains on the
+
+def best_cardio_source_app(chains: Iterable[object]) -> str | None:
+    """Pick the source app that actually recorded a workout from its provenance chains.
+
+    HAE's API export records workout provenance as pipe-delimited **chains** on the
     nested per-sample ``source`` fields (e.g. ``"SuperPhone|Health Sync|Nike Run
-    Club"``), not a single top-level app. Callers split those chains into tokens
-    and pass them here. Tokens that rank at :data:`DEFAULT_CARDIO_SOURCE_APP_RANK`
-    (device names like ``"SuperPhone"`` and unknown apps) are skipped so a phone
-    name never outranks a real app; ties keep the first seen. Returns the winning
-    app string, or ``None`` when no token maps to a known app.
+    Club"``), not a single top-level app. Pass the chain strings here (do **not**
+    pre-split them — the chain grouping is what decides native vs bridged).
+
+    Data reaches Apple Health two ways (see module docstring):
+
+    * **Native** — an app writes straight to HealthKit (e.g. Nike Run Club, Apple
+      Watch). Its provenance chain contains **no** bridge app.
+    * **Bridged** — Health Sync copies Fitbit/Google data in. Any chain containing
+      a :data:`BRIDGE_SOURCE_APPS` token is bridged; origin-app names that ride
+      along that chain ("Nike Run Club"/"Strava") are mirrors, not the recorder.
+
+    Resolution: the highest-priority app that appears in a **non-bridged** chain
+    wins (a genuine native recorder). If no native app is present, the workout was
+    bridged, so the bridge app is returned (keeping it at the Fitbit tier instead
+    of mislabeling it — and inflating its dedup priority — as NRC). Tokens at
+    :data:`DEFAULT_CARDIO_SOURCE_APP_RANK` (device names like ``"SuperPhone"``,
+    unknown apps) never win. Returns ``None`` when no chain names a known app.
     """
-    best_name: str | None = None
-    best_rank = -1
-    for cand in candidates:
-        if not isinstance(cand, str):
+    native_name: str | None = None
+    native_rank = -1
+    bridge_name: str | None = None
+    for chain in chains:
+        if not isinstance(chain, str):
             continue
-        name = cand.strip()
-        if not name:
-            continue
-        rank = cardio_source_app_rank(name)
-        if rank == DEFAULT_CARDIO_SOURCE_APP_RANK:
-            continue
-        if rank > best_rank:
-            best_rank = rank
-            best_name = name[:200]
-    return best_name
+        tokens = [tok.strip() for tok in chain.split("|") if tok.strip()]
+        chain_bridged = any(_is_bridge_app(tok) for tok in tokens)
+        for tok in tokens:
+            if _is_bridge_app(tok):
+                if bridge_name is None:
+                    bridge_name = tok[:200]
+                continue
+            if chain_bridged:
+                continue
+            rank = cardio_source_app_rank(tok)
+            if rank == DEFAULT_CARDIO_SOURCE_APP_RANK:
+                continue
+            if rank > native_rank:
+                native_rank = rank
+                native_name = tok[:200]
+    return native_name if native_name is not None else bridge_name
