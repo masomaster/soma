@@ -53,6 +53,7 @@ make compile        # bytecode compile check for pipeline/
 make dashboard      # launch Streamlit dashboard (fixture mode; no DB needed)
 make dashboard-live # launch Streamlit dashboard against your Supabase data
 make cdk-synth      # pip install .[cdk] + CDK synth (local pip builds Lambda layer; Python 3.14 + PyPI)
+make guidelines-sync # upload local guidelines corpus to the live S3 bucket (see below)
 ```
 
 ### Dashboard (Streamlit)
@@ -80,6 +81,42 @@ SOMA_DASHBOARD_FIXTURE=0 .venv/bin/streamlit run dashboard/app.py   # live
 ```
 
 Copy [`.env.example`](.env.example) to `.env` for local secrets (gitignored). `ENV` defaults to `local`; see `pipeline.settings`. For **Phase 3 Hevy smoke** (live API, raw files on disk, optional Supabase upsert), see [`scripts/README.md`](scripts/README.md) and [docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md) § Phase 3 smoke.
+
+### Guidelines corpus (my-goals / injury-history / expert-principles)
+
+The briefing (and coaching chat) inject a small per-user markdown corpus into the
+LLM prompt: **`my-goals.md`**, **`injury-history.md`**, and **`expert-principles.md`**.
+These are **data, not code** — editing them needs **no deploy**. Files are keyed by
+user under `guidelines/{user_id}/` in both local dev and S3 (see `pipeline/guidelines.py`).
+
+**Local edits:** files live under `SOMA_GUIDELINES_LOCAL_DIR` (default `tmp/soma_guidelines/`,
+gitignored), e.g. `tmp/soma_guidelines/guidelines/<user_id>/my-goals.md`. In `ENV=local`
+the pipeline reads straight from disk, so just edit and re-run.
+
+**Push live:** the deployed briefing Lambda reads from the S3 bucket provisioned by the
+CDK stack (`GuidelinesBucketName` output). After editing, sync the corpus up:
+
+```bash
+make guidelines-sync
+```
+
+That resolves the bucket from the `SomaStagingStack` CloudFormation output and runs an
+`aws s3 sync` of the `guidelines/` subtree. It needs **valid AWS credentials** (re-auth if
+you see `Your session has expired`). Useful overrides:
+
+```bash
+make guidelines-sync SYNC_FLAGS=--dryrun          # preview what would upload
+make guidelines-sync SOMA_GUIDELINES_BUCKET=my-bkt # skip the CloudFormation lookup
+make guidelines-sync GUIDELINES_STACK=OtherStack   # different stack name
+```
+
+Equivalent raw commands (what the target runs):
+
+```bash
+BUCKET=$(aws cloudformation describe-stacks --stack-name SomaStagingStack \
+  --query "Stacks[0].Outputs[?contains(OutputKey,'GuidelinesBucketName')].OutputValue" --output text)
+aws s3 sync tmp/soma_guidelines "s3://$BUCKET" --exclude "*" --include "guidelines/*"
+```
 
 ### AWS CDK (Python)
 
