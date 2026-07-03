@@ -22,10 +22,12 @@ from typing import Any
 
 from pipeline.coaching_chat import load_chat_messages, run_coaching_turn, save_chat_messages
 from pipeline.dashboard_queries import (
+    fetch_cardio_events_window,
     fetch_features_history,
     fetch_metrics_history,
     fetch_weekly_summaries,
     load_dashboard_context_from_db,
+    summarize_cardio_by_mode,
 )
 from pipeline.db_session import apply_rls_scope
 from pipeline.goal_tools import apply_coaching_writes
@@ -37,6 +39,7 @@ from pipeline.guidelines import (
     resolve_guidelines_storage,
 )
 from pipeline.history_query import QueryAll
+from pipeline.units import km_to_miles
 
 try:
     import streamlit as st
@@ -218,10 +221,6 @@ def _fixture_context() -> dict:
             "running_km": 6.4,
             "cardio_minutes": 45,
         },
-        provider_connections=[
-            {"provider": "hevy", "status": "connected", "last_sync_at": "2026-06-19T10:00:00Z"},
-            {"provider": "apple_health", "status": "connected", "last_sync_at": "2026-06-20T05:50:00Z"},
-        ],
     )
 
 
@@ -333,6 +332,34 @@ def _fixture_weekly_summaries(as_of: date, weeks: int) -> list[dict[str, Any]]:
     return rows
 
 
+def _fixture_cardio_events(as_of: date) -> list[dict[str, Any]]:
+    """A small, deterministic rolling-7d cardio set: runs + a bike ride.
+
+    Distances are in miles (canonical for ``cardio_events``) so the per-mode
+    summary shows both running and cycling with sensible non-zero values offline.
+    """
+    return [
+        {
+            "event_date": (as_of - timedelta(days=1)).isoformat(),
+            "activity_type": "Outdoor Run",
+            "distance_miles": 3.1,
+            "duration_min": 27.0,
+        },
+        {
+            "event_date": (as_of - timedelta(days=3)).isoformat(),
+            "activity_type": "Outdoor Run",
+            "distance_miles": 4.2,
+            "duration_min": 38.0,
+        },
+        {
+            "event_date": (as_of - timedelta(days=2)).isoformat(),
+            "activity_type": "Outdoor Cycling",
+            "distance_miles": 12.4,
+            "duration_min": 48.0,
+        },
+    ]
+
+
 def _attach_trailing_avg(rows: list[dict[str, Any]], source: str, target: str, window: int = 7) -> None:
     values = [r.get(source) for r in rows]
     for i, row in enumerate(rows):
@@ -352,16 +379,30 @@ def _load_history_live(user_id: str, as_of_iso: str, days: int) -> dict[str, lis
         }
 
 
+def _with_running_miles(weekly_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Add a display-ready ``running_miles`` column to weekly rollup rows.
+
+    ``weekly_activity_summary`` stores ``running_km`` (base metric unit); the
+    dashboard charts distance in miles, so convert once here for both live and
+    fixture rows.
+    """
+    for row in weekly_rows:
+        row["running_miles"] = km_to_miles(row.get("running_km"))
+    return weekly_rows
+
+
 def _load_history(ctx: dict, mode: str, days: int) -> dict[str, list[dict[str, Any]]]:
     as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
     if mode == "fixture":
         return {
             "metrics": _fixture_metrics_history(as_of, days),
             "features": _fixture_features_history(as_of, days),
-            "weekly": _fixture_weekly_summaries(as_of, max(6, days // 7 + 1)),
+            "weekly": _with_running_miles(_fixture_weekly_summaries(as_of, max(6, days // 7 + 1))),
         }
     try:
-        return _load_history_live(ctx["user_id"], as_of.isoformat(), days)
+        history = _load_history_live(ctx["user_id"], as_of.isoformat(), days)
+        history["weekly"] = _with_running_miles(history.get("weekly", []))
+        return history
     except Exception:
         return {"metrics": [], "features": [], "weekly": []}
 
@@ -570,16 +611,6 @@ def _goal_detail(leaf: dict) -> str:
     return " · ".join(parts) if parts else "—"
 
 
-_SYNC_STATUS_EMOJI = {
-    "connected": "🟢",
-    "ok": "🟢",
-    "active": "🟢",
-    "stale": "🟡",
-    "degraded": "🟡",
-    "error": "🔴",
-    "disconnected": "🔴",
-}
-
 _SEVERITY_EMOJI = {
     "high": "🔴",
     "critical": "🔴",
@@ -627,6 +658,51 @@ def _chart(df, series: dict[str, str], *, kind: str = "line", empty: str = "No d
         st.bar_chart(data, height=260)
     else:
         st.line_chart(data, height=260)
+
+
+def _padded_chart(
+    df,
+    series: dict[str, str],
+    *,
+    pad: float,
+    empty: str = "No data in this range yet.",
+) -> None:
+    """Line chart with a non-zero, padded y-domain so variation is visible.
+
+    Streamlit's native ``st.line_chart`` always anchors the y-axis at 0, which
+    flattens tight biometric ranges (weight, resting HR, HRV…). This builds an
+    Altair chart with ``scale`` domain ``[min - pad, max + pad]`` and ``zero=False``
+    over every present series. Falls back to a tidy caption when there is no data.
+    """
+    if df is None or getattr(df, "empty", True):
+        st.caption(empty)
+        return
+    present = {c: l for c, l in series.items() if c in df.columns and df[c].notna().any()}
+    if not present:
+        st.caption(empty)
+        return
+    import altair as alt
+
+    data = df[list(present)].rename(columns=present).reset_index()
+    date_col = data.columns[0]
+    long_df = data.melt(id_vars=[date_col], var_name="series", value_name="value").dropna(
+        subset=["value"]
+    )
+    lo = float(long_df["value"].min()) - pad
+    hi = float(long_df["value"].max()) + pad
+    if lo == hi:  # single flat value — still give the line some breathing room
+        lo, hi = lo - pad, hi + pad
+    chart = (
+        alt.Chart(long_df)
+        .mark_line()
+        .encode(
+            x=alt.X(f"{date_col}:T", title=None),
+            y=alt.Y("value:Q", scale=alt.Scale(domain=[lo, hi], zero=False), title=None),
+            color=alt.Color("series:N", title=None, legend=alt.Legend(orient="top")),
+        )
+        .properties(height=260)
+    )
+    st.altair_chart(chart, use_container_width=True)
 
 
 def _latest_and_delta(df, col: str, lookback: int = 7) -> tuple[float | None, float | None]:
@@ -804,7 +880,15 @@ def _render_sidebar(
             st.caption(f"Signed in as **{st.session_state.auth_email}**")
             if st.button("Sign out", use_container_width=True):
                 _clear_refresh_cookie(cookie_manager)
-                for key in ("auth_user_id", "auth_email", "auth_token", "chat_messages"):
+                for key in (
+                    "auth_user_id",
+                    "auth_email",
+                    "auth_token",
+                    "chat_messages",
+                    "chat_sessions",
+                    "active_chat_session",
+                    "chat_session_counter",
+                ):
                     st.session_state.pop(key, None)
                 st.rerun()
         elif mode == "live":
@@ -912,33 +996,17 @@ def _render_hero(ctx: dict, mdf, fdf) -> None:
 
 
 def _render_alerts_row(ctx: dict) -> None:
-    a1, a2 = st.columns(2)
-    with a1:
-        with st.container(border=True):
-            st.markdown("**🔌 Sync health**")
-            sync_rows = ctx.get("sync_health") or []
-            if sync_rows:
-                for row in sync_rows:
-                    emoji = _SYNC_STATUS_EMOJI.get(str(row.get("status", "")).lower(), "⚪")
-                    provider = str(row.get("provider") or "—").replace("_", " ").title()
-                    last_sync = row.get("last_sync_at") or "never"
-                    st.markdown(f"{emoji} **{provider}** — {row.get('status')} · last sync {last_sync}")
-                    if row.get("last_error"):
-                        st.caption(f"⚠️ {row['last_error']}")
-            else:
-                st.caption("No providers connected yet.")
-    with a2:
-        with st.container(border=True):
-            st.markdown("**🚨 Recent anomalies**")
-            anomalies = ctx.get("recent_anomalies") or []
-            if anomalies:
-                for row in anomalies:
-                    sev = _SEVERITY_EMOJI.get(str(row.get("severity", "")).lower(), "•")
-                    st.markdown(f"{sev} **{row.get('date')}** · {row.get('metric')}")
-                    if row.get("description"):
-                        st.caption(row["description"])
-            else:
-                st.caption("No anomalies detected ✅")
+    with st.container(border=True):
+        st.markdown("**🚨 Recent anomalies**")
+        anomalies = ctx.get("recent_anomalies") or []
+        if anomalies:
+            for row in anomalies:
+                sev = _SEVERITY_EMOJI.get(str(row.get("severity", "")).lower(), "•")
+                st.markdown(f"{sev} **{row.get('date')}** · {row.get('metric')}")
+                if row.get("description"):
+                    st.caption(row["description"])
+        else:
+            st.caption("No anomalies detected ✅")
 
 
 def _tab_overview(ctx: dict, mdf, fdf) -> None:
@@ -958,12 +1026,12 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
             else:
                 st.caption("No goal snapshot yet.")
             mileage = ctx.get("mileage_check")
-            if isinstance(mileage, dict) and mileage.get("this_week_km") is not None:
-                this_wk, last_wk = mileage.get("this_week_km"), mileage.get("last_week_km")
+            if isinstance(mileage, dict) and mileage.get("this_week_miles") is not None:
+                this_wk, last_wk = mileage.get("this_week_miles"), mileage.get("last_week_miles")
                 delta = None
                 if isinstance(this_wk, (int, float)) and isinstance(last_wk, (int, float)):
-                    delta = f"{this_wk - last_wk:+.1f} km vs last week"
-                st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" km"), delta=delta)
+                    delta = f"{this_wk - last_wk:+.1f} mi vs last week"
+                st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" mi"), delta=delta)
     with right:
         with st.container(border=True):
             st.markdown("**🔥 Readiness trend**")
@@ -988,17 +1056,30 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
     with left:
         with st.container(border=True):
             st.markdown("**HRV vs 7-day average**")
-            _chart(mdf, {"hrv_rmssd": "HRV", "hrv_7d_avg": "7-day avg"})
+            _padded_chart(mdf, {"hrv_rmssd": "HRV", "hrv_7d_avg": "7-day avg"}, pad=5)
         with st.container(border=True):
             st.markdown("**Body weight**")
-            _chart(mdf, {"body_weight_lbs": "Weight (lb)"})
+            _padded_chart(mdf, {"body_weight_lbs": "Weight (lb)"}, pad=5)
     with right:
         with st.container(border=True):
             st.markdown("**Resting heart rate**")
-            _chart(mdf, {"resting_hr": "Resting HR"})
+            _padded_chart(mdf, {"resting_hr": "Resting HR"}, pad=5)
         with st.container(border=True):
             st.markdown("**Blood oxygen (SpO₂)**")
-            _chart(mdf, {"spo2_pct": "SpO₂ %"})
+            _padded_chart(mdf, {"spo2_pct": "SpO₂ %"}, pad=2)
+
+
+def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
+    """Rolling-7d running vs cycling totals (miles + minutes) for the Training tab."""
+    as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
+    if mode == "fixture":
+        return summarize_cardio_by_mode(_fixture_cardio_events(as_of))
+    try:
+        with _scoped_conn(ctx["user_id"]) as conn:
+            rows = fetch_cardio_events_window(conn, user_id=ctx["user_id"], as_of=as_of, days=7)
+        return summarize_cardio_by_mode(rows)
+    except Exception:
+        return summarize_cardio_by_mode([])
 
 
 def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
@@ -1008,6 +1089,23 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
     c[1].metric("Cardio minutes (7d)", _fmt(f.get("cardio_minutes_7d")))
     _headline_metric(c[2], "Cardio load (7d)", fdf, "training_load_cardio_minutes_7d")
     _headline_metric(c[3], "Effort index (7d)", fdf, "effort_unified_index_7d")
+
+    totals = _cardio_mode_totals(ctx, mode)
+    run_t, bike_t = totals["running"], totals["cycling"]
+    st.markdown("###### Cardio by activity · rolling 7 days")
+    mc = st.columns(2)
+    mc[0].metric(
+        "🏃 Running (7d)",
+        _fmt(run_t["miles"], suffix=" mi"),
+        delta=f"{_fmt(run_t['minutes'])} min · {int(run_t['sessions'])} sessions",
+        delta_color="off",
+    )
+    mc[1].metric(
+        "🚴 Cycling (7d)",
+        _fmt(bike_t["miles"], suffix=" mi"),
+        delta=f"{_fmt(bike_t['minutes'])} min · {int(bike_t['sessions'])} sessions",
+        delta_color="off",
+    )
 
     left, right = st.columns(2)
     with left:
@@ -1026,7 +1124,7 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
             st.markdown("**Weekly volume**")
             _chart(
                 wdf,
-                {"strength_sessions": "Strength", "running_km": "Running km", "cardio_minutes": "Cardio min"},
+                {"strength_sessions": "Strength", "running_miles": "Running mi", "cardio_minutes": "Cardio min"},
                 kind="bar",
                 empty="No weekly summaries yet.",
             )
@@ -1056,14 +1154,14 @@ def _tab_sleep(ctx: dict, mdf, fdf) -> None:
     with left:
         with st.container(border=True):
             st.markdown("**Sleep duration vs 7-day average**")
-            _chart(mdf, {"sleep_hours": "Sleep (h)", "sleep_7d_avg": "7-day avg"})
+            _padded_chart(mdf, {"sleep_hours": "Sleep (h)", "sleep_7d_avg": "7-day avg"}, pad=1)
         with st.container(border=True):
             st.markdown("**Sleep stages (deep + REM)**")
             _chart(mdf, {"sleep_deep_hrs": "Deep", "sleep_rem_hrs": "REM"}, kind="bar")
     with right:
         with st.container(border=True):
             st.markdown("**Sleep score**")
-            _chart(mdf, {"sleep_score": "Sleep score"})
+            _padded_chart(mdf, {"sleep_score": "Sleep score"}, pad=5)
         with st.container(border=True):
             st.markdown("**Sleep debt (rolling 7d)**")
             _chart(fdf, {"sleep_debt_7d": "Sleep debt (h)"}, kind="area")
@@ -1097,6 +1195,87 @@ def _render_query_details(query_results: list[dict[str, Any]]) -> None:
                 st.dataframe(result["rows"], use_container_width=True, hide_index=True)
 
 
+# Recent exchanges (user+assistant pairs) shown expanded; older ones collapse.
+_CHAT_RECENT_TURNS = 3
+
+
+def _init_chat_sessions(user_id: str, mode: str) -> None:
+    """Seed in-memory chat sessions, loading any persisted history into the first.
+
+    Sessions are an in-memory UX grouping (``coaching_chat_messages`` has no
+    session dimension), so persisted history rehydrates into "Session 1" only;
+    additional sessions live for the browser session. Writes still persist per the
+    existing single-stream behavior.
+    """
+    if "chat_sessions" in st.session_state:
+        return
+    initial: list[dict[str, str]] = []
+    if mode == "live":
+        try:
+            with _scoped_conn(user_id) as conn:
+                initial = load_chat_messages(conn, user_id=user_id)
+        except Exception:
+            initial = []
+    st.session_state.chat_sessions = {"session-1": {"title": "Session 1", "messages": initial}}
+    st.session_state.active_chat_session = "session-1"
+    st.session_state.chat_session_counter = 1
+
+
+def _new_chat_session() -> None:
+    n = int(st.session_state.get("chat_session_counter", 1)) + 1
+    st.session_state.chat_session_counter = n
+    sid = f"session-{n}"
+    st.session_state.chat_sessions[sid] = {"title": f"Session {n}", "messages": []}
+    st.session_state.active_chat_session = sid
+
+
+def _active_chat_messages() -> list[dict[str, str]]:
+    sessions = st.session_state.chat_sessions
+    return sessions[st.session_state.active_chat_session]["messages"]
+
+
+def _render_chat_session_controls() -> None:
+    sessions = st.session_state.chat_sessions
+    ids = list(sessions)
+    left, right = st.columns([4, 1], vertical_alignment="bottom")
+    with left:
+        active = st.selectbox(
+            "Chat session",
+            ids,
+            index=ids.index(st.session_state.active_chat_session),
+            format_func=lambda sid: sessions[sid]["title"],
+            key="chat_session_select",
+        )
+        st.session_state.active_chat_session = active
+    with right:
+        if st.button("➕ New session", use_container_width=True):
+            _new_chat_session()
+            st.rerun()
+
+
+def _render_chat_message(msg: dict) -> None:
+    avatar = "🧑" if msg["role"] == "user" else "🧬"
+    with st.chat_message(msg["role"], avatar=avatar):
+        st.write(msg["content"])
+
+
+def _render_chat_history(messages: list[dict[str, str]]) -> None:
+    """Render the conversation oldest→newest; collapse older turns by default."""
+    if not messages:
+        st.info("👋 Ask Soma anything about your training, recovery, or trends to get started.")
+        return
+    recent_count = _CHAT_RECENT_TURNS * 2
+    if len(messages) > recent_count:
+        older, recent = messages[:-recent_count], messages[-recent_count:]
+        with st.expander(f"Show earlier messages ({len(older)})", expanded=False):
+            for msg in older:
+                _render_chat_message(msg)
+    else:
+        recent = messages
+    for msg in recent:
+        _render_chat_message(msg)
+
+
 def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> None:
     st.markdown("#### 💬 Coaching chat")
     st.caption(
@@ -1109,17 +1288,9 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
         st.success(f"Saved: {saved_msg}")
 
     user_id = ctx["user_id"]
-    if "chat_messages" not in st.session_state:
-        if mode == "live":
-            try:
-                with _scoped_conn(user_id) as conn:
-                    st.session_state.chat_messages = load_chat_messages(
-                        conn, user_id=user_id
-                    )
-            except Exception:
-                st.session_state.chat_messages = []
-        else:
-            st.session_state.chat_messages = []
+    _init_chat_sessions(user_id, mode)
+    _render_chat_session_controls()
+    messages = _active_chat_messages()
 
     user_input = st.chat_input("Ask Soma…")
     if user_input:
@@ -1127,16 +1298,14 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
             user_id=user_id,
             user_message=user_input,
             dashboard_context=ctx,
-            messages=st.session_state.chat_messages,
+            messages=messages,
             llm=_resolve_llm(ctx),
             guidelines=guidelines,
             query_all=_history_query_all(user_id, mode),
         )
         st.session_state["_last_query_results"] = turn.get("query_results") or []
-        st.session_state.chat_messages.append({"role": "user", "content": user_input})
-        st.session_state.chat_messages.append(
-            {"role": "assistant", "content": turn["reply"]}
-        )
+        messages.append({"role": "user", "content": user_input})
+        messages.append({"role": "assistant", "content": turn["reply"]})
         pending = turn.get("pending_writes") or []
         if pending and mode == "live":
             try:
@@ -1175,14 +1344,7 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
             except Exception:
                 pass
 
-    if not st.session_state.chat_messages:
-        st.info("👋 Ask Soma anything about your training, recovery, or trends to get started.")
-
-    for msg in st.session_state.chat_messages:
-        avatar = "🧑" if msg["role"] == "user" else "🧬"
-        with st.chat_message(msg["role"], avatar=avatar):
-            st.write(msg["content"])
-
+    _render_chat_history(messages)
     _render_query_details(st.session_state.get("_last_query_results") or [])
 
 

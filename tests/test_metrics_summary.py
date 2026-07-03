@@ -44,7 +44,8 @@ def test_build_glance_metrics_orders_and_formats_available_values():
     assert values["Strength (7d)"] == "1 session · 10 hard sets"
     assert values["Cardio (7d)"] == "2 sessions · 60 min"
     assert values["Lifting tonnage (7d)"] == "3.2 short tons (6,500 lb)"
-    assert values["Run distance (this week)"] == "18.4 km"
+    # Stored km is converted to miles for display: 18.4 km ≈ 11.4 mi.
+    assert values["Run distance (this week)"] == "11.4 mi"
     assert values["Resting HR"] == "50 bpm"
     assert values["Readiness"] == "88/100"
     assert values["Red flags"] == "None"

@@ -15,6 +15,7 @@ from datetime import date
 from typing import Any
 
 from pipeline.briefing import LLMClient
+from pipeline.units import miles_to_km
 
 VALID_GOAL_TYPES = frozenset(
     {
@@ -150,13 +151,17 @@ def log_run_row(
     user_id: str,
     session_date: date,
     run_type: str,
-    distance_km: float | None = None,
+    distance_miles: float | None = None,
     duration_min: float | None = None,
     notes: str | None = None,
     source: str = "manual",
     source_id: str | None = None,
 ) -> dict[str, Any]:
-    """Build a ``running_sessions`` insert row."""
+    """Build a ``running_sessions`` insert row.
+
+    The athlete-facing interface is miles; ``running_sessions`` stores the base
+    metric unit, so the miles input is converted to ``distance_km`` here.
+    """
     if run_type not in ("long", "easy", "interval"):
         raise ValueError(f"Invalid run_type: {run_type!r}")
     sid = source_id or f"{source}:{session_date.isoformat()}:{run_type}"
@@ -167,8 +172,8 @@ def log_run_row(
         "source": source,
         "source_id": sid,
     }
-    if distance_km is not None:
-        row["distance_km"] = distance_km
+    if distance_miles is not None:
+        row["distance_km"] = miles_to_km(distance_miles)
     if duration_min is not None:
         row["duration_min"] = duration_min
     if notes is not None:
@@ -201,7 +206,7 @@ COACHING_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "properties": {
                 "session_date": {"type": "string", "format": "date"},
                 "run_type": {"type": "string", "enum": ["long", "easy", "interval"]},
-                "distance_km": {"type": "number"},
+                "distance_miles": {"type": "number"},
                 "duration_min": {"type": "number"},
                 "notes": {"type": "string"},
             },
@@ -274,7 +279,7 @@ def apply_tool_call(
             user_id=user_id,
             session_date=date.fromisoformat(sd[:10]),
             run_type=run_type,
-            distance_km=arguments.get("distance_km"),
+            distance_miles=arguments.get("distance_miles"),
             duration_min=arguments.get("duration_min"),
             notes=arguments.get("notes"),
         )

@@ -10,12 +10,15 @@ from pipeline.dashboard_queries import (
     MAX_HISTORY_DAYS,
     MAX_QUERY_ROWS,
     build_dashboard_context,
+    cardio_mode,
     fetch_dashboard_source_rows,
     fetch_features_history,
     fetch_metrics_history,
     fetch_weekly_summaries,
+    summarize_cardio_by_mode,
     validate_bounded_sql,
 )
+from pipeline.units import km_to_miles
 
 
 def test_build_dashboard_context_keys():
@@ -31,6 +34,44 @@ def test_build_dashboard_context_keys():
     assert ctx["user_id"] == "u1"
     assert ctx["briefing"]["coaching_note"] == "Hi"
     assert ctx["todays_focus"] == "Lift"
+
+
+def test_context_converts_mileage_and_weekly_to_miles():
+    ctx = build_dashboard_context(
+        user_id="u1",
+        as_of=date(2024, 6, 8),
+        latest_briefing=None,
+        latest_features=None,
+        latest_metrics=None,
+        goal_snapshot={"mileage_check": {"this_week_km": 10.0, "last_week_km": 5.0, "flag": None}},
+        weekly_summary={"week_start": date(2024, 6, 3), "running_km": 10.0, "cardio_minutes": 60},
+    )
+    assert ctx["mileage_check"]["this_week_miles"] == pytest.approx(km_to_miles(10.0))
+    assert ctx["mileage_check"]["last_week_miles"] == pytest.approx(km_to_miles(5.0))
+    assert "this_week_km" not in ctx["mileage_check"]
+    assert ctx["weekly_summary"]["running_miles"] == pytest.approx(km_to_miles(10.0))
+    assert "running_km" not in ctx["weekly_summary"]
+
+
+def test_cardio_mode_classifies_run_and_bike():
+    assert cardio_mode("Outdoor Run") == "running"
+    assert cardio_mode("Outdoor Cycling") == "cycling"
+    assert cardio_mode("Ride") == "cycling"
+    assert cardio_mode("Rowing") == "other"
+
+
+def test_summarize_cardio_by_mode_separates_running_and_cycling():
+    events = [
+        {"activity_type": "Outdoor Run", "distance_miles": 3.0, "duration_min": 27.0},
+        {"activity_type": "Outdoor Cycling", "distance_miles": 12.0, "duration_min": 45.0},
+        # Over-recorded run (1:40/mi) — distance excluded, but session/time still counted.
+        {"activity_type": "Run", "distance_miles": 3.0, "duration_min": 5.0},
+    ]
+    totals = summarize_cardio_by_mode(events)
+    assert totals["running"]["miles"] == pytest.approx(3.0)
+    assert totals["running"]["sessions"] == 2
+    assert totals["cycling"]["miles"] == pytest.approx(12.0)
+    assert totals["cycling"]["sessions"] == 1
 
 
 def test_validate_bounded_sql_rejects_insert():
@@ -64,8 +105,6 @@ def test_fetch_dashboard_source_rows_from_injected_queries():
         return None
 
     def query_all(sql: str, params: tuple) -> list[dict]:
-        if "provider_connections" in sql:
-            return [{"provider": "hevy", "status": "connected", "last_sync_at": None, "last_error": None}]
         return []
 
     ctx = fetch_dashboard_source_rows(
@@ -76,7 +115,8 @@ def test_fetch_dashboard_source_rows_from_injected_queries():
     )
     assert ctx["briefing"]["coaching_note"] == "Go easy"
     assert ctx["todays_focus"] == "Easy run"
-    assert ctx["sync_health"][0]["provider"] == "hevy"
+    # Sync-health surfacing was removed; provider status is no longer in context.
+    assert "sync_health" not in ctx
 
 
 def test_build_dashboard_context_includes_correlations():

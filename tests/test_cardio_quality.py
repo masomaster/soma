@@ -9,9 +9,11 @@ from pipeline.cardio_quality import (
     FLAG_IMPLAUSIBLE_RUN_PACE,
     assess_cardio_quality,
     has_suspect_distance,
+    is_overrecorded_distance,
 )
 from pipeline.features import compute_daily_features
 from pipeline.mileage_ramp import iso_week_start, sum_running_km
+from pipeline.units import KM_PER_MILE
 
 # The real July 2 case: 35.8 min, 0.86 mi -> ~41:28 / mi (impossible for a run).
 _BAD_RUN = {
@@ -70,8 +72,29 @@ def test_features_count_suspect_runs_and_rules_flag():
     assert dq.severity == "info"
 
 
-def test_mileage_excludes_suspect_distance_but_keeps_good_runs():
+def test_mileage_keeps_slow_pace_run_but_still_flags_it():
+    """A slow-pace run (paused timer / walk breaks) covers a real distance, so it
+    counts toward weekly mileage — the July 2 "0 mi even though a run exists" bug.
+    It is still surfaced as a data-quality note via assess_cardio_quality."""
     ws = iso_week_start(date(2026, 7, 3))
     km = sum_running_km(week_start=ws, running_sessions=[], cardio_events=[_BAD_RUN, _GOOD_RUN])
-    # Only the good 6 mi run contributes; the bad run's 0.86 mi is dropped.
-    assert km == round(6.0 * 1.60934, 2)
+    # Both runs now contribute: the good 6 mi plus the slow run's real 0.8642 mi.
+    assert km == round((6.0 + 0.8642) * KM_PER_MILE, 2)
+    assert km > 0
+    assert has_suspect_distance(assess_cardio_quality(_BAD_RUN))
+    assert not is_overrecorded_distance(_BAD_RUN)
+
+
+def test_mileage_excludes_overrecorded_fast_run():
+    """An implausibly fast pace means the distance was over-recorded (GPS glitch);
+    it is excluded so it cannot inflate mileage."""
+    ws = iso_week_start(date(2026, 7, 3))
+    fast = {
+        "event_date": "2026-07-02",
+        "activity_type": "Outdoor Run",
+        "duration_min": 5.0,
+        "distance_miles": 3.0,  # 1:40 / mi
+    }
+    assert is_overrecorded_distance(fast)
+    km = sum_running_km(week_start=ws, running_sessions=[], cardio_events=[fast, _GOOD_RUN])
+    assert km == round(6.0 * KM_PER_MILE, 2)

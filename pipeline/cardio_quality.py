@@ -42,6 +42,22 @@ def _is_run(activity_type: Any) -> bool:
     return "run" in str(activity_type or "").lower()
 
 
+def run_pace_sec_per_mile(row: Mapping[str, Any]) -> float | None:
+    """Recompute a run's pace (sec/mi) from ``duration_min`` / ``distance_miles``.
+
+    Returns ``None`` for non-runs or when distance/duration are missing or
+    non-positive. The recomputed pace is authoritative (a stored
+    ``avg_pace_sec_mi`` may itself be derived from a bad distance).
+    """
+    if not _is_run(row.get("activity_type")):
+        return None
+    distance = _num(row.get("distance_miles"))
+    duration = _num(row.get("duration_min"))
+    if distance is None or distance <= 0 or duration is None or duration <= 0:
+        return None
+    return duration * 60.0 / distance
+
+
 def assess_cardio_quality(
     row: Mapping[str, Any],
     *,
@@ -53,19 +69,38 @@ def assess_cardio_quality(
     Only runs with a positive distance and duration are checked; the pace is
     recomputed from ``duration_min`` / ``distance_miles`` (authoritative) rather
     than trusting a stored ``avg_pace_sec_mi``. A pace outside the band flags the
-    distance as suspect via :data:`FLAG_IMPLAUSIBLE_RUN_PACE`.
+    row via :data:`FLAG_IMPLAUSIBLE_RUN_PACE` so the athlete can verify it.
     """
     flags: list[str] = []
-    if _is_run(row.get("activity_type")):
-        distance = _num(row.get("distance_miles"))
-        duration = _num(row.get("duration_min"))
-        if distance is not None and distance > 0 and duration is not None and duration > 0:
-            pace_sec_mi = duration * 60.0 / distance
-            if pace_sec_mi < run_pace_min_sec_mi or pace_sec_mi > run_pace_max_sec_mi:
-                flags.append(FLAG_IMPLAUSIBLE_RUN_PACE)
+    pace_sec_mi = run_pace_sec_per_mile(row)
+    if pace_sec_mi is not None and (
+        pace_sec_mi < run_pace_min_sec_mi or pace_sec_mi > run_pace_max_sec_mi
+    ):
+        flags.append(FLAG_IMPLAUSIBLE_RUN_PACE)
     return flags
 
 
 def has_suspect_distance(quality_flags: Sequence[str] | None) -> bool:
     """True when a row's flags mark its distance/pace as untrustworthy."""
     return bool(quality_flags) and FLAG_IMPLAUSIBLE_RUN_PACE in quality_flags
+
+
+def is_overrecorded_distance(
+    row: Mapping[str, Any],
+    *,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+) -> bool:
+    """True when a run's pace is implausibly *fast* — distance over-recorded.
+
+    A pace below the floor (faster than an elite miler) means the recorded
+    distance is almost certainly inflated (e.g. GPS multiplication / a duplicated
+    track), so it must be excluded from mileage totals.
+
+    A pace *above* the ceiling (slower than a brisk walk) is deliberately **not**
+    treated as over-recorded: it reflects a real distance covered with walk
+    breaks or a paused/inflated timer, so the distance still counts toward weekly
+    mileage. It is still surfaced as a "worth verifying" data-quality note via
+    :func:`assess_cardio_quality` / :func:`has_suspect_distance`.
+    """
+    pace_sec_mi = run_pace_sec_per_mile(row)
+    return pace_sec_mi is not None and pace_sec_mi < run_pace_min_sec_mi

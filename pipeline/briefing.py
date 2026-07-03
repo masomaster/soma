@@ -22,6 +22,7 @@ from typing import Any
 from pipeline.guidelines import GuidelinesContext, format_guidelines_for_prompt
 from pipeline.metrics_summary import format_glance_section
 from pipeline.rules import Flag
+from pipeline.units import km_to_miles
 
 logger = logging.getLogger(__name__)
 
@@ -103,6 +104,22 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     return value
+
+
+def _mileage_check_for_prompt(mileage: Any) -> Any:
+    """Re-key a stored (km) ``mileage_check`` into miles so the LLM reports miles.
+
+    Non-mapping values (e.g. ``None``) pass through unchanged; ``change_pct`` is a
+    unit-independent ratio and is preserved.
+    """
+    if not isinstance(mileage, Mapping):
+        return mileage
+    return {
+        "flag": mileage.get("flag"),
+        "this_week_miles": km_to_miles(mileage.get("this_week_km")),
+        "last_week_miles": km_to_miles(mileage.get("last_week_km")),
+        "change_pct": mileage.get("change_pct"),
+    }
 
 
 # A leading heading / "Morning Check-In" line the model may emit despite the
@@ -207,12 +224,12 @@ def build_prompt(
     goal_block = ""
     if goal_snapshot:
         gs = goal_snapshot.get("goals_status") or {}
-        mc = goal_snapshot.get("mileage_check")
+        mc = _mileage_check_for_prompt(goal_snapshot.get("mileage_check"))
         focus = goal_snapshot.get("todays_focus")
         goal_block = (
             f"GOALS_STATUS (pre-computed weekly progress):\n"
             f"{json.dumps(gs, indent=2, sort_keys=True, default=str)}\n\n"
-            f"MILEAGE_CHECK:\n"
+            f"MILEAGE_CHECK (distances in miles):\n"
             f"{json.dumps(mc, indent=2, sort_keys=True, default=str)}\n\n"
             f"TODAYS_FOCUS (deterministic — narrate, do not replan):\n{focus}\n\n"
         )
@@ -247,7 +264,8 @@ def build_prompt(
         "- effort_unified_index_* is a HEURISTIC single scale (minutes + short tons × a fixed factor); "
         "do not equate it to TRIMP or medical stress.\n"
         "- effort_foster_* uses session/set RPE when logged; NULL components mean RPE was not "
-        "captured — do not invent Foster load.\n\n"
+        "captured — do not invent Foster load.\n"
+        "- All distances are in statute MILES (mi); report running distance in miles, never km.\n\n"
         "Write the morning briefing now."
     )
 

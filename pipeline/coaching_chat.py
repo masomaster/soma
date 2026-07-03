@@ -39,6 +39,8 @@ CHAT_SYSTEM = (
     f"needs at least ~2 weeks of overlapping data) — you may also call {QUERY_HISTORY_TOOL!r} "
     "against the metric_patterns table to double-check. Never claim you 'can only fetch one "
     "metric at a time'. "
+    "All distances are in statute MILES (mi) — report running and cycling distance in "
+    "miles, never km, and when logging a run pass distance_miles. "
     "For goal or run changes, respond with a JSON block on its own line: "
     '{"tool_calls": [{"name": "...", "arguments": {...}}]}. '
     "Use tools from the fixed list only. Confirm material changes briefly."
