@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -28,22 +29,28 @@ logger = logging.getLogger(__name__)
 DEFAULT_BRIEFING_MODEL = "claude-haiku-4-5-20251001"
 
 SYSTEM_GUIDELINES = (
-    "You are Soma, a concise personal health coach. You are given PRE-COMPUTED "
-    "signals (flags) and numeric features for one athlete. Narrate and prioritize "
-    "those signals into a short, actionable morning briefing. Do NOT invent data, "
-    "do NOT contradict the flags, and do NOT perform your own statistical analysis "
-    "of raw history — only explain and act on what you are given. Lead with the "
-    "most severe flag. If SPARSE_RECOVERY_DATA is present, do not describe sleep "
-    "debt, sleep quality, or HRV trends. If recovery_sleep_days_7d is 0, do not "
-    "describe weekly sleep debt or multi-day sleep trends (last night in TODAY'S "
-    "METRICS may still be cited if flags mention it). If recovery_hrv_days_7d is 0, "
-    "do not describe HRV trends. If acute_chronic_ratio is null, say load ratio was "
-    "not computed (usually little cardio in the 28-day window) — do not call it a "
-    "spike or injury risk from ACWR. If overall_readiness_score is null, say "
-    "readiness could not be scored from recovery data and focus on training load. "
-    "When training_load_* or effort_unified_index_* appear in FEATURES, treat "
-    "training_load_* as modality-split external exposure (minutes or US short tons) "
-    "and effort_unified_index_* as a heuristic combined trend—not HR TRIMP or "
+    "You are Soma, a concise personal fitness companion for a hobbyist athlete. "
+    "You are given PRE-COMPUTED signals (flags) and numeric features. Narrate and "
+    "prioritize those signals into a short morning check-in with neutral reminders "
+    "and gentle suggestions — not orders or warnings. Do NOT invent data, do NOT "
+    "contradict the flags, and do NOT perform your own statistical analysis of "
+    "raw history — only explain what you are given. Lead with the highest-priority "
+    "signal. TONE: warm, conversational, and low-pressure. Never use commanding or "
+    "alarmist phrasing (e.g. you must, critical, urgent, immediately, "
+    "non-negotiable, mandatory). Prefer soft suggestions (might consider, worth "
+    "noting, one idea for today). This is hobby training, not medical care — do "
+    "not imply catastrophe or mandatory action. If SPARSE_RECOVERY_DATA is present, "
+    "do not describe sleep debt, sleep quality, or HRV trends. If "
+    "recovery_sleep_days_7d is 0, do not describe weekly sleep debt or multi-day "
+    "sleep trends (last night in TODAY'S METRICS may still be cited if flags "
+    "mention it). If recovery_hrv_days_7d is 0, do not describe HRV trends. If "
+    "acute_chronic_ratio is null, note load ratio was not computed (usually little "
+    "cardio in the 28-day window) — do not describe it as a spike or elevated "
+    "load from ACWR. If overall_readiness_score is null, note readiness could not "
+    "be scored from recovery data and focus on training load. When training_load_* "
+    "or effort_unified_index_* appear in FEATURES, treat training_load_* as "
+    "modality-split external exposure (minutes or US short tons) and "
+    "effort_unified_index_* as a heuristic combined trend—not HR TRIMP or "
     "clinical stress. "
     "STATISTICAL_SIGNALS lists z-score outliers vs the athlete's prior daily baseline "
     "(see baseline_n). Do not contradict listed z-scores or directions; if the "
@@ -54,7 +61,11 @@ SYSTEM_GUIDELINES = (
     "PERSONAL GOALS and INJURY HISTORY blocks are athlete-provided context — respect injury constraints "
     "and do not invent injuries or goals beyond what is stated. "
     "Use plain sentences; at most light Markdown (bold, short bullets). "
-    "Keep it under 150 words, warm but direct."
+    "Do NOT write your own title, date, or greeting line — a 'Morning Check-In' "
+    "header is added for you, so begin directly with the substance. "
+    "Do NOT end with a question or a request for a reply (e.g. 'How are you "
+    "feeling?', 'Sound good?'); close with a calm, declarative sentence. "
+    "Keep it under 150 words."
 )
 
 # LLM client contract: given (system, user_prompt) return the assistant text.
@@ -88,6 +99,58 @@ def _jsonable(value: Any) -> Any:
     if isinstance(value, date):
         return value.isoformat()
     return value
+
+
+# A leading heading / "Morning Check-In" line the model may emit despite the
+# system guidelines; stripped so the canonical title is never duplicated.
+_LEADING_TITLE_RE = re.compile(r"^\s*#{0,6}\s*morning\s+check[- ]?in\b.*$", re.IGNORECASE)
+# Sentence boundary: split after ., !, or ? followed by whitespace.
+_SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def format_briefing_title(feature_date: date) -> str:
+    """Canonical check-in title, e.g. ``Morning Check-In · Thursday, July 2``."""
+    return f"Morning Check-In · {feature_date:%A, %B} {feature_date.day}"
+
+
+def _strip_trailing_question(note: str) -> str:
+    """Drop a trailing question/follow-up sentence so briefings end declaratively.
+
+    Belt-and-suspenders alongside the system guideline: the model is told not to
+    end with a question, but we also enforce it so a stray "How are you feeling?"
+    never ships. Returns the original note if stripping would empty it.
+    """
+    text = note.rstrip()
+    if not text.endswith("?"):
+        return note
+    paragraphs = re.split(r"\n\n+", text)
+    last = paragraphs[-1].rstrip()
+    sentences = _SENTENCE_BOUNDARY_RE.split(last)
+    while sentences and sentences[-1].rstrip().endswith("?"):
+        sentences.pop()
+    rebuilt = " ".join(s.strip() for s in sentences if s.strip()).rstrip()
+    if rebuilt:
+        paragraphs[-1] = rebuilt
+    else:
+        paragraphs.pop()
+    result = "\n\n".join(paragraphs).rstrip()
+    return result if result else note
+
+
+def _prepend_title(note: str, feature_date: date) -> str:
+    """Prepend the canonical ``# Morning Check-In · ...`` heading to ``note``.
+
+    Any leading heading or "Morning Check-In" line the model emitted is removed
+    first so the enforced title is never duplicated.
+    """
+    lines = note.lstrip("\n").split("\n")
+    if lines and (lines[0].lstrip().startswith("#") or _LEADING_TITLE_RE.match(lines[0])):
+        lines = lines[1:]
+        while lines and not lines[0].strip():
+            lines = lines[1:]
+    body = "\n".join(lines).strip()
+    title = f"# {format_briefing_title(feature_date)}"
+    return f"{title}\n\n{body}" if body else title
 
 
 def build_prompt(
@@ -212,6 +275,7 @@ def generate_briefing(
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
         raise ValueError("LLM returned an empty coaching note")
+    note = _prepend_title(_strip_trailing_question(note), feature_date)
     logger.info("Generated briefing for %s on %s (%d flags)", user_id, feature_date, len(flags))
     features_json = {k: _jsonable(v) for k, v in features.items() if v is not None}
     features_json["stat_signals"] = stat_block

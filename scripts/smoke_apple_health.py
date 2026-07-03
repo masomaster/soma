@@ -90,7 +90,10 @@ def cmd_db_upsert(path: Path) -> None:
     from pipeline.apple_health_cardio_dedup import filter_near_duplicate_apple_cardio
     from pipeline.apple_hevy_cardio_dedup import filter_apple_strength_cardio_when_hevy_present
     from pipeline.biometrics_upsert import upsert_biometrics
-    from pipeline.cardio_upsert import upsert_cardio_events
+    from pipeline.cardio_upsert import (
+        delete_cardio_events_by_source_id,
+        upsert_cardio_events,
+    )
 
     user_id = _require_env("SOMA_USER_ID")
     dsn = os.environ.get("SOMA_DATABASE_URL", "").strip() or os.environ.get(
@@ -123,6 +126,7 @@ def cmd_db_upsert(path: Path) -> None:
     rows_cardio_in = rows_cardio
     hevy_dropped = 0
     hub_dropped = 0
+    superseded = 0
     try:
         with conn:
             with conn.cursor() as cur:
@@ -133,8 +137,13 @@ def cmd_db_upsert(path: Path) -> None:
                         rows_for_db, hevy_dropped = filter_apple_strength_cardio_when_hevy_present(
                             cur, user_id=user_id, cardio_rows=rows_cardio_in
                         )
-                        rows_for_db, hub_dropped = filter_near_duplicate_apple_cardio(
-                            cur, user_id=user_id, cardio_rows=rows_for_db
+                        rows_for_db, hub_dropped, superseded_ids = (
+                            filter_near_duplicate_apple_cardio(
+                                cur, user_id=user_id, cardio_rows=rows_for_db
+                            )
+                        )
+                        superseded = delete_cardio_events_by_source_id(
+                            cur, user_id=user_id, source_ids=superseded_ids
                         )
                         upsert_cardio_events(cur, rows_for_db)
                 except pg_errors.UndefinedTable as exc:
@@ -161,6 +170,7 @@ def cmd_db_upsert(path: Path) -> None:
     print(f"  cardio_events rows (upserted): {len(rows_cardio_in) - hevy_dropped - hub_dropped}")
     print(f"  cardio_events dropped (Hevy same-day strength dup): {hevy_dropped}")
     print(f"  cardio_events dropped (hub near-dup): {hub_dropped}")
+    print(f"  cardio_events superseded (lower-priority stored dup deleted): {superseded}")
     print("  verify in Supabase SQL editor, e.g.:")
     print(
         "    SELECT event_date, metric, value, source FROM biometrics "

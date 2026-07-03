@@ -1,8 +1,9 @@
 """Per-concern Secrets Manager resources for Soma Lambdas.
 
-Secret names are **not** environment-scoped (``soma-db``, ``soma-briefing``, …) — one
-account-wide set shared by staging and prod stacks. Only the stack with
-``manage_secrets=True`` creates them; the other imports by name.
+Secret names are un-suffixed (``soma-db``, ``soma-briefing``, …) — one account-wide
+set. The single stack owns them via ``manage_secrets=True`` (``manage_secrets=False``
+imports by name for a future rename/second consumer). Secrets use a RETAIN deletion
+policy so a stack delete never destroys them.
 
 CloudFormation parameter ``SeedRuntimeSecrets`` (Yes/No) on the managing stack: when
 **Yes**, initial deploy may set placeholder ``SecretString`` values; after filling real

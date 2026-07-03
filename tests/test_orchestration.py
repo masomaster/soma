@@ -79,7 +79,9 @@ def test_full_pipeline_runs_steps_in_order_and_persists():
     # Sleep debt over the week (target 8h, 7 days at 5h) should flag.
     assert any(f.code == "HIGH_SLEEP_DEBT" for f in result.flags)
     assert isinstance(result.briefing, Briefing)
-    assert persisted["briefings"][0]["coaching_note"].startswith("Rest up")
+    note = persisted["briefings"][0]["coaching_note"]
+    assert note.startswith("# Morning Check-In · Saturday, June 8")
+    assert "Rest up" in note
     assert "stat_signals" in persisted["briefings"][0]["features_json"]
     assert persisted["briefings"][0]["features_json"]["stat_signals"]["anomalies"]
     assert result.delivery["channel"] == "stdout"

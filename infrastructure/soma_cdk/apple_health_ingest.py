@@ -20,6 +20,7 @@ from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
 from constructs import Construct
 
+from soma_cdk.config import DEPLOYED_ENV
 from soma_cdk.runtime_secrets import RuntimeSecrets
 
 _WEBHOOK_ASSET = os.path.join(os.path.dirname(__file__), "..", "lambda", "apple_health_webhook")
@@ -33,13 +34,14 @@ class AppleHealthIngestApi(Construct):
         scope: Construct,
         construct_id: str,
         *,
-        env_name: str,
         deps_layer: lambda_.ILayerVersion,
         runtime_secrets: RuntimeSecrets,
     ) -> None:
         super().__init__(scope, construct_id)
 
-        removal = RemovalPolicy.DESTROY if env_name == "staging" else RemovalPolicy.RETAIN
+        # Single deployed environment: retain the raw archive on stack delete so
+        # irreplaceable ingested payloads are never destroyed accidentally.
+        removal = RemovalPolicy.RETAIN
         bucket = s3.Bucket(
             self,
             "AppleHealthRawBucket",
@@ -48,13 +50,13 @@ class AppleHealthIngestApi(Construct):
             enforce_ssl=True,
             versioned=False,
             removal_policy=removal,
-            auto_delete_objects=env_name == "staging",
+            auto_delete_objects=False,
         )
 
         fn = lambda_.Function(
             self,
             "AppleHealthWebhookFn",
-            function_name=f"soma-{env_name}-apple-health-webhook",
+            function_name="soma-apple-health-webhook",
             runtime=lambda_.Runtime.PYTHON_3_14,
             architecture=lambda_.Architecture.X86_64,
             handler="handler.handler",
@@ -64,7 +66,7 @@ class AppleHealthIngestApi(Construct):
             memory_size=256,
             log_retention=logs.RetentionDays.ONE_MONTH,
             environment={
-                "ENV": env_name,
+                "ENV": DEPLOYED_ENV,
                 "RAW_BUCKET": bucket.bucket_name,
                 **runtime_secrets.env_apple_health(),
             },
@@ -76,7 +78,7 @@ class AppleHealthIngestApi(Construct):
         api = apigwv2.HttpApi(
             self,
             "AppleHealthHttpApi",
-            api_name=f"soma-{env_name}-apple-health",
+            api_name="soma-apple-health",
             description="POST Apple Health / Health Auto Export JSON",
         )
         api.add_routes(
@@ -90,7 +92,7 @@ class AppleHealthIngestApi(Construct):
         access_log_group = logs.LogGroup(
             self,
             "AppleHealthHttpApiAccessLogs",
-            log_group_name=f"/aws/apigateway/soma-{env_name}-apple-health-access",
+            log_group_name="/aws/apigateway/soma-apple-health-access",
             retention=logs.RetentionDays.ONE_MONTH,
             removal_policy=removal,
         )

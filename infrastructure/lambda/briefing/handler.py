@@ -7,8 +7,7 @@ are provided via a Lambda layer/container (see ``README.md``).
 
 Environment variables:
 
-    ENV                     local|staging|prod (set by CDK in AWS)
-    SOMA_RULES_PREFIX       /soma/{env}/  (SSM tree for per-user thresholds)
+    ENV                     local|cloud (set by CDK in AWS)
     SOMA_DB_SECRET_ARN       Postgres URI (plain string secret)
     SOMA_BRIEFING_SECRET_ARN JSON with ANTHROPIC_API_KEY, SES_SENDER
                             (set by CDK). Alternatively set DB_CONNECT_STRING,
@@ -103,7 +102,7 @@ def handler(event: dict[str, Any] | None, context: Any | None = None) -> dict[st
             # irreversible email is never sent for rows that failed to persist.
             try:
                 thresholds = load_thresholds(
-                    env=env.value, user_id=str(user_id), get_parameters=get_parameters
+                    user_id=str(user_id), get_parameters=get_parameters
                 )
                 io = DailyPipelineIO(
                     llm=llm,

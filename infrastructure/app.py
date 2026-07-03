@@ -1,5 +1,14 @@
 #!/usr/bin/env python3
-"""AWS CDK app entry — registers **SomaStagingStack** and **SomaProdStack** (stable CloudFormation stack names)."""
+"""AWS CDK app entry — registers the single **SomaStack**.
+
+The CloudFormation stack id is intentionally kept as ``SomaStagingStack``: that is
+the name of the environment currently deployed, so ``cdk deploy`` performs an
+**in-place update** rather than creating a new stack. Reusing the id preserves the
+live Apple Health HTTP API URL, the retained raw S3 bucket, and the ``soma-*``
+secrets (including the Supabase ``soma-db`` connection). To adopt a clean
+``SomaStack`` name later, deploy the new stack, re-point the Apple Health webhook
+URL, then delete the old stack (its retained bucket/secrets survive).
+"""
 
 from __future__ import annotations
 
@@ -14,8 +23,10 @@ if str(_infra_dir) not in sys.path:
 
 import aws_cdk as cdk
 
-from soma_cdk.prod_stack import SomaProdStack
-from soma_cdk.staging_stack import SomaStagingStack
+from soma_cdk.soma_stack import SomaStack
+
+# CloudFormation stack name of the live environment; kept for in-place updates.
+STACK_ID = "SomaStagingStack"
 
 
 def main() -> None:
@@ -24,9 +35,7 @@ def main() -> None:
     region = os.environ.get("CDK_DEFAULT_REGION", "us-west-2")
     env = cdk.Environment(account=account, region=region) if account else None
 
-    # Construct IDs double as default CloudFormation stack names when deploying by stack id.
-    SomaStagingStack(app, "SomaStagingStack", env=env)
-    SomaProdStack(app, "SomaProdStack", env=env)
+    SomaStack(app, STACK_ID, env=env)
 
     app.synth()
 

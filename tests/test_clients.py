@@ -106,9 +106,9 @@ def test_ses_email_sender_includes_html_when_provided():
 def test_ssm_threshold_loader_flattens_pages():
     class FakePaginator:
         def paginate(self, **kwargs):
-            assert kwargs["Path"] == "/soma/staging/u1/rules/"
-            yield {"Parameters": [{"Name": "/soma/staging/u1/rules/min_sleep_hours", "Value": "6"}]}
-            yield {"Parameters": [{"Name": "/soma/staging/u1/rules/target_sleep_hours", "Value": "8"}]}
+            assert kwargs["Path"] == "/soma/u1/rules/"
+            yield {"Parameters": [{"Name": "/soma/u1/rules/min_sleep_hours", "Value": "6"}]}
+            yield {"Parameters": [{"Name": "/soma/u1/rules/target_sleep_hours", "Value": "8"}]}
 
     class FakeSsm:
         def get_paginator(self, name):
@@ -116,8 +116,8 @@ def test_ssm_threshold_loader_flattens_pages():
             return FakePaginator()
 
     get = clients.ssm_threshold_loader(client=FakeSsm())
-    out = get("/soma/staging/u1/rules/")
+    out = get("/soma/u1/rules/")
     assert out == {
-        "/soma/staging/u1/rules/min_sleep_hours": "6",
-        "/soma/staging/u1/rules/target_sleep_hours": "8",
+        "/soma/u1/rules/min_sleep_hours": "6",
+        "/soma/u1/rules/target_sleep_hours": "8",
     }

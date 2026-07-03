@@ -1,0 +1,31 @@
+{
+  "data": {
+    "metrics": [],
+    "workouts": [
+      {
+        "id": "run-chain-uuid-0001",
+        "name": "Outdoor Run",
+        "start": "2026-07-02 10:09:07 -0700",
+        "end": "2026-07-02 10:36:01 -0700",
+        "duration": 1614,
+        "activeEnergy": [
+          { "qty": 4.4, "units": "kcal", "date": "2026-07-02 10:09:07 -0700", "source": "SuperPhone|Health Sync|Nike Run Club|Strava" },
+          { "qty": 4.5, "units": "kcal", "date": "2026-07-02 10:10:07 -0700", "source": "Bluetooth Device|Health Sync" }
+        ],
+        "heartRate": [
+          { "qty": 150, "units": "bpm", "date": "2026-07-02 10:09:30 -0700", "source": "Health Sync|Nike Run Club" }
+        ]
+      },
+      {
+        "name": "Outdoor Walk",
+        "start": "2026-06-29 16:32:37 -0700",
+        "end": "2026-06-29 16:58:00 -0700",
+        "duration": 1523,
+        "activeEnergy": [
+          { "qty": 2.1, "units": "kcal", "date": "2026-06-29 16:32:37 -0700", "source": "SuperPhone|Health Sync" },
+          { "qty": 2.0, "units": "kcal", "date": "2026-06-29 16:33:37 -0700", "source": "Health Sync" }
+        ]
+      }
+    ]
+  }
+}

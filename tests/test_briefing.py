@@ -93,7 +93,9 @@ def test_generate_briefing_uses_llm_and_maps_to_row():
         features={"overall_readiness_score": 44.0},
         llm=fake_llm,
     )
-    assert briefing.coaching_note == "Take it easy today; HRV is down."
+    assert briefing.coaching_note == (
+        "# Morning Check-In · Saturday, June 8\n\nTake it easy today; HRV is down."
+    )
     assert briefing.flags == ["LOW_HRV"]
     assert briefing.model_used == B.DEFAULT_BRIEFING_MODEL
     assert captured["system"] == B.SYSTEM_GUIDELINES
@@ -102,7 +104,7 @@ def test_generate_briefing_uses_llm_and_maps_to_row():
     assert row["user_id"] == "u1"
     assert row["briefing_date"] == RUN
     assert row["flags"] == ["LOW_HRV"]
-    assert row["coaching_note"].startswith("Take it easy")
+    assert row["coaching_note"].startswith("# Morning Check-In · Saturday, June 8")
     assert row["features_json"]["overall_readiness_score"] == 44.0
     assert row["features_json"]["stat_signals"]["anomalies"] == []
     assert row["features_json"]["stat_signals"]["trends"] == []
@@ -117,3 +119,43 @@ def test_generate_briefing_rejects_empty_note():
             features={},
             llm=lambda system, user: "   ",
         )
+
+
+def test_format_briefing_title_uses_weekday_and_month():
+    assert B.format_briefing_title(date(2026, 7, 2)) == "Morning Check-In · Thursday, July 2"
+    assert B.format_briefing_title(RUN) == "Morning Check-In · Saturday, June 8"
+
+
+def test_generate_briefing_replaces_llm_supplied_title():
+    briefing = B.generate_briefing(
+        user_id="u1",
+        feature_date=date(2026, 7, 2),
+        flags=[],
+        features={},
+        llm=lambda system, user: "# Daily Update\n\nSolid recovery overnight.",
+    )
+    # The model's own heading is dropped; the canonical title is enforced once.
+    assert briefing.coaching_note == (
+        "# Morning Check-In · Thursday, July 2\n\nSolid recovery overnight."
+    )
+    assert briefing.coaching_note.count("Morning Check-In") == 1
+
+
+def test_generate_briefing_strips_trailing_question():
+    briefing = B.generate_briefing(
+        user_id="u1",
+        feature_date=date(2026, 7, 2),
+        flags=[],
+        features={},
+        llm=lambda system, user: "Recovery looks solid. How are you feeling?",
+    )
+    assert briefing.coaching_note == (
+        "# Morning Check-In · Thursday, July 2\n\nRecovery looks solid."
+    )
+    assert "?" not in briefing.coaching_note
+
+
+def test_system_guidelines_forbid_titles_and_questions():
+    guidelines = B.SYSTEM_GUIDELINES.lower()
+    assert "not end with a question" in guidelines
+    assert "morning check-in" in guidelines

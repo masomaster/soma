@@ -1,4 +1,9 @@
-"""Runtime environment from ``ENV`` (local, staging, prod)."""
+"""Runtime environment from ``ENV`` (local, cloud).
+
+Soma is a single-user system with one deployed environment, so there is no
+staging/prod split: ``local`` prints briefings to stdout, ``cloud`` (the deployed
+Lambdas) sends email and reads per-user thresholds from SSM.
+"""
 
 from __future__ import annotations
 
@@ -13,8 +18,7 @@ class Environment(StrEnum):
     """Deployment / development environment names."""
 
     LOCAL = "local"
-    STAGING = "staging"
-    PROD = "prod"
+    CLOUD = "cloud"
 
 
 def get_environment() -> Environment:

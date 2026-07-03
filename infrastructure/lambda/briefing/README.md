@@ -32,14 +32,14 @@ The Lambda receives `SOMA_DB_SECRET_ARN` and `SOMA_BRIEFING_SECRET_ARN` and call
 
 ### Not overwriting your real values after you edit in the console
 
-Each stack has a CloudFormation parameter **`SeedRuntimeSecrets`**
-with allowed values **`Yes`** / **`No`** (default **Yes** for first deploy). Only
-**`SomaStagingStack`** creates the secrets; **`SomaProdStack`** imports the same names.
+The stack has a CloudFormation parameter **`SeedRuntimeSecrets`**
+with allowed values **`Yes`** / **`No`** (default **Yes** for first deploy). The
+single stack creates and owns the `soma-*` secrets (`RETAIN` policy).
 
 1. First `cdk deploy`: **Yes** → CloudFormation may set placeholder secret strings.
 2. Replace values in the **Secrets Manager** console.
 3. Deploy again with **No** (CLI:  
-   `cdk deploy SomaStagingStack --parameters SeedRuntimeSecrets=No`  
+   `cdk deploy --all --parameters SeedRuntimeSecrets=No`  
    or set the parameter in the CloudFormation console). With **No**, the template
    passes `AWS::NoValue` for `SecretString` on update so CloudFormation should **not**
    push new strings—your console values stay.
@@ -69,6 +69,8 @@ See `pipeline.lambda_secrets.resolve_lambda_secrets`.
 
 | Var | Purpose |
 |-----|---------|
-| `ENV` | `staging` / `prod` (set by CDK) |
-| `SOMA_RULES_PREFIX` | SSM tree for thresholds, set by CDK (`/soma/{env}/`) |
+| `ENV` | `local` / `cloud` (set by CDK to `cloud`) |
 | `BRIEFING_MODEL` | optional; default `claude-haiku-4-5-20251001` (see `pipeline/briefing.py`) |
+
+Per-user thresholds are read from SSM under `/soma/{user_id}/rules/` (see
+`pipeline.rules.rules_ssm_prefix`).

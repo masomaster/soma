@@ -60,10 +60,9 @@ def coaching_note_to_html(note: str, *, dashboard_url: str | None = None) -> str
         '<title>Soma briefing</title></head>'
         '<body style="font-family:system-ui,Segoe UI,sans-serif;'
         'max-width:36rem;line-height:1.45;color:#111">'
-        '<header style="border-bottom:1px solid #ddd;padding-bottom:0.5rem;margin-bottom:1rem">'
-        '<p style="margin:0;font-size:0.85rem;letter-spacing:0.04em;text-transform:uppercase">'
-        "Soma</p>"
-        '<p style="margin:0.25rem 0 0;font-size:0.95rem;color:#444">Daily briefing</p>'
+        '<header style="border-bottom:1px solid #ddd;padding-bottom:0.5rem;margin-bottom:0.75rem">'
+        '<p style="margin:0;font-size:0.8rem;font-weight:600;letter-spacing:0.08em;'
+        'text-transform:uppercase;color:#555">Soma</p>'
         "</header>"
     ]
     for raw in blocks:
@@ -106,7 +105,7 @@ def coaching_note_to_html(note: str, *, dashboard_url: str | None = None) -> str
 
 
 def _subject(briefing: Briefing, env: Environment) -> str:
-    prefix = "" if env is Environment.PROD else f"[{env.value.upper()}] "
+    prefix = "" if env is Environment.CLOUD else f"[{env.value.upper()}] "
     return f"{prefix}Soma briefing — {briefing.briefing_date.isoformat()}"
 
 

@@ -1,0 +1,64 @@
+name: Deploy
+
+# Single deployed environment. Auto-deploys on every push to main, but only
+# AFTER the reusable CI gate (tests + synth) passes. Auth is GitHub OIDC -> AWS
+# IAM role (no stored AWS keys). Configure a GitHub Environment named `deploy`
+# with:
+#   - AWS_DEPLOY_ROLE_ARN  (secret: IAM role the deploy environment may assume)
+#   - AWS_REGION           (variable, optional; defaults to us-west-2)
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    name: cdk deploy
+    needs: ci
+    runs-on: ubuntu-latest
+    environment: deploy
+    permissions:
+      id-token: write # required for OIDC token
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install CDK deps
+        run: pip install -e ".[cdk]"
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-west-2' }}
+      - name: Resolve account id for CDK env
+        run: echo "CDK_DEFAULT_ACCOUNT=$(aws sts get-caller-identity --query Account --output text)" >> "$GITHUB_ENV"
+      - name: Deploy stack
+        working-directory: infrastructure
+        env:
+          CDK_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
+          # Optional: set repo/environment Variable SOMA_ALARM_EMAIL to (re)create the
+          # pipeline-alarm SNS email subscription on every deploy. AWS emails a
+          # one-time confirmation the first time; without it the alarm topic has no
+          # subscribers and pipeline alarms notify no one.
+          SOMA_ALARM_EMAIL: ${{ vars.SOMA_ALARM_EMAIL }}
+        run: |
+          ctx=()
+          if [ -n "$SOMA_ALARM_EMAIL" ]; then
+            ctx+=(-c "soma:pipelineAlarmEmail=$SOMA_ALARM_EMAIL")
+          fi
+          npx --yes aws-cdk@2 deploy --all --require-approval never "${ctx[@]}"

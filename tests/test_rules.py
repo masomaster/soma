@@ -7,21 +7,21 @@ from pipeline import rules as R
 
 def test_load_thresholds_overlays_ssm_and_ignores_bad_values():
     def get_parameters(prefix: str) -> dict[str, str]:
-        assert prefix == "/soma/staging/u1/rules/"
+        assert prefix == "/soma/u1/rules/"
         return {
             f"{prefix}max_sleep_debt_7d": "3.5",  # valid override
             f"{prefix}unknown_knob": "1",  # ignored (not a known threshold)
             f"{prefix}min_readiness_score": "not-a-number",  # kept at default
         }
 
-    th = R.load_thresholds(env="staging", user_id="u1", get_parameters=get_parameters)
+    th = R.load_thresholds(user_id="u1", get_parameters=get_parameters)
     assert th["max_sleep_debt_7d"] == 3.5
     assert "unknown_knob" not in th
     assert th["min_readiness_score"] == R.DEFAULT_THRESHOLDS["min_readiness_score"]
 
 
 def test_load_thresholds_defaults_without_getter():
-    assert R.load_thresholds(env="local", user_id="u1") == R.DEFAULT_THRESHOLDS
+    assert R.load_thresholds(user_id="u1") == R.DEFAULT_THRESHOLDS
 
 
 def test_evaluate_emits_expected_flags_worst_first():

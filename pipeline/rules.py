@@ -1,7 +1,7 @@
 """Phase 6 deterministic rules engine (Option A: hand-coded + externalized thresholds).
 
 Thresholds are **never hardcoded in business logic** (see ``.cursor/rules/soma.mdc``):
-they live in SSM Parameter Store under ``/soma/{env}/{user_id}/rules/`` and are
+they live in SSM Parameter Store under ``/soma/{user_id}/rules/`` and are
 loaded via an injectable getter so this module stays pure and unit-testable.
 :func:`evaluate` turns features + daily metrics into a list of :class:`Flag`
 objects; the LLM later narrates these pre-computed conclusions.
@@ -42,14 +42,13 @@ class Flag:
     evidence: dict[str, Any] = field(default_factory=dict)
 
 
-def rules_ssm_prefix(env: str, user_id: str) -> str:
+def rules_ssm_prefix(user_id: str) -> str:
     """Canonical SSM prefix for a user's rule thresholds (trailing slash)."""
-    return f"/soma/{env}/{user_id}/rules/"
+    return f"/soma/{user_id}/rules/"
 
 
 def load_thresholds(
     *,
-    env: str,
     user_id: str,
     get_parameters: Callable[[str], Mapping[str, str]] | None = None,
 ) -> dict[str, float]:
@@ -63,7 +62,7 @@ def load_thresholds(
     thresholds = dict(DEFAULT_THRESHOLDS)
     if get_parameters is None:
         return thresholds
-    prefix = rules_ssm_prefix(env, user_id)
+    prefix = rules_ssm_prefix(user_id)
     raw = get_parameters(prefix)
     for name, value in raw.items():
         key = name.rsplit("/", 1)[-1]
