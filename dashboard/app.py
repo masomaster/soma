@@ -10,16 +10,23 @@ Run: ``streamlit run dashboard/app.py`` (requires ``pip install -e '.[dashboard]
 from __future__ import annotations
 
 import json
+import math
 import os
+import random
 import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
 from pipeline.coaching_chat import load_chat_messages, run_coaching_turn, save_chat_messages
-from pipeline.dashboard_queries import load_dashboard_context_from_db
+from pipeline.dashboard_queries import (
+    fetch_features_history,
+    fetch_metrics_history,
+    fetch_weekly_summaries,
+    load_dashboard_context_from_db,
+)
 from pipeline.db_session import apply_rls_scope
 from pipeline.goal_tools import apply_coaching_writes
 from pipeline.guidelines import (
@@ -235,6 +242,130 @@ def _load_live_context(user_id: str, as_of_iso: str) -> dict:
         )
 
 
+# ---------------------------------------------------------------------------
+# Trend history (powers the charts) — live DB reads or synthesized fixtures.
+# ---------------------------------------------------------------------------
+
+
+def _fixture_metrics_history(as_of: date, days: int) -> list[dict[str, Any]]:
+    """Deterministic, realistic daily biometrics so charts render fully offline.
+
+    Values are seeded by calendar date (stable across reruns) and gently
+    correlated (weekly sleep/HRV waves, a slow weight downtrend). The final day
+    is pinned to the ``_fixture_context`` snapshot so the headline tiles agree
+    with the end of each trend line.
+    """
+    rows: list[dict[str, Any]] = []
+    for offset in range(days):
+        day = as_of - timedelta(days=days - 1 - offset)
+        rng = random.Random(day.toordinal())
+        wave = offset / 7.0
+        sleep = round(6.9 + 0.9 * math.sin(wave) + rng.uniform(-0.6, 0.6), 1)
+        rows.append(
+            {
+                "metric_date": day.isoformat(),
+                "hrv_rmssd": round(50 + 8 * math.sin(wave / 1.3) + rng.uniform(-4, 4)),
+                "resting_hr": round(56 - 3 * math.sin(wave / 1.3) + rng.uniform(-2, 2)),
+                "spo2_pct": round(96 + rng.uniform(-1, 1.5), 1),
+                "sleep_hours": sleep,
+                "sleep_deep_hrs": round(max(0.4, sleep * 0.18 + rng.uniform(-0.2, 0.2)), 2),
+                "sleep_rem_hrs": round(max(0.6, sleep * 0.22 + rng.uniform(-0.2, 0.2)), 2),
+                "sleep_score": round(max(45, min(96, 78 + 10 * math.sin(wave) + rng.uniform(-6, 6)))),
+                "steps": int(max(1500, 8500 + 2500 * math.sin(wave) + rng.uniform(-1500, 1500))),
+                "active_cal": int(max(120, 470 + 150 * math.sin(wave) + rng.uniform(-80, 80))),
+                "body_weight_lbs": round(179.5 - offset * 0.03 + rng.uniform(-0.4, 0.4), 1),
+                "body_fat_pct": round(18.6 - offset * 0.004 + rng.uniform(-0.2, 0.2), 1),
+            }
+        )
+    _attach_trailing_avg(rows, "sleep_hours", "sleep_7d_avg")
+    _attach_trailing_avg(rows, "hrv_rmssd", "hrv_7d_avg")
+    if rows:  # pin the latest day to the snapshot in _fixture_context()
+        rows[-1].update(hrv_rmssd=48, sleep_hours=5.8, resting_hr=58)
+    return rows
+
+
+def _fixture_features_history(as_of: date, days: int) -> list[dict[str, Any]]:
+    """Deterministic daily features (readiness / ACWR / load / effort)."""
+    rows: list[dict[str, Any]] = []
+    for offset in range(days):
+        day = as_of - timedelta(days=days - 1 - offset)
+        rng = random.Random(day.toordinal() + 1000)
+        wave = offset / 7.0
+        cardio = round(max(0, 120 + 55 * math.sin(wave) + rng.uniform(-20, 20)))
+        tonnage = round(max(0.0, 2.0 + 0.8 * math.sin(wave / 1.5) + rng.uniform(-0.3, 0.3)), 1)
+        rows.append(
+            {
+                "feature_date": day.isoformat(),
+                "overall_readiness_score": round(
+                    max(35, min(92, 65 + 12 * math.sin(wave / 1.4) + rng.uniform(-6, 6)))
+                ),
+                "acute_chronic_ratio": round(
+                    max(0.6, min(1.6, 1.0 + 0.25 * math.sin(wave / 2.0) + rng.uniform(-0.07, 0.07))), 2
+                ),
+                "cardio_minutes_7d": cardio,
+                "training_load_cardio_minutes_7d": cardio,
+                "training_load_cardio_minutes_28d": round(cardio * 3.6),
+                "strength_tonnage_7d": tonnage,
+                "strength_sessions_7d": int(max(0, round(2 + math.sin(wave / 1.5)))),
+                "effort_unified_index_7d": round(max(0.0, cardio * 0.08 + tonnage * 3 + rng.uniform(-1, 1)), 1),
+                "sleep_debt_7d": round(max(0.0, 4 - 2 * math.sin(wave) + rng.uniform(-1, 1)), 1),
+            }
+        )
+    if rows:
+        rows[-1]["overall_readiness_score"] = 62
+    return rows
+
+
+def _fixture_weekly_summaries(as_of: date, weeks: int) -> list[dict[str, Any]]:
+    monday = as_of - timedelta(days=as_of.weekday())
+    rows: list[dict[str, Any]] = []
+    for back in range(weeks):
+        week_start = monday - timedelta(weeks=weeks - 1 - back)
+        rng = random.Random(week_start.toordinal())
+        rows.append(
+            {
+                "week_start": week_start.isoformat(),
+                "strength_sessions": rng.randint(1, 4),
+                "running_km": round(rng.uniform(5, 18), 1),
+                "cardio_minutes": round(rng.uniform(60, 220)),
+            }
+        )
+    return rows
+
+
+def _attach_trailing_avg(rows: list[dict[str, Any]], source: str, target: str, window: int = 7) -> None:
+    values = [r.get(source) for r in rows]
+    for i, row in enumerate(rows):
+        chunk = [v for v in values[max(0, i - window + 1) : i + 1] if isinstance(v, (int, float))]
+        row[target] = round(sum(chunk) / len(chunk), 1) if chunk else None
+
+
+@st.cache_data(ttl=60)
+def _load_history_live(user_id: str, as_of_iso: str, days: int) -> dict[str, list[dict[str, Any]]]:
+    as_of = date.fromisoformat(as_of_iso)
+    weeks = max(6, days // 7 + 1)
+    with _scoped_conn(user_id) as conn:
+        return {
+            "metrics": fetch_metrics_history(conn, user_id=user_id, as_of=as_of, days=days),
+            "features": fetch_features_history(conn, user_id=user_id, as_of=as_of, days=days),
+            "weekly": fetch_weekly_summaries(conn, user_id=user_id, as_of=as_of, weeks=weeks),
+        }
+
+
+def _load_history(ctx: dict, mode: str, days: int) -> dict[str, list[dict[str, Any]]]:
+    as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
+    if mode == "fixture":
+        return {
+            "metrics": _fixture_metrics_history(as_of, days),
+            "features": _fixture_features_history(as_of, days),
+            "weekly": _fixture_weekly_summaries(as_of, max(6, days // 7 + 1)),
+        }
+    try:
+        return _load_history_live(ctx["user_id"], as_of.isoformat(), days)
+    except Exception:
+        return {"metrics": [], "features": [], "weekly": []}
+
+
 @st.cache_data(ttl=300)
 def _load_guidelines_cached(user_id: str, fixture: bool) -> GuidelinesContext | None:
     if fixture:
@@ -370,30 +501,6 @@ def _goal_detail(leaf: dict) -> str:
     return " · ".join(parts) if parts else "—"
 
 
-def _render_goal_row(name: str, leaf: dict) -> None:
-    label = name.replace("_", " ").title()
-    st.markdown(f"**{label}** &nbsp;·&nbsp; {_goal_detail(leaf)}")
-
-
-def _render_goals_status(goals_status: dict) -> None:
-    """Human-readable goal rendering (replaces the raw ``st.json`` tree)."""
-    for name, value in goals_status.items():
-        if _is_leaf_goal(value):
-            _render_goal_row(name, value)
-        elif isinstance(value, dict):
-            st.markdown(f"**{name.replace('_', ' ').title()}**")
-            for sub_name, sub in value.items():
-                if isinstance(sub, dict):
-                    st.markdown(
-                        f"&nbsp;&nbsp;• {sub_name.replace('_', ' ').title()} "
-                        f"&nbsp;·&nbsp; {_goal_detail(sub)}"
-                    )
-                else:
-                    st.markdown(f"&nbsp;&nbsp;• {sub_name.replace('_', ' ').title()}: {sub}")
-        else:
-            st.markdown(f"**{name.replace('_', ' ').title()}**: {value}")
-
-
 _SYNC_STATUS_EMOJI = {
     "connected": "🟢",
     "ok": "🟢",
@@ -412,6 +519,122 @@ _SEVERITY_EMOJI = {
     "low": "🔵",
     "info": "🔵",
 }
+
+
+# ---------------------------------------------------------------------------
+# Chart helpers (pandas ships with Streamlit; used only for visualization)
+# ---------------------------------------------------------------------------
+
+
+def _history_df(rows: list[dict[str, Any]], date_key: str):
+    """Rows -> a numeric, date-indexed DataFrame ready for st.*_chart."""
+    import pandas as pd
+
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    if date_key not in df.columns:
+        return pd.DataFrame()
+    df[date_key] = pd.to_datetime(df[date_key], errors="coerce")
+    df = df.dropna(subset=[date_key]).sort_values(date_key).set_index(date_key)
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    return df
+
+
+def _chart(df, series: dict[str, str], *, kind: str = "line", empty: str = "No data in this range yet.") -> None:
+    """Render a chart for the present, non-empty columns, or a tidy caption."""
+    if df is None or getattr(df, "empty", True):
+        st.caption(empty)
+        return
+    present = {col: label for col, label in series.items() if col in df.columns and df[col].notna().any()}
+    if not present:
+        st.caption(empty)
+        return
+    data = df[list(present)].rename(columns=present)
+    if kind == "area":
+        st.area_chart(data, height=260)
+    elif kind == "bar":
+        st.bar_chart(data, height=260)
+    else:
+        st.line_chart(data, height=260)
+
+
+def _latest_and_delta(df, col: str, lookback: int = 7) -> tuple[float | None, float | None]:
+    """Most recent value of ``col`` and its change vs ~``lookback`` points prior."""
+    if df is None or getattr(df, "empty", True) or col not in df.columns:
+        return (None, None)
+    series = df[col].dropna()
+    if series.empty:
+        return (None, None)
+    latest = float(series.iloc[-1])
+    if len(series) == 1:
+        return (latest, None)
+    prior = float(series.iloc[-min(lookback + 1, len(series))])
+    return (latest, latest - prior)
+
+
+def _headline_metric(
+    column,
+    label: str,
+    df,
+    col: str,
+    *,
+    suffix: str = "",
+    lookback: int = 7,
+    higher_is_better: bool = True,
+    fallback: Any = None,
+) -> None:
+    """A metric tile fed from trend history, with a delta vs a week ago."""
+    latest, delta = _latest_and_delta(df, col, lookback=lookback)
+    value = latest if latest is not None else fallback
+    delta_str = None
+    if delta is not None and abs(delta) >= 0.05:
+        delta_str = f"{delta:+.1f}{suffix}"
+    color = "normal" if higher_is_better else "inverse"
+    column.metric(label, _fmt(value, suffix=suffix), delta=delta_str, delta_color=color)
+
+
+def _parse_target_number(target: Any) -> int | None:
+    """Pull the first integer out of a target label like ``"3-4x"`` -> 3."""
+    if target is None:
+        return None
+    import re
+
+    found = re.findall(r"\d+", str(target))
+    return int(found[0]) if found else None
+
+
+def _goal_progress_row(name: str, leaf: dict) -> None:
+    label = name.replace("_", " ").title()
+    completed = leaf.get("completed")
+    target_n = _parse_target_number(leaf.get("target"))
+    _, status_label = _goal_status_meta(leaf.get("status"))
+    if isinstance(completed, (int, float)) and target_n:
+        fraction = max(0.0, min(1.0, completed / target_n))
+        suffix = f" · {status_label}" if status_label else ""
+        st.progress(fraction, text=f"{label}: {completed} / {leaf.get('target')}{suffix}")
+    elif leaf.get("done") is not None:
+        emoji = "✅" if leaf.get("done") else "⬜"
+        st.markdown(f"{emoji} **{label}** — {status_label or ('Done' if leaf.get('done') else 'Not yet')}")
+    else:
+        st.markdown(f"**{label}** · {_goal_detail(leaf)}")
+
+
+def _render_goal_progress(goals_status: dict) -> None:
+    """Goal snapshot as progress bars (Overview), degrading to rows/badges."""
+    for name, value in goals_status.items():
+        if _is_leaf_goal(value):
+            _goal_progress_row(name, value)
+        elif isinstance(value, dict):
+            st.markdown(f"**{name.replace('_', ' ').title()}**")
+            for sub_name, sub in value.items():
+                if isinstance(sub, dict):
+                    _goal_progress_row(sub_name, sub)
+                else:
+                    st.markdown(f"&nbsp;&nbsp;• {sub_name.replace('_', ' ').title()}: {sub}")
+        else:
+            st.markdown(f"**{name.replace('_', ' ').title()}**: {value}")
 
 
 def _render_auth_gate() -> bool:
@@ -492,7 +715,11 @@ def _render_auth_gate() -> bool:
     st.stop()
 
 
-def _render_sidebar(mode: str, ctx: dict, guidelines: GuidelinesContext | None) -> None:
+_RANGE_OPTIONS: dict[str, int] = {"14d": 14, "30d": 30, "90d": 90, "6mo": 180}
+
+
+def _render_sidebar(mode: str, ctx: dict, guidelines: GuidelinesContext | None) -> int:
+    """Render the sidebar and return the selected chart window (in days)."""
     with st.sidebar:
         st.markdown("## 🧬 Soma")
         st.caption("Personal Health OS")
@@ -511,7 +738,19 @@ def _render_sidebar(mode: str, ctx: dict, guidelines: GuidelinesContext | None) 
             st.caption(f"User: `{uid[:8]}…`")
         if mode == "live" and st.button("↻ Refresh data", use_container_width=True):
             _load_live_context.clear()
+            _load_history_live.clear()
             st.rerun()
+
+        st.divider()
+        st.markdown("**📈 Chart range**")
+        choice = st.segmented_control(
+            "Chart range",
+            list(_RANGE_OPTIONS),
+            default="30d",
+            key="chart_range",
+            label_visibility="collapsed",
+        )
+        days = _RANGE_OPTIONS.get(choice or "30d", 30)
 
         if guidelines and guidelines.has_content():
             with st.expander("Personal context"):
@@ -528,6 +767,7 @@ def _render_sidebar(mode: str, ctx: dict, guidelines: GuidelinesContext | None) 
             key="dev_mode",
             help="Show raw JSON context and tool-call payloads for debugging.",
         )
+    return days
 
 
 def _render_top_header(ctx: dict, mode: str) -> None:
@@ -547,114 +787,57 @@ def _render_top_header(ctx: dict, mode: str) -> None:
     st.divider()
 
 
-def _page_dashboard(ctx: dict, mode: str) -> None:
-    from pipeline.dashboard_queries import fetch_cardio_breakdown_7d
+def _active_alerts(ctx: dict) -> list[str]:
+    """Merge briefing flags + recent anomalies into short human-readable chips."""
+    chips: list[str] = []
+    for flag in (ctx.get("briefing") or {}).get("flags") or []:
+        chips.append(str(flag).replace("_", " ").title())
+    for row in ctx.get("recent_anomalies") or []:
+        sev = _SEVERITY_EMOJI.get(str(row.get("severity", "")).lower(), "•")
+        chips.append(f"{sev} {row.get('metric')}")
+    return chips
 
-    as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
 
-    # --- Today: focus + latest briefing ---
-    st.markdown("#### Today")
-    col1, col2 = st.columns(2)
-    with col1:
+def _render_hero(ctx: dict, mdf, fdf) -> None:
+    """Top-of-page priority strip: readiness, focus, alerts, trend deltas."""
+    features = ctx.get("features") or {}
+    readiness = features.get("overall_readiness_score")
+    r_latest, _ = _latest_and_delta(fdf, "overall_readiness_score")
+    readiness = r_latest if r_latest is not None else readiness
+    emoji, label = _readiness_meta(readiness)
+
+    left, right = st.columns([1, 2], vertical_alignment="center")
+    with left:
+        with st.container(border=True):
+            st.markdown("**Readiness**")
+            st.markdown(f"<h1 style='margin:0'>{emoji} {_fmt(readiness)}</h1>", unsafe_allow_html=True)
+            if label:
+                st.caption(f"{label} · scored /100")
+            if isinstance(readiness, (int, float)):
+                st.progress(max(0.0, min(1.0, readiness / 100)))
+    with right:
         with st.container(border=True):
             st.markdown("**🎯 Today's focus**")
             st.info(ctx.get("todays_focus") or "No focus computed yet.")
-    with col2:
-        with st.container(border=True):
-            st.markdown("**📝 Latest briefing**")
-            briefing = ctx.get("briefing") or {}
-            note = briefing.get("coaching_note")
-            st.write(note if note else "_No briefing available yet._")
-            if briefing.get("flags"):
-                st.caption("Flags: " + " ".join(f"`{flag}`" for flag in briefing["flags"]))
-
-    # --- Recovery / biometrics ---
-    metrics = ctx.get("today_metrics") or {}
-    features = ctx.get("features") or {}
-    if metrics or features:
-        st.markdown("#### Recovery")
-        r1, r2, r3, r4 = st.columns(4)
-        r1.metric("HRV (rMSSD)", _fmt(metrics.get("hrv_rmssd"), suffix=" ms"))
-        r2.metric("Sleep", _fmt(metrics.get("sleep_hours"), suffix=" h"))
-        r3.metric("Resting HR", _fmt(metrics.get("resting_hr"), suffix=" bpm"))
-        readiness = features.get("overall_readiness_score")
-        emoji, label = _readiness_meta(readiness)
-        r4.metric(
-            "Readiness",
-            _fmt(readiness),
-            delta=f"{emoji} {label}" if label else None,
-            delta_color="off",
-        )
-
-    # --- Training (rolling 7d) ---
-    if features:
-        st.markdown("#### Training · rolling 7d")
-        t1, t2, t3, t4 = st.columns(4)
-        t1.metric("Strength sessions", _fmt(features.get("strength_sessions_7d")))
-        t2.metric("Cardio minutes", _fmt(features.get("cardio_minutes_7d")))
-        load_7d = features.get("training_load_cardio_minutes_7d")
-        load_28d = features.get("training_load_cardio_minutes_28d")
-        load_delta = None
-        if isinstance(load_7d, (int, float)) and isinstance(load_28d, (int, float)) and load_28d:
-            load_delta = f"{load_7d - load_28d / 4:+.0f} vs 4-wk avg"
-        t3.metric("Cardio load", _fmt(load_7d), delta=load_delta)
-        t4.metric("Effort index", _fmt(features.get("effort_unified_index_7d")))
-
-        weekly = ctx.get("weekly_summary")
-        if weekly:
-            tonnage = weekly.get("strength_short_tons")
-            tonnage_part = f" · {tonnage} short tons" if tonnage is not None else ""
-            st.caption(
-                f"📆 Calendar week (Mon {weekly.get('week_start')}): "
-                f"{weekly.get('strength_sessions')} strength · "
-                f"{weekly.get('running_km')} km · "
-                f"{weekly.get('cardio_minutes')} cardio min{tonnage_part}"
-            )
-
-    if mode == "live":
-        with _scoped_conn(ctx["user_id"]) as conn:
-            breakdown = fetch_cardio_breakdown_7d(conn, user_id=ctx["user_id"], as_of=as_of)
-        with st.expander("Cardio breakdown (rolling 7d)"):
-            if breakdown:
-                st.dataframe(breakdown, use_container_width=True, hide_index=True)
+            chips = _active_alerts(ctx)
+            if chips:
+                st.markdown("🚨 " + " &nbsp; ".join(f"`{c}`" for c in chips))
             else:
-                st.caption("No cardio_events in the rolling 7-day window.")
+                st.caption("No active alerts ✅")
 
-    # --- Goals + weekly mileage ---
-    goals = ctx.get("goals_status")
-    mileage = ctx.get("mileage_check")
-    has_mileage = isinstance(mileage, dict) and mileage.get("this_week_km") is not None
-    if goals or has_mileage:
-        st.markdown("#### Goals")
-        gcol, mcol = st.columns([2, 1])
-        with gcol:
-            with st.container(border=True):
-                if goals:
-                    _render_goals_status(goals)
-                else:
-                    st.caption("No goal snapshot yet.")
-        with mcol:
-            with st.container(border=True):
-                st.markdown("**🏃 Weekly mileage**")
-                if has_mileage:
-                    this_wk = mileage.get("this_week_km")
-                    last_wk = mileage.get("last_week_km")
-                    delta = None
-                    if isinstance(this_wk, (int, float)) and isinstance(last_wk, (int, float)):
-                        delta = f"{this_wk - last_wk:+.1f} km vs last week"
-                    st.metric(
-                        "This week",
-                        _fmt(this_wk, suffix=" km"),
-                        delta=delta,
-                        label_visibility="collapsed",
-                    )
-                    if mileage.get("flag"):
-                        st.caption(f"⚠️ {mileage['flag']}")
-                else:
-                    st.caption("—")
+    st.markdown("###### Trends at a glance · vs ~1 week ago")
+    cols = st.columns(5)
+    _headline_metric(cols[0], "HRV", mdf, "hrv_rmssd", suffix=" ms",
+                     fallback=(ctx.get("today_metrics") or {}).get("hrv_rmssd"))
+    _headline_metric(cols[1], "Sleep", mdf, "sleep_hours", suffix=" h",
+                     fallback=(ctx.get("today_metrics") or {}).get("sleep_hours"))
+    _headline_metric(cols[2], "Resting HR", mdf, "resting_hr", suffix=" bpm",
+                     higher_is_better=False, fallback=(ctx.get("today_metrics") or {}).get("resting_hr"))
+    _headline_metric(cols[3], "Weight", mdf, "body_weight_lbs", suffix=" lb", higher_is_better=False)
+    _headline_metric(cols[4], "Readiness", fdf, "overall_readiness_score", fallback=readiness)
 
-    # --- Alerts & sync ---
-    st.markdown("#### Alerts & sync")
+
+def _render_alerts_row(ctx: dict) -> None:
     a1, a2 = st.columns(2)
     with a1:
         with st.container(border=True):
@@ -682,6 +865,134 @@ def _page_dashboard(ctx: dict, mode: str) -> None:
                         st.caption(row["description"])
             else:
                 st.caption("No anomalies detected ✅")
+
+
+def _tab_overview(ctx: dict, mdf, fdf) -> None:
+    left, right = st.columns([2, 3])
+    with left:
+        with st.container(border=True):
+            st.markdown("**📝 Latest briefing**")
+            briefing = ctx.get("briefing") or {}
+            st.write(briefing.get("coaching_note") or "_No briefing available yet._")
+            if briefing.get("flags"):
+                st.caption("Flags: " + " ".join(f"`{f}`" for f in briefing["flags"]))
+        with st.container(border=True):
+            st.markdown("**🎯 Goal progress**")
+            goals = ctx.get("goals_status")
+            if goals:
+                _render_goal_progress(goals)
+            else:
+                st.caption("No goal snapshot yet.")
+            mileage = ctx.get("mileage_check")
+            if isinstance(mileage, dict) and mileage.get("this_week_km") is not None:
+                this_wk, last_wk = mileage.get("this_week_km"), mileage.get("last_week_km")
+                delta = None
+                if isinstance(this_wk, (int, float)) and isinstance(last_wk, (int, float)):
+                    delta = f"{this_wk - last_wk:+.1f} km vs last week"
+                st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" km"), delta=delta)
+    with right:
+        with st.container(border=True):
+            st.markdown("**🔥 Readiness trend**")
+            _chart(fdf, {"overall_readiness_score": "Readiness"})
+        with st.container(border=True):
+            st.markdown("**🏃 Cardio load (rolling 7d)**")
+            _chart(fdf, {"training_load_cardio_minutes_7d": "Cardio load 7d"}, kind="area")
+    st.divider()
+    _render_alerts_row(ctx)
+
+
+def _tab_recovery(ctx: dict, mdf, fdf) -> None:
+    m = ctx.get("today_metrics") or {}
+    c = st.columns(4)
+    _headline_metric(c[0], "HRV (rMSSD)", mdf, "hrv_rmssd", suffix=" ms", fallback=m.get("hrv_rmssd"))
+    _headline_metric(c[1], "Resting HR", mdf, "resting_hr", suffix=" bpm", higher_is_better=False,
+                     fallback=m.get("resting_hr"))
+    _headline_metric(c[2], "Weight", mdf, "body_weight_lbs", suffix=" lb", higher_is_better=False)
+    _headline_metric(c[3], "Body fat", mdf, "body_fat_pct", suffix=" %", higher_is_better=False)
+
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown("**HRV vs 7-day average**")
+            _chart(mdf, {"hrv_rmssd": "HRV", "hrv_7d_avg": "7-day avg"})
+        with st.container(border=True):
+            st.markdown("**Body weight**")
+            _chart(mdf, {"body_weight_lbs": "Weight (lb)"})
+    with right:
+        with st.container(border=True):
+            st.markdown("**Resting heart rate**")
+            _chart(mdf, {"resting_hr": "Resting HR"})
+        with st.container(border=True):
+            st.markdown("**Blood oxygen (SpO₂)**")
+            _chart(mdf, {"spo2_pct": "SpO₂ %"})
+
+
+def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
+    f = ctx.get("features") or {}
+    c = st.columns(4)
+    c[0].metric("Strength sessions (7d)", _fmt(f.get("strength_sessions_7d")))
+    c[1].metric("Cardio minutes (7d)", _fmt(f.get("cardio_minutes_7d")))
+    _headline_metric(c[2], "Cardio load (7d)", fdf, "training_load_cardio_minutes_7d")
+    _headline_metric(c[3], "Effort index (7d)", fdf, "effort_unified_index_7d")
+
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown("**Cardio minutes (rolling 7d)**")
+            _chart(fdf, {"cardio_minutes_7d": "Cardio min 7d"}, kind="area")
+        with st.container(border=True):
+            st.markdown("**Strength tonnage (short tons, 7d)**")
+            _chart(fdf, {"strength_tonnage_7d": "Tonnage 7d"}, kind="area")
+    with right:
+        with st.container(border=True):
+            st.markdown("**Acute:chronic workload ratio**")
+            _chart(fdf, {"acute_chronic_ratio": "ACWR"})
+            st.caption("Sweet spot ≈ 0.8–1.3; spikes above ~1.5 raise injury risk.")
+        with st.container(border=True):
+            st.markdown("**Weekly volume**")
+            _chart(
+                wdf,
+                {"strength_sessions": "Strength", "running_km": "Running km", "cardio_minutes": "Cardio min"},
+                kind="bar",
+                empty="No weekly summaries yet.",
+            )
+
+    if mode == "live":
+        from pipeline.dashboard_queries import fetch_cardio_breakdown_7d
+
+        as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
+        with _scoped_conn(ctx["user_id"]) as conn:
+            breakdown = fetch_cardio_breakdown_7d(conn, user_id=ctx["user_id"], as_of=as_of)
+        with st.expander("Cardio breakdown by source (rolling 7d)"):
+            if breakdown:
+                st.dataframe(breakdown, use_container_width=True, hide_index=True)
+            else:
+                st.caption("No cardio_events in the rolling 7-day window.")
+
+
+def _tab_sleep(ctx: dict, mdf, fdf) -> None:
+    m = ctx.get("today_metrics") or {}
+    c = st.columns(4)
+    _headline_metric(c[0], "Last night", mdf, "sleep_hours", suffix=" h", fallback=m.get("sleep_hours"))
+    _headline_metric(c[1], "7-day avg", mdf, "sleep_7d_avg", suffix=" h")
+    _headline_metric(c[2], "Sleep score", mdf, "sleep_score")
+    _headline_metric(c[3], "Sleep debt (7d)", fdf, "sleep_debt_7d", suffix=" h", higher_is_better=False)
+
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown("**Sleep duration vs 7-day average**")
+            _chart(mdf, {"sleep_hours": "Sleep (h)", "sleep_7d_avg": "7-day avg"})
+        with st.container(border=True):
+            st.markdown("**Sleep stages (deep + REM)**")
+            _chart(mdf, {"sleep_deep_hrs": "Deep", "sleep_rem_hrs": "REM"}, kind="bar")
+    with right:
+        with st.container(border=True):
+            st.markdown("**Sleep score**")
+            _chart(mdf, {"sleep_score": "Sleep score"})
+        with st.container(border=True):
+            st.markdown("**Sleep debt (rolling 7d)**")
+            _chart(fdf, {"sleep_debt_7d": "Sleep debt (h)"}, kind="area")
 
 
 def _history_query_all(user_id: str, mode: str) -> QueryAll:
@@ -824,19 +1135,29 @@ def main() -> None:
             st.stop()
 
     guidelines = _load_guidelines(ctx["user_id"])
-    _render_sidebar(mode, ctx, guidelines)
+    days = _render_sidebar(mode, ctx, guidelines)
     _render_top_header(ctx, mode)
 
-    page = st.segmented_control(
-        "Navigate",
-        ["📊 Dashboard", "💬 Coaching chat"],
-        default="📊 Dashboard",
-        label_visibility="collapsed",
+    history = _load_history(ctx, mode, days)
+    mdf = _history_df(history["metrics"], "metric_date")
+    fdf = _history_df(history["features"], "feature_date")
+    wdf = _history_df(history["weekly"], "week_start")
+
+    _render_hero(ctx, mdf, fdf)
+
+    overview, recovery, training, sleep, coaching = st.tabs(
+        ["📊 Overview", "❤️ Recovery", "🏋️ Training", "😴 Sleep", "💬 Coaching"]
     )
-    if page == "💬 Coaching chat":
+    with overview:
+        _tab_overview(ctx, mdf, fdf)
+    with recovery:
+        _tab_recovery(ctx, mdf, fdf)
+    with training:
+        _tab_training(ctx, fdf, wdf, mode)
+    with sleep:
+        _tab_sleep(ctx, mdf, fdf)
+    with coaching:
         _page_chat(ctx, mode, guidelines)
-    else:
-        _page_dashboard(ctx, mode)
 
     if _debug_enabled():
         st.divider()

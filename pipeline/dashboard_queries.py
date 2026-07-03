@@ -44,6 +44,10 @@ ALLOWED_QUERY_TABLES = frozenset(
 # Maximum rows a bounded NL query may return (enforced by validate_bounded_sql).
 MAX_QUERY_ROWS = 500
 
+# Upper bound on how far back the dashboard trend charts may look (defense in
+# depth alongside the LIMIT so a caller cannot request an unbounded scan).
+MAX_HISTORY_DAYS = 370
+
 
 def _coerce_json_mapping(value: Any) -> dict[str, Any]:
     """Normalize JSONB values that may arrive as dict or serialized string."""
@@ -298,6 +302,151 @@ def fetch_cardio_breakdown_7d(
             (user_id, window_start, effective),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def _clamp_days(days: int) -> int:
+    """Clamp a requested trend window to ``[1, MAX_HISTORY_DAYS]``."""
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        return MAX_HISTORY_DAYS
+    return max(1, min(value, MAX_HISTORY_DAYS))
+
+
+# Column projections for the trend charts. Kept as tuples so the SELECT list is
+# an explicit allow-list (no SELECT *), mirroring the other bounded reads above.
+_METRICS_HISTORY_COLUMNS = (
+    "metric_date",
+    "hrv_rmssd",
+    "resting_hr",
+    "spo2_pct",
+    "sleep_hours",
+    "sleep_deep_hrs",
+    "sleep_rem_hrs",
+    "sleep_score",
+    "steps",
+    "active_cal",
+    "body_weight_lbs",
+    "body_fat_pct",
+    "hrv_7d_avg",
+    "sleep_7d_avg",
+)
+
+_FEATURES_HISTORY_COLUMNS = (
+    "feature_date",
+    "overall_readiness_score",
+    "acute_chronic_ratio",
+    "cardio_minutes_7d",
+    "training_load_cardio_minutes_7d",
+    "training_load_cardio_minutes_28d",
+    "strength_tonnage_7d",
+    "strength_sessions_7d",
+    "effort_unified_index_7d",
+    "sleep_debt_7d",
+)
+
+_WEEKLY_HISTORY_COLUMNS = (
+    "week_start",
+    "strength_sessions",
+    "running_km",
+    "cardio_minutes",
+)
+
+
+def _fetch_history(
+    conn: Any,
+    *,
+    table: str,
+    date_column: str,
+    columns: Sequence[str],
+    user_id: str,
+    window_start: date,
+    window_end: date,
+) -> list[dict[str, Any]]:
+    """Run one bounded, user-scoped, ascending time-series read.
+
+    All charts flow through here so the safety properties are uniform: an
+    explicit column allow-list (no ``SELECT *``), a parameterized ``user_id``
+    predicate (defense in depth in front of RLS, which the caller must have
+    bound via :func:`pipeline.db_session.apply_rls_scope`), a bounded date
+    window, and a hard ``LIMIT``. ``table`` / ``date_column`` / ``columns`` are
+    module-internal literals only — never caller-controlled — so the f-string
+    below interpolates trusted identifiers, not user input.
+    """
+    from psycopg2.extras import RealDictCursor
+
+    projection = ", ".join(columns)
+    sql = (
+        f"SELECT {projection} FROM {table} "
+        f"WHERE user_id = %s AND {date_column} BETWEEN %s AND %s "
+        f"ORDER BY {date_column} ASC LIMIT {MAX_QUERY_ROWS}"
+    )
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(sql, (user_id, window_start, window_end))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def fetch_metrics_history(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+    days: int = 90,
+) -> list[dict[str, Any]]:
+    """Daily biometric time series (sleep / HRV / resting HR / weight / steps)."""
+    effective = as_of or _utc_today()
+    window = _clamp_days(days)
+    return _fetch_history(
+        conn,
+        table="daily_health_metrics",
+        date_column="metric_date",
+        columns=_METRICS_HISTORY_COLUMNS,
+        user_id=user_id,
+        window_start=effective - timedelta(days=window - 1),
+        window_end=effective,
+    )
+
+
+def fetch_features_history(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+    days: int = 90,
+) -> list[dict[str, Any]]:
+    """Daily feature time series (readiness / ACWR / training load / effort)."""
+    effective = as_of or _utc_today()
+    window = _clamp_days(days)
+    return _fetch_history(
+        conn,
+        table="daily_features",
+        date_column="feature_date",
+        columns=_FEATURES_HISTORY_COLUMNS,
+        user_id=user_id,
+        window_start=effective - timedelta(days=window - 1),
+        window_end=effective,
+    )
+
+
+def fetch_weekly_summaries(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+    weeks: int = 12,
+) -> list[dict[str, Any]]:
+    """Weekly activity rollups (strength sessions / running km / cardio min)."""
+    effective = as_of or _utc_today()
+    window = _clamp_days(weeks * 7)
+    return _fetch_history(
+        conn,
+        table="weekly_activity_summary",
+        date_column="week_start",
+        columns=_WEEKLY_HISTORY_COLUMNS,
+        user_id=user_id,
+        window_start=effective - timedelta(days=window),
+        window_end=effective,
+    )
 
 
 def _iso(val: Any) -> str | None:

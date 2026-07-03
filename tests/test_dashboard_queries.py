@@ -7,8 +7,13 @@ from datetime import date
 import pytest
 
 from pipeline.dashboard_queries import (
+    MAX_HISTORY_DAYS,
+    MAX_QUERY_ROWS,
     build_dashboard_context,
     fetch_dashboard_source_rows,
+    fetch_features_history,
+    fetch_metrics_history,
+    fetch_weekly_summaries,
     validate_bounded_sql,
 )
 
@@ -72,6 +77,66 @@ def test_fetch_dashboard_source_rows_from_injected_queries():
     assert ctx["briefing"]["coaching_note"] == "Go easy"
     assert ctx["todays_focus"] == "Easy run"
     assert ctx["sync_health"][0]["provider"] == "hevy"
+
+
+class _FakeCursor:
+    """Minimal psycopg2-style cursor that records the executed SQL + params."""
+
+    def __init__(self, rows: list[dict]) -> None:
+        self._rows = rows
+        self.executed: list[tuple[str, tuple]] = []
+
+    def __enter__(self) -> "_FakeCursor":
+        return self
+
+    def __exit__(self, *exc: object) -> bool:
+        return False
+
+    def execute(self, sql: str, params: tuple) -> None:
+        self.executed.append((sql, params))
+
+    def fetchall(self) -> list[dict]:
+        return self._rows
+
+
+class _FakeConn:
+    def __init__(self, rows: list[dict]) -> None:
+        self.cur = _FakeCursor(rows)
+
+    def cursor(self, cursor_factory: object = None) -> _FakeCursor:
+        return self.cur
+
+
+def test_fetch_metrics_history_is_bounded_and_user_scoped():
+    rows = [{"metric_date": date(2024, 6, 1), "hrv_rmssd": 50}]
+    conn = _FakeConn(rows)
+    out = fetch_metrics_history(conn, user_id="u1", as_of=date(2024, 6, 8), days=30)
+    assert out == rows
+    sql, params = conn.cur.executed[0]
+    assert "FROM daily_health_metrics" in sql
+    assert "user_id = %s" in sql
+    assert "ORDER BY metric_date ASC" in sql
+    assert f"LIMIT {MAX_QUERY_ROWS}" in sql
+    # window: [as_of - (days-1), as_of]; user_id is the first bound parameter.
+    assert params == ("u1", date(2024, 5, 10), date(2024, 6, 8))
+
+
+def test_fetch_metrics_history_clamps_excessive_range():
+    conn = _FakeConn([])
+    fetch_metrics_history(conn, user_id="u1", as_of=date(2024, 6, 8), days=99999)
+    _, params = conn.cur.executed[0]
+    span = (params[2] - params[1]).days
+    assert span == MAX_HISTORY_DAYS - 1
+
+
+def test_fetch_features_and_weekly_history_target_correct_tables():
+    fconn = _FakeConn([])
+    fetch_features_history(fconn, user_id="u1", as_of=date(2024, 6, 8), days=14)
+    assert "FROM daily_features" in fconn.cur.executed[0][0]
+
+    wconn = _FakeConn([])
+    fetch_weekly_summaries(wconn, user_id="u1", as_of=date(2024, 6, 8), weeks=8)
+    assert "FROM weekly_activity_summary" in wconn.cur.executed[0][0]
 
 
 def test_build_dashboard_context_weekly_summary_json_string():
