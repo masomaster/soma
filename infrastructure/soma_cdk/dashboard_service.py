@@ -1,21 +1,22 @@
-"""Phase 9/10: public Streamlit dashboard on AWS App Runner.
+"""Phase 9/10: public Streamlit dashboard on ECS Fargate + ALB.
 
-Deploys the repo ``dashboard/app.py`` as a container with a default HTTPS URL
-(``*.awsapprunner.com``). Supabase Auth + RLS protect user data; secrets come
-from Secrets Manager. The briefing Lambda receives ``BRIEFING_EMAIL_DASHBOARD_URL``
-so daily emails link to the same host.
+Streamlit requires WebSockets; App Runner does not support them. Fargate behind an
+Application Load Balancer does. Secrets come from Secrets Manager; the briefing
+Lambda receives ``BRIEFING_EMAIL_DASHBOARD_URL`` for email footers.
 """
 
 from __future__ import annotations
 
 import os
 
-from aws_cdk import CfnOutput, Stack
-from aws_cdk import aws_apprunner as apprunner
+from aws_cdk import CfnOutput, Duration
+from aws_cdk import aws_ecs as ecs
+from aws_cdk import aws_ecs_patterns as ecs_patterns
 from aws_cdk import aws_ecr_assets as ecr_assets
-from aws_cdk import aws_iam as iam
 from aws_cdk import aws_lambda as lambda_
+from aws_cdk import aws_logs as logs
 from aws_cdk import aws_s3 as s3
+from aws_cdk import aws_secretsmanager as secretsmanager
 from constructs import Construct
 
 from soma_cdk.config import DEPLOYED_ENV
@@ -27,7 +28,7 @@ def _repo_root() -> str:
 
 
 class DashboardService(Construct):
-    """App Runner service for the Soma Streamlit dashboard."""
+    """ECS Fargate + public ALB for the Soma Streamlit dashboard."""
 
     def __init__(
         self,
@@ -40,7 +41,6 @@ class DashboardService(Construct):
     ) -> None:
         super().__init__(scope, construct_id)
 
-        stack = Stack.of(self)
         image = ecr_assets.DockerImageAsset(
             self,
             "Image",
@@ -58,94 +58,76 @@ class DashboardService(Construct):
             ],
         )
 
-        access_role = iam.Role(
+        cluster = ecs.Cluster(
             self,
-            "EcrAccessRole",
-            assumed_by=iam.ServicePrincipal("build.apprunner.amazonaws.com"),
-            managed_policies=[
-                iam.ManagedPolicy.from_aws_managed_policy_name(
-                    "service-role/AWSAppRunnerServicePolicyForECRAccess"
-                )
-            ],
+            "Cluster",
+            cluster_name="soma-dashboard",
+            container_insights=True,
         )
 
-        instance_role = iam.Role(
-            self,
-            "InstanceRole",
-            assumed_by=iam.ServicePrincipal("tasks.apprunner.amazonaws.com"),
+        db_secret = secretsmanager.Secret.from_secret_complete_arn(
+            self, "DbSecretImport", runtime_secrets.db_arn
         )
-        runtime_secrets.grant_dashboard(instance_role)
-        guidelines_bucket.grant_read_write(instance_role)
+        dashboard_secret = secretsmanager.Secret.from_secret_complete_arn(
+            self, "DashboardSecretImport", runtime_secrets.dashboard_arn
+        )
 
-        db_secret = runtime_secrets.db_arn
-        dashboard_secret = runtime_secrets.dashboard_arn
-
-        env_vars = [
-            apprunner.CfnService.KeyValuePairProperty(name="ENV", value=DEPLOYED_ENV),
-            apprunner.CfnService.KeyValuePairProperty(
-                name="SOMA_DASHBOARD_FIXTURE", value="0"
-            ),
-            apprunner.CfnService.KeyValuePairProperty(
-                name="SOMA_GUIDELINES_BUCKET", value=guidelines_bucket.bucket_name
-            ),
-        ]
-        env_secrets = [
-            apprunner.CfnService.KeyValuePairProperty(
-                name="SOMA_DATABASE_URL",
-                value=db_secret,
-            ),
-            apprunner.CfnService.KeyValuePairProperty(
-                name="SUPABASE_URL",
-                value=f"{dashboard_secret}:SUPABASE_URL::",
-            ),
-            apprunner.CfnService.KeyValuePairProperty(
-                name="SUPABASE_ANON_KEY",
-                value=f"{dashboard_secret}:SUPABASE_ANON_KEY::",
-            ),
-            apprunner.CfnService.KeyValuePairProperty(
-                name="ANTHROPIC_API_KEY",
-                value=f"{dashboard_secret}:ANTHROPIC_API_KEY::",
-            ),
-        ]
-
-        self.service = apprunner.CfnService(
+        fargate = ecs_patterns.ApplicationLoadBalancedFargateService(
             self,
             "Service",
             service_name="soma-dashboard",
-            source_configuration=apprunner.CfnService.SourceConfigurationProperty(
-                authentication_configuration=apprunner.CfnService.AuthenticationConfigurationProperty(
-                    access_role_arn=access_role.role_arn,
-                ),
-                auto_deployments_enabled=False,
-                image_repository=apprunner.CfnService.ImageRepositoryProperty(
-                    image_identifier=image.image_uri,
-                    image_repository_type="ECR",
-                    image_configuration=apprunner.CfnService.ImageConfigurationProperty(
-                        port="8501",
-                        runtime_environment_variables=env_vars,
-                        runtime_environment_secrets=env_secrets,
+            cluster=cluster,
+            cpu=1024,
+            memory_limit_mib=2048,
+            desired_count=1,
+            public_load_balancer=True,
+            listener_port=80,
+            assign_public_ip=True,
+            task_image_options=ecs_patterns.ApplicationLoadBalancedTaskImageOptions(
+                image=ecs.ContainerImage.from_docker_image_asset(image),
+                container_port=8501,
+                environment={
+                    "ENV": DEPLOYED_ENV,
+                    "SOMA_DASHBOARD_FIXTURE": "0",
+                    "SOMA_CLOUD_DASHBOARD": "1",
+                    "SOMA_GUIDELINES_BUCKET": guidelines_bucket.bucket_name,
+                },
+                secrets={
+                    "SOMA_DATABASE_URL": ecs.Secret.from_secrets_manager(db_secret),
+                    "SUPABASE_URL": ecs.Secret.from_secrets_manager(
+                        dashboard_secret, field="SUPABASE_URL"
                     ),
+                    "SUPABASE_ANON_KEY": ecs.Secret.from_secrets_manager(
+                        dashboard_secret, field="SUPABASE_ANON_KEY"
+                    ),
+                    "ANTHROPIC_API_KEY": ecs.Secret.from_secrets_manager(
+                        dashboard_secret, field="ANTHROPIC_API_KEY"
+                    ),
+                },
+                log_driver=ecs.LogDrivers.aws_logs(
+                    stream_prefix="soma-dashboard",
+                    log_retention=logs.RetentionDays.ONE_MONTH,
                 ),
-            ),
-            instance_configuration=apprunner.CfnService.InstanceConfigurationProperty(
-                cpu="1024",
-                memory="2048",
-                instance_role_arn=instance_role.role_arn,
-            ),
-            health_check_configuration=apprunner.CfnService.HealthCheckConfigurationProperty(
-                protocol="HTTP",
-                path="/_stcore/health",
-                interval=20,
-                timeout=5,
-                healthy_threshold=1,
-                unhealthy_threshold=5,
             ),
         )
 
-        raw_url = self.service.attr_service_url
-        self.service_url = (
-            raw_url if str(raw_url).startswith("https://") else f"https://{raw_url}"
+        fargate.target_group.configure_health_check(
+            path="/_stcore/health",
+            healthy_http_codes="200",
+            interval=Duration.seconds(30),
         )
+        fargate.target_group.set_attribute("stickiness.enabled", "true")
+        fargate.target_group.set_attribute("stickiness.type", "lb_cookie")
+
+        guidelines_bucket.grant_read_write(fargate.task_definition.task_role)
+        runtime_secrets.grant_dashboard(fargate.task_definition.task_role)
+
+        lb_dns = fargate.load_balancer.load_balancer_dns_name
+        container = fargate.task_definition.default_container
+        if container is not None:
+            container.add_environment("STREAMLIT_BROWSER_SERVER_ADDRESS", lb_dns)
+
+        self.service_url = f"http://{lb_dns}"
         briefing_function.add_environment(
             "BRIEFING_EMAIL_DASHBOARD_URL", self.service_url
         )
@@ -154,5 +136,8 @@ class DashboardService(Construct):
             self,
             "DashboardUrl",
             value=self.service_url,
-            description="Public HTTPS URL for the Soma Streamlit dashboard",
+            description=(
+                "Public HTTP URL for the Soma Streamlit dashboard (ALB). "
+                "Add ACM + Route53 for HTTPS on a custom domain."
+            ),
         )

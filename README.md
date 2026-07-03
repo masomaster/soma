@@ -79,13 +79,12 @@ SOMA_DASHBOARD_FIXTURE=1 .venv/bin/streamlit run dashboard/app.py   # fixture
 SOMA_DASHBOARD_FIXTURE=0 .venv/bin/streamlit run dashboard/app.py   # live
 ```
 
-**Public URL (AWS):** `cdk deploy` provisions an **App Runner** service (`soma-dashboard`)
-with a default HTTPS endpoint. The stack output **`DashboardUrl`** is the link to open from
-any browser; the briefing Lambda gets the same value as `BRIEFING_EMAIL_DASHBOARD_URL` for
-email footers. Fill the **`soma-dashboard`** secret (Supabase URL + anon key + Anthropic key)
-and ensure **`soma-db`** has your session-pooler URI. Disable App Runner with
-`-c soma:dashboardEnabled=false` if you only want local Streamlit. See
-[`infrastructure/README.md`](infrastructure/README.md) and [`scripts/guidelines-corpus.md`](scripts/guidelines-corpus.md).
+**Public URL (AWS):** `cdk deploy` provisions **ECS Fargate + ALB** (`soma-dashboard`) with a
+public HTTP endpoint (Streamlit needs WebSockets — App Runner is not supported). Stack output
+**`DashboardUrl`**; the briefing Lambda gets the same value as `BRIEFING_EMAIL_DASHBOARD_URL`.
+Fill **`soma-dashboard`** secret (Supabase URL + anon key + Anthropic key) and **`soma-db`**.
+Cloud dashboard disables self-service sign-up (`SOMA_CLOUD_DASHBOARD=1`). Skip deploy with
+`-c soma:dashboardEnabled=false`. Add ACM + Route53 later for HTTPS on a custom domain.
 
 Copy [`.env.example`](.env.example) to `.env` for local secrets (gitignored). `ENV` defaults to `local`; see `pipeline.settings`. For **Phase 3 Hevy smoke** (live API, raw files on disk, optional Supabase upsert), see [`scripts/README.md`](scripts/README.md) and [docs/plans/local-dev-and-tooling.md](docs/plans/local-dev-and-tooling.md) § Phase 3 smoke.
 

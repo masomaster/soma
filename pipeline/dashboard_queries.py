@@ -44,6 +44,22 @@ ALLOWED_QUERY_TABLES = frozenset(
 # Maximum rows a bounded NL query may return (enforced by validate_bounded_sql).
 MAX_QUERY_ROWS = 500
 
+
+def _coerce_json_mapping(value: Any) -> dict[str, Any]:
+    """Normalize JSONB values that may arrive as dict or serialized string."""
+    if not value:
+        return {}
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
 # Minimal schema hint for text-to-SQL prompts.
 BOUNDED_SCHEMA_HINT = f"""
 Tables (all have user_id; always filter by user_id):
@@ -109,16 +125,12 @@ def build_dashboard_context(
             "resting_hr": latest_metrics.get("resting_hr"),
         }
     if goal_snapshot:
-        ctx["goals_status"] = goal_snapshot.get("goals_status")
+        ctx["goals_status"] = _coerce_json_mapping(goal_snapshot.get("goals_status")) or None
         ctx["todays_focus"] = goal_snapshot.get("todays_focus")
-        ctx["mileage_check"] = goal_snapshot.get("mileage_check")
+        mileage = _coerce_json_mapping(goal_snapshot.get("mileage_check"))
+        ctx["mileage_check"] = mileage or goal_snapshot.get("mileage_check")
     if weekly_summary:
-        summary_json = weekly_summary.get("summary_json") or {}
-        if isinstance(summary_json, str):
-            try:
-                summary_json = json.loads(summary_json)
-            except json.JSONDecodeError:
-                summary_json = {}
+        summary_json = _coerce_json_mapping(weekly_summary.get("summary_json"))
         ctx["weekly_summary"] = {
             "week_start": _iso(weekly_summary.get("week_start")),
             "strength_sessions": weekly_summary.get("strength_sessions"),

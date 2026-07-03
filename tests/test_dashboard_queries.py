@@ -72,3 +72,23 @@ def test_fetch_dashboard_source_rows_from_injected_queries():
     assert ctx["briefing"]["coaching_note"] == "Go easy"
     assert ctx["todays_focus"] == "Easy run"
     assert ctx["sync_health"][0]["provider"] == "hevy"
+
+
+def test_build_dashboard_context_weekly_summary_json_string():
+    ctx = build_dashboard_context(
+        user_id="u1",
+        as_of=date(2024, 6, 8),
+        latest_briefing=None,
+        latest_features=None,
+        latest_metrics=None,
+        goal_snapshot=None,
+        weekly_summary={
+            "week_start": date(2024, 6, 3),
+            "strength_sessions": 2,
+            "running_km": 5.0,
+            "cardio_minutes": 40,
+            "summary_json": '{"strength_short_tons": 1.5, "strength_hard_sets": 12}',
+        },
+    )
+    assert ctx["weekly_summary"]["strength_short_tons"] == 1.5
+    assert ctx["weekly_summary"]["strength_hard_sets"] == 12

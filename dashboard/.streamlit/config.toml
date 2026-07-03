@@ -7,3 +7,4 @@ enableXsrfProtection = true
 
 [browser]
 gatherUsageStats = false
+# Overridden at deploy time via STREAMLIT_BROWSER_SERVER_ADDRESS on ECS Fargate.

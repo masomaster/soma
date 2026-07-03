@@ -34,9 +34,9 @@ Repeat for `my-goals.md` and `injury-history.md` as needed.
 
 ## Dashboard + email link
 
-After `cdk deploy`, the stack emits **`DashboardUrl`** (App Runner HTTPS endpoint).
-The briefing Lambda receives the same value as `BRIEFING_EMAIL_DASHBOARD_URL` so morning
-emails include an “Open your dashboard” footer.
+After `cdk deploy`, the stack emits **`DashboardUrl`** (ALB HTTP endpoint). The briefing
+Lambda receives the same value as `BRIEFING_EMAIL_DASHBOARD_URL` so morning emails include
+an “Open your dashboard” footer. Add ACM + Route53 on your domain for HTTPS when ready.
 
 Fill **`soma-dashboard`** in Secrets Manager with:
 
