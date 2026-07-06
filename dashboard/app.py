@@ -1095,6 +1095,7 @@ def _render_hero(ctx: dict, mdf, fdf) -> None:
         with st.container(border=True):
             st.markdown("**🎯 Today's focus**")
             st.info(ctx.get("todays_focus") or "No focus computed yet.")
+            _render_training_phases(ctx.get("training_phase"), compact=True)
             chips = _active_alerts(ctx)
             if chips:
                 st.markdown("🚨 " + " &nbsp; ".join(f"`{c}`" for c in chips))
@@ -1150,6 +1151,7 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                 if isinstance(this_wk, (int, float)) and isinstance(last_wk, (int, float)):
                     delta = f"{this_wk - last_wk:+.1f} mi vs last week"
                 st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" mi"), delta=delta)
+        _render_training_phases(ctx.get("training_phase"), compact=False)
     with right:
         with st.container(border=True):
             st.markdown("**🔥 Readiness trend**")
@@ -1200,25 +1202,75 @@ def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
         return summarize_cardio_by_mode([])
 
 
-def _render_training_phase_banner(phase_ctx: dict[str, Any] | None) -> None:
+def _format_phase_type(phase_type: Any) -> str:
+    text = str(phase_type or "").strip()
+    return text.replace("_", " ").title() if text else ""
+
+
+def _render_training_phases(phase_ctx: dict[str, Any] | None, *, compact: bool = False) -> None:
+    """Show active and upcoming training blocks from dashboard context."""
     if not phase_ctx:
+        if not compact:
+            st.caption("No training phases scheduled — ask Coaching chat to add one.")
         return
+
     active = phase_ctx.get("active")
-    if not isinstance(active, dict):
+    upcoming = phase_ctx.get("upcoming") or []
+
+    if compact:
+        if isinstance(active, dict):
+            name = active.get("name") or "Training block"
+            weeks_left = active.get("weeks_remaining")
+            end_date = active.get("end_date")
+            bits = [_format_phase_type(active.get("phase_type"))]
+            if weeks_left is not None:
+                bits.append(f"{weeks_left} week(s) left")
+            if end_date:
+                bits.append(f"through {end_date}")
+            st.markdown(f"📅 **{name}** · {' · '.join(bits)}")
+        elif upcoming:
+            nxt = upcoming[0] if isinstance(upcoming[0], dict) else {}
+            st.markdown(
+                f"📅 Next block: **{nxt.get('name', 'Scheduled phase')}** "
+                f"starts {nxt.get('start_date', '?')}"
+            )
         return
-    name = active.get("name") or "Training block"
-    phase_type = active.get("phase_type") or ""
-    pct = active.get("pct_complete")
-    weeks_left = active.get("weeks_remaining")
-    end_date = active.get("end_date")
-    caption_parts = [phase_type.replace("_", " ").title() if phase_type else None]
-    if weeks_left is not None:
-        caption_parts.append(f"{weeks_left} week(s) remaining")
-    if end_date:
-        caption_parts.append(f"through {end_date}")
-    st.info(f"**{name}** · {' · '.join(p for p in caption_parts if p)}")
-    if isinstance(pct, (int, float)):
-        st.progress(min(1.0, max(0.0, pct / 100.0)))
+
+    with st.container(border=True):
+        st.markdown("**📅 Training schedule**")
+        if isinstance(active, dict):
+            name = active.get("name") or "Training block"
+            st.markdown(f"**Active — {name}**")
+            meta_bits = [_format_phase_type(active.get("phase_type"))]
+            if active.get("start_date") and active.get("end_date"):
+                meta_bits.append(f"{active['start_date']} → {active['end_date']}")
+            if active.get("weeks_remaining") is not None:
+                meta_bits.append(f"{active['weeks_remaining']} week(s) remaining")
+            st.caption(" · ".join(meta_bits))
+            pct = active.get("pct_complete")
+            if isinstance(pct, (int, float)):
+                st.progress(min(1.0, max(0.0, pct / 100.0)))
+                st.caption(f"{pct:.0f}% through this block")
+            if active.get("target_notes"):
+                st.caption(f"Targets: {active['target_notes']}")
+            if active.get("notes"):
+                st.write(active["notes"])
+        else:
+            st.caption("No active training block right now.")
+
+        if upcoming:
+            st.markdown("**Upcoming**")
+            for phase in upcoming:
+                if not isinstance(phase, dict):
+                    continue
+                label = phase.get("name") or "Scheduled phase"
+                ptype = _format_phase_type(phase.get("phase_type"))
+                dates = ""
+                if phase.get("start_date") and phase.get("end_date"):
+                    dates = f" · {phase['start_date']} → {phase['end_date']}"
+                st.markdown(f"- **{label}** ({ptype}){dates}")
+                if phase.get("notes"):
+                    st.caption(phase["notes"])
 
 
 def _render_exercise_progress(strength_progress: dict[str, Any] | None) -> None:
@@ -1265,7 +1317,7 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
     strength_progress = ctx.get("strength_progress") or {}
     phase_ctx = ctx.get("training_phase")
 
-    _render_training_phase_banner(phase_ctx)
+    _render_training_phases(phase_ctx, compact=False)
 
     c = st.columns(4)
     c[0].metric("Strength sessions (7d)", _fmt(f.get("strength_sessions_7d")))
