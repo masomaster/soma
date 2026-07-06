@@ -16,6 +16,8 @@ def test_chat_system_has_correlation_guidance():
     # explicitly instructs the model NOT to refuse correlation questions
     assert "do not refuse" in lower
     assert "correlations" in lower  # points at the DASHBOARD_CONTEXT block
+    assert "log_journal_entry" in lower
+    assert "training_phase" in lower
 
 
 def test_chat_prompt_includes_precomputed_correlations():

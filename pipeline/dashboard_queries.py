@@ -14,6 +14,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pipeline.cardio_quality import DEFAULT_RUN_PACE_MIN_SEC_MI, is_overrecorded_distance
+from pipeline.athlete_journal import format_journal_for_prompt
 from pipeline.features import ACUTE_WINDOW_DAYS, CHRONIC_WINDOW_DAYS
 from pipeline.strength_analytics import build_strength_progress_summary
 from pipeline.training_phase import build_training_phase_context
@@ -56,6 +57,7 @@ ALLOWED_QUERY_TABLES = frozenset(
         "running_sessions",
         "provider_connections",
         "training_phases",
+        "athlete_journal_entries",
     }
 )
 
@@ -95,7 +97,8 @@ Tables (all have user_id; always filter by user_id):
 - metric_patterns(metric_a, metric_b, lag_days, correlation, sample_n, status, description)
 - goals(goal_type, target_min, target_max, is_active)
 - running_sessions(session_date, run_type, distance_km)
-- training_phases(name, phase_type, start_date, end_date, notes, target_notes, is_active)
+- training_phases(id, name, phase_type, start_date, end_date, notes, target_notes, is_active)
+- athlete_journal_entries(entry_date, category, body, created_at)
 - provider_connections(provider, status, last_sync_at)
 Only SELECT. No INSERT/UPDATE/DELETE. Limit {MAX_QUERY_ROWS} rows.
 """.strip()
@@ -149,6 +152,7 @@ def build_dashboard_context(
     metric_patterns: Sequence[Mapping[str, Any]] | None = None,
     strength_progress: Mapping[str, Any] | None = None,
     training_phase: Mapping[str, Any] | None = None,
+    athlete_journal: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Assemble homepage JSON for dashboard or coaching chat context."""
     ctx: dict[str, Any] = {
@@ -221,6 +225,8 @@ def build_dashboard_context(
         ctx["strength_progress"] = strength_progress
     if training_phase:
         ctx["training_phase"] = training_phase
+    if athlete_journal:
+        ctx["athlete_journal"] = list(athlete_journal)
     return ctx
 
 
@@ -301,13 +307,23 @@ def fetch_dashboard_source_rows(
     )
     training_phases = list(
         query_all(
-            "SELECT name, phase_type, start_date, end_date, notes, target_notes, is_active "
+            "SELECT id, name, phase_type, start_date, end_date, notes, target_notes, is_active "
             "FROM training_phases WHERE user_id = %s ORDER BY start_date",
             (user_id,),
         )
     )
+    journal_rows = list(
+        query_all(
+            "SELECT id, entry_date, category, body, created_at "
+            "FROM athlete_journal_entries "
+            "WHERE user_id = %s AND entry_date <= %s "
+            "ORDER BY entry_date DESC, created_at DESC LIMIT 30",
+            (user_id, as_of),
+        )
+    )
     strength_progress = build_strength_progress_summary(strength_events, as_of=as_of)
     phase_ctx = build_training_phase_context(training_phases, as_of=as_of)
+    journal_ctx = format_journal_for_prompt(journal_rows, max_entries=30)
     return build_dashboard_context(
         user_id=user_id,
         as_of=as_of,
@@ -320,6 +336,7 @@ def fetch_dashboard_source_rows(
         metric_patterns=metric_patterns,
         strength_progress=strength_progress,
         training_phase=phase_ctx,
+        athlete_journal=journal_ctx,
     )
 
 

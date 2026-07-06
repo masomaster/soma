@@ -61,6 +61,7 @@ def test_training_phase_row_rejects_inverted_dates():
 def test_build_training_phase_context_includes_upcoming():
     phases = [
         {
+            "id": "p1",
             "name": "Build",
             "phase_type": "building",
             "start_date": date(2024, 6, 1),
@@ -68,6 +69,7 @@ def test_build_training_phase_context_includes_upcoming():
             "is_active": True,
         },
         {
+            "id": "p2",
             "name": "Deload",
             "phase_type": "deload",
             "start_date": date(2024, 7, 1),
@@ -77,5 +79,7 @@ def test_build_training_phase_context_includes_upcoming():
     ]
     ctx = build_training_phase_context(phases, as_of=date(2024, 6, 10))
     assert ctx["active"]["name"] == "Build"
+    assert ctx["active"]["id"] == "p1"
     assert len(ctx["upcoming"]) == 1
     assert ctx["upcoming"][0]["name"] == "Deload"
+    assert len(ctx["all_phases"]) == 2

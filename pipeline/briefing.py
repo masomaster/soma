@@ -62,6 +62,7 @@ SYSTEM_GUIDELINES = (
     "GOALS_STATUS and TODAYS_FOCUS are pre-computed weekly goal progress — narrate; do not invent counts. "
     "STRENGTH_PROGRESS and TRAINING_PHASE are pre-computed lifting trends and schedule blocks — cite briefly; "
     "do not invent exercise numbers or phase dates. "
+    "ATHLETE_JOURNAL lists the athlete's own saved notes — respect them; do not invent journal entries. "
     "PERSONAL GOALS and INJURY HISTORY blocks are athlete-provided context — respect injury constraints "
     "and do not invent injuries or goals beyond what is stated. "
     "A DATA_QUALITY_* flag means a metric looks mis-recorded (e.g. a run's distance); "
@@ -194,6 +195,7 @@ def build_prompt(
     guidelines: GuidelinesContext | None = None,
     strength_progress: Mapping[str, Any] | None = None,
     training_phase: Mapping[str, Any] | None = None,
+    athlete_journal: Sequence[Mapping[str, Any]] | None = None,
 ) -> str:
     """Render the user prompt: the pre-computed flags + features the model must narrate."""
     flag_lines = (
@@ -255,6 +257,12 @@ def build_prompt(
             "TRAINING_PHASE (current block schedule — narrate if relevant):\n"
             f"{json.dumps(training_phase, indent=2, sort_keys=True, default=str)}\n\n"
         )
+    journal_block = ""
+    if athlete_journal:
+        journal_block = (
+            "ATHLETE_JOURNAL (athlete-saved notes — cite when relevant; do not invent):\n"
+            f"{json.dumps(list(athlete_journal), indent=2, sort_keys=True, default=str)}\n\n"
+        )
     return (
         f"{guidelines_block}"
         f"Date: {feature_date.isoformat()}\n\n"
@@ -268,6 +276,7 @@ def build_prompt(
         f"{goal_block}"
         f"{strength_block}"
         f"{phase_block}"
+        f"{journal_block}"
         "UNITS / INTERPRETATION (do not contradict):\n"
         "- strength_tonnage_7d is US short tons (2000 lb): sum over the window of "
         "(reps x weight_lbs) / 2000. Do not call it \"metric tonnes\" unless you "
@@ -308,6 +317,7 @@ def generate_briefing(
     run_sessions_7d: int | None = None,
     strength_progress: Mapping[str, Any] | None = None,
     training_phase: Mapping[str, Any] | None = None,
+    athlete_journal: Sequence[Mapping[str, Any]] | None = None,
     model: str = DEFAULT_BRIEFING_MODEL,
 ) -> Briefing:
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
@@ -330,6 +340,7 @@ def generate_briefing(
         guidelines=guidelines,
         strength_progress=strength_progress,
         training_phase=training_phase,
+        athlete_journal=athlete_journal,
     )
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
@@ -361,6 +372,8 @@ def generate_briefing(
         }
     if training_phase:
         features_json["training_phase"] = training_phase
+    if athlete_journal:
+        features_json["athlete_journal"] = list(athlete_journal)
     return Briefing(
         user_id=user_id,
         briefing_date=feature_date,

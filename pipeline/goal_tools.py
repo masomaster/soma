@@ -15,6 +15,7 @@ from datetime import date
 from typing import Any
 
 from pipeline.briefing import LLMClient
+from pipeline.athlete_journal import JOURNAL_CATEGORIES, journal_entry_row
 from pipeline.training_phase import training_phase_row
 from pipeline.units import miles_to_km
 
@@ -216,11 +217,34 @@ COACHING_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "append_goal_note",
-        "description": "Free-text note for narrative goals file (Phase 10).",
+        "description": (
+            "Append a lasting note to the narrative my-goals.md file (S3/local). "
+            "Prefer log_journal_entry for dated workout/supplement observations."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {"text": {"type": "string"}},
             "required": ["text"],
+        },
+    },
+    {
+        "name": "log_journal_entry",
+        "description": (
+            "Save a dated athlete journal note the coach should remember — workout feel, "
+            "exercise difficulty, supplements started, recovery observations, etc. "
+            "Use category workout|supplement|recovery|training|general."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "body": {"type": "string"},
+                "entry_date": {"type": "string", "format": "date"},
+                "category": {
+                    "type": "string",
+                    "enum": sorted(JOURNAL_CATEGORIES),
+                },
+            },
+            "required": ["body"],
         },
     },
     {
@@ -259,7 +283,10 @@ COACHING_TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         "name": "set_training_phase",
         "description": (
-            "Schedule a multi-week training block (building, deload, fat_loss, running, etc.)."
+            "Create a new multi-week training block (building, deload, fat_loss, running, "
+            "maintenance, custom). Use update_training_phase to change dates or notes; "
+            "deactivate_training_phase to cancel a block. Phase ids are in "
+            "DASHBOARD_CONTEXT.training_phase.all_phases."
         ),
         "input_schema": {
             "type": "object",
@@ -272,6 +299,34 @@ COACHING_TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "target_notes": {"type": "string"},
             },
             "required": ["name", "phase_type", "start_date", "end_date"],
+        },
+    },
+    {
+        "name": "update_training_phase",
+        "description": (
+            "Update an existing training phase by id (from DASHBOARD_CONTEXT.training_phase)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "phase_id": {"type": "string"},
+                "name": {"type": "string"},
+                "phase_type": {"type": "string"},
+                "start_date": {"type": "string", "format": "date"},
+                "end_date": {"type": "string", "format": "date"},
+                "notes": {"type": "string"},
+                "target_notes": {"type": "string"},
+            },
+            "required": ["phase_id"],
+        },
+    },
+    {
+        "name": "deactivate_training_phase",
+        "description": "Cancel / hide a training phase without deleting history.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"phase_id": {"type": "string"}},
+            "required": ["phase_id"],
         },
     },
 ]
@@ -308,6 +363,24 @@ def apply_tool_call(
         if not isinstance(text, str) or not text.strip():
             raise ValueError("text required")
         return {"action": "append_goal_note", "text": text.strip()}
+    if tool_name == "log_journal_entry":
+        body = arguments.get("body")
+        if not isinstance(body, str) or not body.strip():
+            raise ValueError("body required")
+        entry_date_raw = arguments.get("entry_date")
+        entry_date = (
+            date.fromisoformat(str(entry_date_raw)[:10])
+            if isinstance(entry_date_raw, str)
+            else date.today()
+        )
+        category = str(arguments.get("category") or "general")
+        row = journal_entry_row(
+            user_id=user_id,
+            body=body,
+            entry_date=entry_date,
+            category=category,
+        )
+        return {"action": "insert_journal_entry", "row": row}
     if tool_name == "set_schedule_exception":
         start = arguments.get("start_date")
         end = arguments.get("end_date")
@@ -350,6 +423,44 @@ def apply_tool_call(
             ),
         )
         return {"action": "insert_training_phase", "row": row}
+    if tool_name == "update_training_phase":
+        phase_id = arguments.get("phase_id")
+        if not isinstance(phase_id, str) or not phase_id.strip():
+            raise ValueError("phase_id required")
+        updates: dict[str, Any] = {}
+        for key in (
+            "name",
+            "phase_type",
+            "notes",
+            "target_notes",
+        ):
+            val = arguments.get(key)
+            if isinstance(val, str) and val.strip():
+                updates[key] = val.strip()
+        for key in ("start_date", "end_date"):
+            val = arguments.get(key)
+            if isinstance(val, str):
+                updates[key] = date.fromisoformat(val[:10])
+        if not updates:
+            raise ValueError("At least one field to update is required")
+        if "phase_type" in updates:
+            updates["phase_type"] = updates["phase_type"].lower().replace(" ", "_")
+        return {
+            "action": "update_training_phase",
+            "user_id": user_id,
+            "phase_id": phase_id.strip(),
+            "updates": updates,
+        }
+    if tool_name == "deactivate_training_phase":
+        phase_id = arguments.get("phase_id")
+        if not isinstance(phase_id, str) or not phase_id.strip():
+            raise ValueError("phase_id required")
+        return {
+            "action": "update_training_phase",
+            "user_id": user_id,
+            "phase_id": phase_id.strip(),
+            "updates": {"is_active": False},
+        }
     raise ValueError(f"Unknown tool: {tool_name!r}")
 
 
@@ -397,6 +508,24 @@ def apply_coaching_writes(
             persistence.insert_training_phase(cur, row)
             applied.append(
                 f"Training phase {row.get('name')} ({row.get('start_date')}–{row.get('end_date')})"
+            )
+        elif action == "update_training_phase":
+            phase_id = write.get("phase_id")
+            updates = write.get("updates")
+            uid = write.get("user_id")
+            if not isinstance(phase_id, str) or not isinstance(updates, Mapping) or not isinstance(uid, str):
+                continue
+            persistence.update_training_phase(
+                cur, user_id=uid, phase_id=phase_id, updates=updates
+            )
+            applied.append(f"Updated training phase {phase_id}")
+        elif action == "insert_journal_entry":
+            row = write.get("row")
+            if not isinstance(row, Mapping):
+                continue
+            persistence.insert_journal_entry(cur, row)
+            applied.append(
+                f"Journal ({row.get('category')} on {row.get('entry_date')}): saved"
             )
         elif action == "append_goal_note":
             text = write.get("text")

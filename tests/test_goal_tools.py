@@ -81,6 +81,31 @@ def test_apply_tool_training_phase():
     assert out["row"]["phase_type"] == "building"
 
 
+def test_apply_tool_log_journal_entry():
+    out = apply_tool_call(
+        "log_journal_entry",
+        {
+            "body": "Started creatine today.",
+            "entry_date": "2024-06-08",
+            "category": "supplement",
+        },
+        user_id="u1",
+    )
+    assert out["action"] == "insert_journal_entry"
+    assert out["row"]["category"] == "supplement"
+
+
+def test_apply_tool_update_training_phase():
+    out = apply_tool_call(
+        "update_training_phase",
+        {"phase_id": "abc-123", "end_date": "2024-08-01"},
+        user_id="u1",
+    )
+    assert out["action"] == "update_training_phase"
+    assert out["user_id"] == "u1"
+    assert out["updates"]["end_date"] == date(2024, 8, 1)
+
+
 def test_apply_coaching_writes_append_note():
     notes: list[str] = []
 

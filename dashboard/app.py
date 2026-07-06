@@ -227,31 +227,58 @@ def _fixture_training_phase(as_of: date) -> dict[str, Any]:
     elapsed = (as_of - start).days + 1
     weeks_total = max(1, (total_days + 6) // 7)
     weeks_elapsed = min(weeks_total, (elapsed + 6) // 7)
+    active = {
+        "id": "demo-phase-active",
+        "name": "6-week building block",
+        "phase_type": "building",
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "notes": "Progressive overload on main lifts.",
+        "target_notes": "3–4 strength days; keep weekly volume under ~15% jumps.",
+        "is_active": True,
+        "weeks_total": weeks_total,
+        "weeks_elapsed": weeks_elapsed,
+        "weeks_remaining": max(0, weeks_total - weeks_elapsed),
+        "pct_complete": round(elapsed / total_days * 100.0, 1),
+        "days_remaining": max(0, (end - as_of).days),
+    }
+    upcoming = [
+        {
+            "id": "demo-phase-deload",
+            "name": "Deload / recovery",
+            "phase_type": "deload",
+            "start_date": (end + timedelta(days=1)).isoformat(),
+            "end_date": (end + timedelta(days=7)).isoformat(),
+            "notes": "Reduce volume ~40% before the next block.",
+            "target_notes": None,
+            "is_active": True,
+        }
+    ]
     return {
         "as_of": as_of.isoformat(),
-        "active": {
-            "name": "6-week building block",
-            "phase_type": "building",
-            "start_date": start.isoformat(),
-            "end_date": end.isoformat(),
-            "notes": "Progressive overload on main lifts.",
-            "target_notes": "3–4 strength days; keep weekly volume under ~15% jumps.",
-            "weeks_total": weeks_total,
-            "weeks_elapsed": weeks_elapsed,
-            "weeks_remaining": max(0, weeks_total - weeks_elapsed),
-            "pct_complete": round(elapsed / total_days * 100.0, 1),
-            "days_remaining": max(0, (end - as_of).days),
-        },
-        "upcoming": [
-            {
-                "name": "Deload / recovery",
-                "phase_type": "deload",
-                "start_date": (end + timedelta(days=1)).isoformat(),
-                "end_date": (end + timedelta(days=7)).isoformat(),
-                "notes": "Reduce volume ~40% before the next block.",
-            }
-        ],
+        "active": active,
+        "upcoming": upcoming,
+        "all_phases": [active, *upcoming],
     }
+
+
+def _fixture_athlete_journal(as_of: date) -> list[dict[str, Any]]:
+    return [
+        {
+            "id": "demo-journal-1",
+            "entry_date": as_of.isoformat(),
+            "category": "workout",
+            "body": "Chest press felt challenging today — barely hit my working weights.",
+            "logged_at": f"{as_of.isoformat()}T12:00:00",
+        },
+        {
+            "id": "demo-journal-2",
+            "entry_date": (as_of - timedelta(days=21)).isoformat(),
+            "category": "supplement",
+            "body": "Started creatine (~5g/day).",
+            "logged_at": f"{(as_of - timedelta(days=21)).isoformat()}T08:00:00",
+        },
+    ]
 
 
 def _fixture_context() -> dict:
@@ -308,6 +335,7 @@ def _fixture_context() -> dict:
         },
         strength_progress=strength_progress,
         training_phase=_fixture_training_phase(today),
+        athlete_journal=_fixture_athlete_journal(today),
     )
 
 
@@ -1519,10 +1547,19 @@ def _render_chat_history(messages: list[dict[str, str]]) -> None:
 
 def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> None:
     st.markdown("#### 💬 Coaching chat")
+    journal = ctx.get("athlete_journal") or []
+    if journal:
+        with st.expander("Your saved notes (journal)", expanded=False):
+            for entry in journal[:12]:
+                if not isinstance(entry, dict):
+                    continue
+                stamp = entry.get("entry_date") or "?"
+                cat = entry.get("category") or "note"
+                st.markdown(f"**{stamp}** · {cat}")
+                st.caption(str(entry.get("body") or ""))
     st.caption(
-        "Ask about today's briefing or your history (e.g. \"how has my sleep trended "
-        "over 30 days?\") — trend questions run a read-only, schema-bound query and "
-        "get summarized inline."
+        "Tell the coach anything to remember — workout feel, supplements, schedule changes. "
+        "Trend questions (sleep, HRV, etc.) run a read-only history query automatically."
     )
     saved_msg = st.session_state.pop("_coaching_saved", None)
     if saved_msg:

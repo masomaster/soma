@@ -92,34 +92,41 @@ def build_training_phase_context(
     as_of: date,
 ) -> dict[str, Any]:
     """Shape phase rows for dashboard context and briefing prompts."""
-    active = active_training_phase(phases, as_of=as_of)
+    active_row = active_training_phase(phases, as_of=as_of)
     upcoming = upcoming_training_phases(phases, as_of=as_of)
-    ctx: dict[str, Any] = {"as_of": as_of.isoformat(), "active": None, "upcoming": []}
-    if active:
-        start = _parse_date(active.get("start_date"))
-        end = _parse_date(active.get("end_date"))
-        progress = phase_progress(active, as_of=as_of)
-        ctx["active"] = {
-            "name": active.get("name"),
-            "phase_type": active.get("phase_type"),
-            "start_date": start.isoformat() if start else None,
-            "end_date": end.isoformat() if end else None,
-            "notes": active.get("notes"),
-            "target_notes": active.get("target_notes"),
-            **progress,
-        }
-    for row in upcoming:
+    ctx: dict[str, Any] = {
+        "as_of": as_of.isoformat(),
+        "active": None,
+        "upcoming": [],
+        "all_phases": [],
+    }
+
+    def _public_phase(row: Mapping[str, Any], *, include_progress: bool = False) -> dict[str, Any]:
         start = _parse_date(row.get("start_date"))
         end = _parse_date(row.get("end_date"))
-        ctx["upcoming"].append(
-            {
-                "name": row.get("name"),
-                "phase_type": row.get("phase_type"),
-                "start_date": start.isoformat() if start else None,
-                "end_date": end.isoformat() if end else None,
-                "notes": row.get("notes"),
-            }
-        )
+        out: dict[str, Any] = {
+            "id": str(row.get("id")) if row.get("id") is not None else None,
+            "name": row.get("name"),
+            "phase_type": row.get("phase_type"),
+            "start_date": start.isoformat() if start else None,
+            "end_date": end.isoformat() if end else None,
+            "notes": row.get("notes"),
+            "target_notes": row.get("target_notes"),
+            "is_active": row.get("is_active", True),
+        }
+        if include_progress:
+            out.update(phase_progress(row, as_of=as_of))
+        return out
+
+    for row in phases:
+        if row.get("is_active") is False:
+            continue
+        ctx["all_phases"].append(_public_phase(row))
+
+    if active_row:
+        ctx["active"] = _public_phase(active_row, include_progress=True)
+    for row in upcoming:
+        ctx["upcoming"].append(_public_phase(row))
     return ctx
 
 

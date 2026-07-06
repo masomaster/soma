@@ -525,6 +525,69 @@ def insert_training_phase(cur: Any, row: Mapping[str, Any]) -> None:
     )
 
 
+_TRAINING_PHASE_UPDATE_COLUMNS = frozenset(
+    {
+        "name",
+        "phase_type",
+        "start_date",
+        "end_date",
+        "notes",
+        "target_notes",
+        "is_active",
+    }
+)
+
+_JOURNAL_ENTRY_COLUMNS = frozenset(
+    {
+        "user_id",
+        "entry_date",
+        "category",
+        "body",
+    }
+)
+
+
+def update_training_phase(
+    cur: Any,
+    *,
+    user_id: str,
+    phase_id: str,
+    updates: Mapping[str, Any],
+) -> None:
+    """Update one training phase row (coaching chat)."""
+    unknown = set(updates) - _TRAINING_PHASE_UPDATE_COLUMNS
+    if unknown:
+        raise KeyError(f"training_phases update has unknown column(s): {sorted(unknown)}")
+    if not updates:
+        raise ValueError("updates required")
+    start = updates.get("start_date")
+    end = updates.get("end_date")
+    if start is not None and end is not None and end < start:
+        raise ValueError("end_date must be on or after start_date")
+    assignments = ", ".join(f"{col} = %s" for col in updates)
+    values = list(updates.values()) + [user_id, phase_id]
+    cur.execute(
+        f"UPDATE training_phases SET {assignments}, updated_at = NOW() "
+        f"WHERE user_id = %s AND id = %s",
+        values,
+    )
+
+
+def insert_journal_entry(cur: Any, row: Mapping[str, Any]) -> None:
+    """Insert an athlete journal entry."""
+    unknown = set(row) - _JOURNAL_ENTRY_COLUMNS
+    if unknown:
+        raise KeyError(f"athlete_journal_entries row has unknown column(s): {sorted(unknown)}")
+    for key in ("user_id", "entry_date", "category", "body"):
+        if row.get(key) is None:
+            raise KeyError(f"athlete_journal_entries row missing required field {key!r}")
+    cur.execute(
+        "INSERT INTO athlete_journal_entries (user_id, entry_date, category, body) "
+        "VALUES (%s, %s, %s, %s)",
+        (row["user_id"], row["entry_date"], row["category"], row["body"]),
+    )
+
+
 def insert_schedule_exception(cur: Any, row: Mapping[str, Any]) -> None:
     """Insert a schedule exception row."""
     unknown = set(row) - _SCHEDULE_EXCEPTION_COLUMNS
