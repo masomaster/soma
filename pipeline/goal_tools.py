@@ -15,6 +15,7 @@ from datetime import date
 from typing import Any
 
 from pipeline.briefing import LLMClient
+from pipeline.training_phase import training_phase_row
 from pipeline.units import miles_to_km
 
 VALID_GOAL_TYPES = frozenset(
@@ -255,6 +256,24 @@ COACHING_TOOL_SCHEMAS: list[dict[str, Any]] = [
             "required": ["start_date", "end_date", "affected_goal_types"],
         },
     },
+    {
+        "name": "set_training_phase",
+        "description": (
+            "Schedule a multi-week training block (building, deload, fat_loss, running, etc.)."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string"},
+                "phase_type": {"type": "string"},
+                "start_date": {"type": "string", "format": "date"},
+                "end_date": {"type": "string", "format": "date"},
+                "notes": {"type": "string"},
+                "target_notes": {"type": "string"},
+            },
+            "required": ["name", "phase_type", "start_date", "end_date"],
+        },
+    },
 ]
 
 
@@ -308,6 +327,29 @@ def apply_tool_call(
                 "reason": arguments.get("reason"),
             },
         }
+    if tool_name == "set_training_phase":
+        name = arguments.get("name")
+        phase_type = arguments.get("phase_type")
+        start = arguments.get("start_date")
+        end = arguments.get("end_date")
+        if not isinstance(name, str) or not isinstance(phase_type, str):
+            raise ValueError("name and phase_type required")
+        if not isinstance(start, str) or not isinstance(end, str):
+            raise ValueError("start_date and end_date required")
+        row = training_phase_row(
+            user_id=user_id,
+            name=name,
+            phase_type=phase_type,
+            start_date=date.fromisoformat(start[:10]),
+            end_date=date.fromisoformat(end[:10]),
+            notes=arguments.get("notes") if isinstance(arguments.get("notes"), str) else None,
+            target_notes=(
+                arguments.get("target_notes")
+                if isinstance(arguments.get("target_notes"), str)
+                else None
+            ),
+        )
+        return {"action": "insert_training_phase", "row": row}
     raise ValueError(f"Unknown tool: {tool_name!r}")
 
 
@@ -347,6 +389,14 @@ def apply_coaching_writes(
             persistence.insert_schedule_exception(cur, row)
             applied.append(
                 f"Schedule exception {row.get('start_date')}–{row.get('end_date')}"
+            )
+        elif action == "insert_training_phase":
+            row = write.get("row")
+            if not isinstance(row, Mapping):
+                continue
+            persistence.insert_training_phase(cur, row)
+            applied.append(
+                f"Training phase {row.get('name')} ({row.get('start_date')}–{row.get('end_date')})"
             )
         elif action == "append_goal_note":
             text = write.get("text")

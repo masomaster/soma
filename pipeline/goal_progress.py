@@ -21,6 +21,7 @@ from pipeline.cardio_quality import (
 from pipeline.mileage_ramp import check_mileage_ramp, iso_week_start
 from pipeline.schedule_context import apply_schedule_to_focus_parts, is_goal_blocked
 from pipeline.features import calendar_week_strength_volume
+from pipeline.strength_analytics import weekly_focus_rollups, weekly_strength_rollups
 
 STRENGTH_GOAL = "strength"
 RUNNING_GOAL_TYPES = ("running_long", "running_easy", "running_interval")
@@ -289,6 +290,13 @@ def compute_weekly_activity_summary(
         strength_events, week_start=week_start
     )
     strength_dates = strength_volume["session_dates"]
+    week_end = week_start + timedelta(days=6)
+    weekly_rollups = weekly_strength_rollups(
+        strength_events, as_of=week_end, weeks=2
+    )
+    wow_change_pct = weekly_rollups[-1].get("change_pct") if weekly_rollups else None
+    focus_row = weekly_focus_rollups(strength_events, as_of=week_end, weeks=1)
+    focus = focus_row[-1] if focus_row else {}
     return {
         "user_id": user_id,
         "week_start": week_start,
@@ -300,6 +308,9 @@ def compute_weekly_activity_summary(
             "strength_short_tons": strength_volume["strength_short_tons"],
             "strength_hard_sets": strength_volume["strength_hard_sets"],
             "strength_volume_lbs": strength_volume["strength_volume_lbs"],
+            "strength_volume_wow_change_pct": wow_change_pct,
+            "upper_volume_lbs": focus.get("upper_volume_lbs"),
+            "lower_volume_lbs": focus.get("lower_volume_lbs"),
         },
     }
 

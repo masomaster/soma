@@ -14,7 +14,9 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from pipeline.cardio_quality import DEFAULT_RUN_PACE_MIN_SEC_MI, is_overrecorded_distance
-from pipeline.features import ACUTE_WINDOW_DAYS
+from pipeline.features import ACUTE_WINDOW_DAYS, CHRONIC_WINDOW_DAYS
+from pipeline.strength_analytics import build_strength_progress_summary
+from pipeline.training_phase import build_training_phase_context
 from pipeline.units import km_to_miles
 
 
@@ -53,6 +55,7 @@ ALLOWED_QUERY_TABLES = frozenset(
         "goals",
         "running_sessions",
         "provider_connections",
+        "training_phases",
     }
 )
 
@@ -92,6 +95,7 @@ Tables (all have user_id; always filter by user_id):
 - metric_patterns(metric_a, metric_b, lag_days, correlation, sample_n, status, description)
 - goals(goal_type, target_min, target_max, is_active)
 - running_sessions(session_date, run_type, distance_km)
+- training_phases(name, phase_type, start_date, end_date, notes, target_notes, is_active)
 - provider_connections(provider, status, last_sync_at)
 Only SELECT. No INSERT/UPDATE/DELETE. Limit {MAX_QUERY_ROWS} rows.
 """.strip()
@@ -143,6 +147,8 @@ def build_dashboard_context(
     weekly_summary: Mapping[str, Any] | None,
     recent_anomalies: Sequence[Mapping[str, Any]] | None = None,
     metric_patterns: Sequence[Mapping[str, Any]] | None = None,
+    strength_progress: Mapping[str, Any] | None = None,
+    training_phase: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Assemble homepage JSON for dashboard or coaching chat context."""
     ctx: dict[str, Any] = {
@@ -194,6 +200,9 @@ def build_dashboard_context(
             "strength_short_tons": summary_json.get("strength_short_tons"),
             "strength_hard_sets": summary_json.get("strength_hard_sets"),
             "strength_volume_lbs": summary_json.get("strength_volume_lbs"),
+            "strength_volume_wow_change_pct": summary_json.get("strength_volume_wow_change_pct"),
+            "upper_volume_lbs": summary_json.get("upper_volume_lbs"),
+            "lower_volume_lbs": summary_json.get("lower_volume_lbs"),
         }
     if recent_anomalies:
         ctx["recent_anomalies"] = [
@@ -208,6 +217,10 @@ def build_dashboard_context(
     correlations = _correlation_entries(metric_patterns)
     if correlations:
         ctx["correlations"] = correlations
+    if strength_progress:
+        ctx["strength_progress"] = strength_progress
+    if training_phase:
+        ctx["training_phase"] = training_phase
     return ctx
 
 
@@ -273,6 +286,28 @@ def fetch_dashboard_source_rows(
             (user_id, "active"),
         )
     )
+    strength_events = list(
+        query_all(
+            "SELECT event_date, exercise_name, set_type, reps, weight_lbs "
+            "FROM strength_events "
+            "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
+            "ORDER BY event_date ASC",
+            (
+                user_id,
+                as_of - timedelta(days=CHRONIC_WINDOW_DAYS * 3 - 1),
+                as_of,
+            ),
+        )
+    )
+    training_phases = list(
+        query_all(
+            "SELECT name, phase_type, start_date, end_date, notes, target_notes, is_active "
+            "FROM training_phases WHERE user_id = %s ORDER BY start_date",
+            (user_id,),
+        )
+    )
+    strength_progress = build_strength_progress_summary(strength_events, as_of=as_of)
+    phase_ctx = build_training_phase_context(training_phases, as_of=as_of)
     return build_dashboard_context(
         user_id=user_id,
         as_of=as_of,
@@ -283,6 +318,8 @@ def fetch_dashboard_source_rows(
         weekly_summary=weekly_summary,
         recent_anomalies=recent_anomalies,
         metric_patterns=metric_patterns,
+        strength_progress=strength_progress,
+        training_phase=phase_ctx,
     )
 
 
@@ -485,6 +522,16 @@ _WEEKLY_HISTORY_COLUMNS = (
     "strength_sessions",
     "running_km",
     "cardio_minutes",
+    "summary_json",
+)
+
+
+_STRENGTH_HISTORY_COLUMNS = (
+    "event_date",
+    "exercise_name",
+    "set_type",
+    "reps",
+    "weight_lbs",
 )
 
 
@@ -573,13 +620,41 @@ def fetch_weekly_summaries(
     """Weekly activity rollups (strength sessions / running km / cardio min)."""
     effective = as_of or _utc_today()
     window = _clamp_days(weeks * 7)
-    return _fetch_history(
+    rows = _fetch_history(
         conn,
         table="weekly_activity_summary",
         date_column="week_start",
         columns=_WEEKLY_HISTORY_COLUMNS,
         user_id=user_id,
         window_start=effective - timedelta(days=window),
+        window_end=effective,
+    )
+    for row in rows:
+        summary = _coerce_json_mapping(row.get("summary_json"))
+        row["strength_volume_lbs"] = summary.get("strength_volume_lbs")
+        row["strength_short_tons"] = summary.get("strength_short_tons")
+        row["upper_volume_lbs"] = summary.get("upper_volume_lbs")
+        row["lower_volume_lbs"] = summary.get("lower_volume_lbs")
+    return rows
+
+
+def fetch_strength_events_window(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+    days: int = 120,
+) -> list[dict[str, Any]]:
+    """Strength set rows for per-exercise analytics charts."""
+    effective = as_of or _utc_today()
+    window = _clamp_days(days)
+    return _fetch_history(
+        conn,
+        table="strength_events",
+        date_column="event_date",
+        columns=_STRENGTH_HISTORY_COLUMNS,
+        user_id=user_id,
+        window_start=effective - timedelta(days=window - 1),
         window_end=effective,
     )
 

@@ -99,6 +99,8 @@ def build_glance_metrics(
     flags: Sequence[Flag] = (),
     goal_snapshot: Mapping[str, Any] | None = None,
     run_sessions_7d: int | None = None,
+    strength_progress: Mapping[str, Any] | None = None,
+    training_phase: Mapping[str, Any] | None = None,
 ) -> list[tuple[str, str]]:
     """Build the ordered ``(label, value)`` pairs for the glance summary.
 
@@ -138,6 +140,45 @@ def build_glance_metrics(
                 f"{_fmt_num(tonnage, decimals=1)} short tons ({_fmt_num(lbs)} lb)",
             )
         )
+
+    if strength_progress:
+        wow = strength_progress.get("week_over_week_change_pct")
+        week_vol = strength_progress.get("this_week_volume_lbs")
+        if week_vol is not None:
+            detail = f"{_fmt_num(week_vol)} lb this calendar week"
+            if isinstance(wow, (int, float)):
+                detail += f" ({wow:+.1f}% vs last week)"
+            lines.append(("Weekly lifting volume", detail))
+        top = strength_progress.get("top_exercises")
+        if isinstance(top, list) and top:
+            highlights: list[str] = []
+            for ex in top[:3]:
+                if not isinstance(ex, Mapping):
+                    continue
+                name = ex.get("exercise_name")
+                weight = ex.get("latest_top_weight_lbs")
+                delta = ex.get("weight_delta_vs_prior")
+                if not name or weight is None:
+                    continue
+                piece = f"{name} {_fmt_num(weight, decimals=1)} lb"
+                if isinstance(delta, (int, float)) and delta != 0:
+                    piece += f" ({delta:+.1f} lb vs prior)"
+                highlights.append(piece)
+            if highlights:
+                lines.append(("Key lifts (latest)", " · ".join(highlights)))
+
+    if training_phase and isinstance(training_phase.get("active"), Mapping):
+        active = training_phase["active"]
+        name = active.get("name")
+        phase_type = active.get("phase_type")
+        weeks_remaining = active.get("weeks_remaining")
+        if name:
+            detail = str(name)
+            if phase_type:
+                detail += f" ({phase_type})"
+            if weeks_remaining is not None:
+                detail += f" · {weeks_remaining} week(s) left"
+            lines.append(("Training phase", detail))
 
     if goal_snapshot:
         mileage = goal_snapshot.get("mileage_check")
@@ -191,6 +232,8 @@ def format_glance_section(
     flags: Sequence[Flag] = (),
     goal_snapshot: Mapping[str, Any] | None = None,
     run_sessions_7d: int | None = None,
+    strength_progress: Mapping[str, Any] | None = None,
+    training_phase: Mapping[str, Any] | None = None,
 ) -> str:
     """Convenience: build the glance metrics and render them to a Markdown block."""
     return render_glance_block(
@@ -200,5 +243,7 @@ def format_glance_section(
             flags=flags,
             goal_snapshot=goal_snapshot,
             run_sessions_7d=run_sessions_7d,
+            strength_progress=strength_progress,
+            training_phase=training_phase,
         )
     )

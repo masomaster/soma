@@ -33,6 +33,8 @@ from pipeline import stat_anomalies as stat_anomalies_mod
 from pipeline.briefing import Briefing, LLMClient, generate_briefing
 from pipeline.mileage_ramp import iso_week_start
 from pipeline.rules import Flag
+from pipeline.strength_analytics import build_strength_progress_summary
+from pipeline.training_phase import build_training_phase_context
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +65,7 @@ class DailyPipelineIO:
     load_running_sessions: Callable[[str, date], Sequence[Row]] | None = None
     load_schedule_exceptions: Callable[[str, date], Sequence[Row]] | None = None
     load_interventions: Callable[[str, date], Sequence[Row]] | None = None
+    load_training_phases: Callable[[str, date], Sequence[Row]] | None = None
     persist_goal_snapshot: Callable[[Row], None] | None = None
     persist_weekly_summary: Callable[[Row], None] | None = None
     deliver: Callable[[Briefing], dict[str, Any]] | None = None
@@ -267,6 +270,14 @@ def run_daily_pipeline(
             running,
             as_of=run_date,
         )
+        strength_events = io.load_strength_events(user_id, run_date)
+        strength_progress = build_strength_progress_summary(strength_events, as_of=run_date)
+        phases = (
+            list(io.load_training_phases(user_id, run_date))
+            if io.load_training_phases is not None
+            else []
+        )
+        training_phase = build_training_phase_context(phases, as_of=run_date)
         result.briefing = generate_briefing(
             user_id=user_id,
             feature_date=run_date,
@@ -279,6 +290,8 @@ def run_daily_pipeline(
             goal_snapshot=result.goal_snapshot,
             guidelines=guidelines,
             run_sessions_7d=run_sessions_7d,
+            strength_progress=strength_progress,
+            training_phase=training_phase,
         )
         if io.persist_briefing is not None:
             io.persist_briefing(result.briefing.to_row())

@@ -25,10 +25,12 @@ from pipeline.dashboard_queries import (
     fetch_cardio_events_window,
     fetch_features_history,
     fetch_metrics_history,
+    fetch_strength_events_window,
     fetch_weekly_summaries,
     load_dashboard_context_from_db,
     summarize_cardio_by_mode,
 )
+from pipeline.strength_analytics import build_strength_progress_summary
 from pipeline.db_session import apply_rls_scope
 from pipeline.goal_tools import apply_coaching_writes
 from pipeline.guidelines import (
@@ -176,10 +178,89 @@ def _resolve_llm(ctx: dict):
     return _mock_llm
 
 
+def _fixture_strength_events(as_of: date) -> list[dict[str, Any]]:
+    """Synthetic Hevy-style rows for offline strength analytics charts."""
+    events: list[dict[str, Any]] = []
+    upper_specs = [
+        ("Bench Press (Dumbbell)", [140, 145, 150, 152, 155, 157, 160, 160]),
+        ("Bicep Curl (Dumbbell)", [30, 32, 32, 35, 35, 37.5, 37.5, 40]),
+        ("Incline Press (Dumbbell)", [55, 57.5, 60, 60, 62.5, 62.5, 65, 65]),
+    ]
+    lower_specs = [
+        ("Squat (Barbell)", [185, 195, 205, 205, 215, 215, 225, 225]),
+        ("Romanian Deadlift (Barbell)", [135, 145, 155, 155, 165, 165, 175, 175]),
+    ]
+    for week_i in range(8):
+        upper_day = as_of - timedelta(days=(7 - week_i) * 7 + 1)
+        lower_day = as_of - timedelta(days=(7 - week_i) * 7 + 3)
+        for name, progression in upper_specs:
+            weight = progression[week_i]
+            for reps in (10, 8):
+                events.append(
+                    {
+                        "event_date": upper_day.isoformat(),
+                        "exercise_name": name,
+                        "set_type": "working",
+                        "reps": reps,
+                        "weight_lbs": weight,
+                    }
+                )
+        for name, progression in lower_specs:
+            weight = progression[week_i]
+            for reps in (8, 6):
+                events.append(
+                    {
+                        "event_date": lower_day.isoformat(),
+                        "exercise_name": name,
+                        "set_type": "working",
+                        "reps": reps,
+                        "weight_lbs": weight,
+                    }
+                )
+    return events
+
+
+def _fixture_training_phase(as_of: date) -> dict[str, Any]:
+    start = as_of - timedelta(days=14)
+    end = as_of + timedelta(days=28)
+    total_days = (end - start).days + 1
+    elapsed = (as_of - start).days + 1
+    weeks_total = max(1, (total_days + 6) // 7)
+    weeks_elapsed = min(weeks_total, (elapsed + 6) // 7)
+    return {
+        "as_of": as_of.isoformat(),
+        "active": {
+            "name": "6-week building block",
+            "phase_type": "building",
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "notes": "Progressive overload on main lifts.",
+            "target_notes": "3–4 strength days; keep weekly volume under ~15% jumps.",
+            "weeks_total": weeks_total,
+            "weeks_elapsed": weeks_elapsed,
+            "weeks_remaining": max(0, weeks_total - weeks_elapsed),
+            "pct_complete": round(elapsed / total_days * 100.0, 1),
+            "days_remaining": max(0, (end - as_of).days),
+        },
+        "upcoming": [
+            {
+                "name": "Deload / recovery",
+                "phase_type": "deload",
+                "start_date": (end + timedelta(days=1)).isoformat(),
+                "end_date": (end + timedelta(days=7)).isoformat(),
+                "notes": "Reduce volume ~40% before the next block.",
+            }
+        ],
+    }
+
+
 def _fixture_context() -> dict:
     from pipeline.dashboard_queries import build_dashboard_context
 
     today = date.today()
+    strength_progress = build_strength_progress_summary(
+        _fixture_strength_events(today), as_of=today
+    )
     return build_dashboard_context(
         user_id="demo-user",
         as_of=today,
@@ -220,7 +301,13 @@ def _fixture_context() -> dict:
             "strength_sessions": 1,
             "running_km": 6.4,
             "cardio_minutes": 45,
+            "summary_json": {
+                "strength_volume_lbs": strength_progress.get("this_week_volume_lbs"),
+                "strength_volume_wow_change_pct": strength_progress.get("week_over_week_change_pct"),
+            },
         },
+        strength_progress=strength_progress,
+        training_phase=_fixture_training_phase(today),
     )
 
 
@@ -327,6 +414,9 @@ def _fixture_weekly_summaries(as_of: date, weeks: int) -> list[dict[str, Any]]:
                 "strength_sessions": rng.randint(1, 4),
                 "running_km": round(rng.uniform(5, 18), 1),
                 "cardio_minutes": round(rng.uniform(60, 220)),
+                "strength_volume_lbs": round(rng.uniform(12000, 28000), 1),
+                "upper_volume_lbs": round(rng.uniform(5000, 14000), 1),
+                "lower_volume_lbs": round(rng.uniform(4000, 12000), 1),
             }
         )
     return rows
@@ -1082,13 +1172,91 @@ def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
         return summarize_cardio_by_mode([])
 
 
+def _render_training_phase_banner(phase_ctx: dict[str, Any] | None) -> None:
+    if not phase_ctx:
+        return
+    active = phase_ctx.get("active")
+    if not isinstance(active, dict):
+        return
+    name = active.get("name") or "Training block"
+    phase_type = active.get("phase_type") or ""
+    pct = active.get("pct_complete")
+    weeks_left = active.get("weeks_remaining")
+    end_date = active.get("end_date")
+    caption_parts = [phase_type.replace("_", " ").title() if phase_type else None]
+    if weeks_left is not None:
+        caption_parts.append(f"{weeks_left} week(s) remaining")
+    if end_date:
+        caption_parts.append(f"through {end_date}")
+    st.info(f"**{name}** · {' · '.join(p for p in caption_parts if p)}")
+    if isinstance(pct, (int, float)):
+        st.progress(min(1.0, max(0.0, pct / 100.0)))
+
+
+def _render_exercise_progress(strength_progress: dict[str, Any] | None) -> None:
+    if not strength_progress:
+        st.caption("No strength analytics yet.")
+        return
+    exercises = strength_progress.get("top_exercises") or []
+    series_map = strength_progress.get("exercise_series") or {}
+    if not exercises:
+        st.caption("Log Hevy workouts to see per-exercise trends.")
+        return
+    names = [str(ex.get("exercise_name")) for ex in exercises if ex.get("exercise_name")]
+    if not names:
+        return
+    selected = st.selectbox("Exercise", names, key="strength_exercise_select")
+    series = series_map.get(selected) or []
+    if not series:
+        st.caption("No sessions for this exercise in the lookback window.")
+        return
+    sdf = _history_df(series, "event_date")
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown(f"**{selected} · top working weight**")
+            _chart(sdf, {"top_weight_lbs": "Top weight (lb)"})
+    with right:
+        with st.container(border=True):
+            st.markdown(f"**{selected} · session volume**")
+            _chart(sdf, {"volume_lbs": "Volume (lb)"}, kind="area")
+    latest = exercises[[ex.get("exercise_name") for ex in exercises].index(selected)]
+    delta_weight = latest.get("weight_delta_vs_prior")
+    delta_vol = latest.get("volume_change_pct_vs_prior")
+    bits: list[str] = []
+    if isinstance(delta_weight, (int, float)):
+        bits.append(f"weight {delta_weight:+.1f} lb vs prior session")
+    if isinstance(delta_vol, (int, float)):
+        bits.append(f"volume {delta_vol:+.1f}% vs prior session")
+    if bits:
+        st.caption("Latest session: " + " · ".join(bits))
+
+
 def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
     f = ctx.get("features") or {}
+    strength_progress = ctx.get("strength_progress") or {}
+    phase_ctx = ctx.get("training_phase")
+
+    _render_training_phase_banner(phase_ctx)
+
     c = st.columns(4)
     c[0].metric("Strength sessions (7d)", _fmt(f.get("strength_sessions_7d")))
     c[1].metric("Cardio minutes (7d)", _fmt(f.get("cardio_minutes_7d")))
     _headline_metric(c[2], "Cardio load (7d)", fdf, "training_load_cardio_minutes_7d")
     _headline_metric(c[3], "Effort index (7d)", fdf, "effort_unified_index_7d")
+
+    wow = strength_progress.get("week_over_week_change_pct")
+    week_vol = strength_progress.get("this_week_volume_lbs")
+    if week_vol is not None:
+        st.metric(
+            "Calendar-week lifting volume",
+            _fmt(week_vol, suffix=" lb"),
+            delta=f"{wow:+.1f}% vs last week" if isinstance(wow, (int, float)) else None,
+            delta_color="off",
+        )
+    for flag in strength_progress.get("progress_flags") or []:
+        if isinstance(flag, dict) and flag.get("message"):
+            st.warning(flag["message"])
 
     totals = _cardio_mode_totals(ctx, mode)
     run_t, bike_t = totals["running"], totals["cycling"]
@@ -1124,10 +1292,83 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
             st.markdown("**Weekly volume**")
             _chart(
                 wdf,
-                {"strength_sessions": "Strength", "running_miles": "Running mi", "cardio_minutes": "Cardio min"},
+                {
+                    "strength_sessions": "Strength",
+                    "running_miles": "Running mi",
+                    "cardio_minutes": "Cardio min",
+                },
                 kind="bar",
                 empty="No weekly summaries yet.",
             )
+
+    st.markdown("###### Lifting progression")
+    prog_left, prog_right = st.columns(2)
+    weekly_df = _history_df(strength_progress.get("weekly_rollups") or [], "week_start")
+    focus_df = _history_df(strength_progress.get("focus_weekly") or [], "week_start")
+    with prog_left:
+        with st.container(border=True):
+            st.markdown("**Calendar-week lifting volume (lb)**")
+            _chart(weekly_df, {"volume_lbs": "Total volume"}, kind="area")
+    with prog_right:
+        with st.container(border=True):
+            st.markdown("**Upper vs lower volume by week (lb)**")
+            _chart(
+                focus_df,
+                {
+                    "upper_volume_lbs": "Upper",
+                    "lower_volume_lbs": "Lower",
+                },
+                kind="bar",
+                empty="No focus split yet.",
+            )
+
+    with st.container(border=True):
+        st.markdown("**Per-exercise trends**")
+        _render_exercise_progress(strength_progress)
+
+    if mode == "live":
+        with st.expander("Schedule a training phase"):
+            st.caption(
+                "Multi-week blocks (building, deload, fat loss, running focus). "
+                "You can also ask Coaching chat to set one."
+            )
+            with st.form("training_phase_form"):
+                name = st.text_input("Name", placeholder="6-week hypertrophy block")
+                phase_type = st.selectbox(
+                    "Phase type",
+                    ["building", "deload", "fat_loss", "running", "maintenance", "custom"],
+                )
+                col_a, col_b = st.columns(2)
+                start = col_a.date_input("Start", value=date.today())
+                end = col_b.date_input("End", value=date.today() + timedelta(weeks=6))
+                notes = st.text_area("Notes", placeholder="Optional context for this block")
+                target_notes = st.text_area(
+                    "Targets",
+                    placeholder="e.g. 3–4 lifts/week, cap weekly volume jumps at 10%",
+                )
+                if st.form_submit_button("Save phase"):
+                    try:
+                        from pipeline.training_phase import training_phase_row
+                        from pipeline import persistence
+
+                        row = training_phase_row(
+                            user_id=ctx["user_id"],
+                            name=name,
+                            phase_type=phase_type,
+                            start_date=start,
+                            end_date=end,
+                            notes=notes or None,
+                            target_notes=target_notes or None,
+                        )
+                        with _scoped_conn(ctx["user_id"], read_only=False) as conn:
+                            with conn.cursor() as cur:
+                                persistence.insert_training_phase(cur, row)
+                            conn.commit()
+                        _load_live_context.clear()
+                        st.success(f"Saved phase: {name}")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
 
     if mode == "live":
         from pipeline.dashboard_queries import fetch_cardio_breakdown_7d

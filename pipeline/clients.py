@@ -178,9 +178,18 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
 
     def load_strength_events(user_id: str, d: date) -> list[dict[str, Any]]:
         return _query(
-            "SELECT event_date, set_type, reps, weight_lbs, rpe FROM strength_events "
+            "SELECT event_date, exercise_name, set_type, reps, weight_lbs, rpe "
+            "FROM strength_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s",
             (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
+        )
+
+    def load_training_phases(user_id: str, d: date) -> list[dict[str, Any]]:
+        del d
+        return _query(
+            "SELECT name, phase_type, start_date, end_date, notes, target_notes, is_active "
+            "FROM training_phases WHERE user_id = %s ORDER BY start_date",
+            (user_id,),
         )
 
     def load_cardio_events(user_id: str, d: date) -> list[dict[str, Any]]:
@@ -244,4 +253,5 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
         "load_running_sessions": load_running_sessions,
         "load_schedule_exceptions": load_schedule_exceptions,
         "load_interventions": load_interventions,
+        "load_training_phases": load_training_phases,
     }

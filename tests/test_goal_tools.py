@@ -65,6 +65,22 @@ def test_apply_tool_schedule_exception():
     assert out["row"]["start_date"] == date(2024, 6, 10)
 
 
+def test_apply_tool_training_phase():
+    out = apply_tool_call(
+        "set_training_phase",
+        {
+            "name": "6-week build",
+            "phase_type": "building",
+            "start_date": "2024-06-01",
+            "end_date": "2024-07-15",
+            "notes": "Progressive overload",
+        },
+        user_id="u1",
+    )
+    assert out["action"] == "insert_training_phase"
+    assert out["row"]["phase_type"] == "building"
+
+
 def test_apply_coaching_writes_append_note():
     notes: list[str] = []
 

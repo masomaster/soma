@@ -60,6 +60,8 @@ SYSTEM_GUIDELINES = (
     "TRENDS lists EWMA drift signals — narrate only if present. "
     "ACTIVE_PATTERNS lists confirmed cross-metric correlations — cite briefly, do not invent new ones. "
     "GOALS_STATUS and TODAYS_FOCUS are pre-computed weekly goal progress — narrate; do not invent counts. "
+    "STRENGTH_PROGRESS and TRAINING_PHASE are pre-computed lifting trends and schedule blocks — cite briefly; "
+    "do not invent exercise numbers or phase dates. "
     "PERSONAL GOALS and INJURY HISTORY blocks are athlete-provided context — respect injury constraints "
     "and do not invent injuries or goals beyond what is stated. "
     "A DATA_QUALITY_* flag means a metric looks mis-recorded (e.g. a run's distance); "
@@ -190,6 +192,8 @@ def build_prompt(
     active_patterns: Sequence[str] | None = None,
     goal_snapshot: Mapping[str, Any] | None = None,
     guidelines: GuidelinesContext | None = None,
+    strength_progress: Mapping[str, Any] | None = None,
+    training_phase: Mapping[str, Any] | None = None,
 ) -> str:
     """Render the user prompt: the pre-computed flags + features the model must narrate."""
     flag_lines = (
@@ -234,6 +238,23 @@ def build_prompt(
             f"TODAYS_FOCUS (deterministic — narrate, do not replan):\n{focus}\n\n"
         )
     guidelines_block = format_guidelines_for_prompt(guidelines)
+    strength_block = ""
+    if strength_progress:
+        compact = {
+            k: v
+            for k, v in strength_progress.items()
+            if k not in ("exercise_series",)
+        }
+        strength_block = (
+            "STRENGTH_PROGRESS (pre-computed lifting trends):\n"
+            f"{json.dumps(compact, indent=2, sort_keys=True, default=str)}\n\n"
+        )
+    phase_block = ""
+    if training_phase:
+        phase_block = (
+            "TRAINING_PHASE (current block schedule — narrate if relevant):\n"
+            f"{json.dumps(training_phase, indent=2, sort_keys=True, default=str)}\n\n"
+        )
     return (
         f"{guidelines_block}"
         f"Date: {feature_date.isoformat()}\n\n"
@@ -245,6 +266,8 @@ def build_prompt(
         f"{json.dumps(trends, indent=2, sort_keys=True, default=str)}\n\n"
         f"ACTIVE_PATTERNS (stored correlations; do not invent):\n{patterns_lines}\n\n"
         f"{goal_block}"
+        f"{strength_block}"
+        f"{phase_block}"
         "UNITS / INTERPRETATION (do not contradict):\n"
         "- strength_tonnage_7d is US short tons (2000 lb): sum over the window of "
         "(reps x weight_lbs) / 2000. Do not call it \"metric tonnes\" unless you "
@@ -283,6 +306,8 @@ def generate_briefing(
     goal_snapshot: Mapping[str, Any] | None = None,
     guidelines: GuidelinesContext | None = None,
     run_sessions_7d: int | None = None,
+    strength_progress: Mapping[str, Any] | None = None,
+    training_phase: Mapping[str, Any] | None = None,
     model: str = DEFAULT_BRIEFING_MODEL,
 ) -> Briefing:
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
@@ -303,6 +328,8 @@ def generate_briefing(
         active_patterns=active_patterns,
         goal_snapshot=goal_snapshot,
         guidelines=guidelines,
+        strength_progress=strength_progress,
+        training_phase=training_phase,
     )
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
@@ -313,6 +340,8 @@ def generate_briefing(
         flags=flags,
         goal_snapshot=goal_snapshot,
         run_sessions_7d=run_sessions_7d,
+        strength_progress=strength_progress,
+        training_phase=training_phase,
     )
     note = _prepend_title(
         _strip_trailing_question(note), feature_date, glance_block=glance_block
@@ -326,6 +355,12 @@ def generate_briefing(
         features_json["goals_status"] = goal_snapshot.get("goals_status")
         features_json["mileage_check"] = goal_snapshot.get("mileage_check")
         features_json["todays_focus"] = goal_snapshot.get("todays_focus")
+    if strength_progress:
+        features_json["strength_progress"] = {
+            k: v for k, v in strength_progress.items() if k != "exercise_series"
+        }
+    if training_phase:
+        features_json["training_phase"] = training_phase
     return Briefing(
         user_id=user_id,
         briefing_date=feature_date,

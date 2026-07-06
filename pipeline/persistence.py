@@ -486,6 +486,45 @@ _SCHEDULE_EXCEPTION_COLUMNS: frozenset[str] = frozenset(
 )
 
 
+_TRAINING_PHASE_COLUMNS = frozenset(
+    {
+        "user_id",
+        "name",
+        "phase_type",
+        "start_date",
+        "end_date",
+        "notes",
+        "target_notes",
+        "is_active",
+    }
+)
+
+
+def insert_training_phase(cur: Any, row: Mapping[str, Any]) -> None:
+    """Insert a training phase row."""
+    unknown = set(row) - _TRAINING_PHASE_COLUMNS
+    if unknown:
+        raise KeyError(f"training_phases row has unknown column(s): {sorted(unknown)}")
+    for key in ("user_id", "name", "phase_type", "start_date", "end_date"):
+        if row.get(key) is None:
+            raise KeyError(f"training_phases row missing required field {key!r}")
+    cur.execute(
+        "INSERT INTO training_phases "
+        "(user_id, name, phase_type, start_date, end_date, notes, target_notes, is_active) "
+        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+        (
+            row["user_id"],
+            row["name"],
+            row["phase_type"],
+            row["start_date"],
+            row["end_date"],
+            row.get("notes"),
+            row.get("target_notes"),
+            row.get("is_active", True),
+        ),
+    )
+
+
 def insert_schedule_exception(cur: Any, row: Mapping[str, Any]) -> None:
     """Insert a schedule exception row."""
     unknown = set(row) - _SCHEDULE_EXCEPTION_COLUMNS
