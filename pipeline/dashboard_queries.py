@@ -19,6 +19,7 @@ from pipeline.features import ACUTE_WINDOW_DAYS, CHRONIC_WINDOW_DAYS
 from pipeline.strength_analytics import build_strength_progress_summary
 from pipeline.training_phase import build_training_phase_context
 from pipeline.units import km_to_miles
+from pipeline.workload_pace import build_workload_pace_summary
 
 
 def _mileage_check_in_miles(mileage: Mapping[str, Any]) -> dict[str, Any]:
@@ -151,6 +152,7 @@ def build_dashboard_context(
     recent_anomalies: Sequence[Mapping[str, Any]] | None = None,
     metric_patterns: Sequence[Mapping[str, Any]] | None = None,
     strength_progress: Mapping[str, Any] | None = None,
+    workload_pace: Mapping[str, Any] | None = None,
     training_phase: Mapping[str, Any] | None = None,
     athlete_journal: Sequence[Mapping[str, Any]] | None = None,
 ) -> dict[str, Any]:
@@ -223,6 +225,8 @@ def build_dashboard_context(
         ctx["correlations"] = correlations
     if strength_progress:
         ctx["strength_progress"] = strength_progress
+    if workload_pace:
+        ctx["workload_pace"] = workload_pace
     if training_phase:
         ctx["training_phase"] = training_phase
     if athlete_journal:
@@ -305,6 +309,19 @@ def fetch_dashboard_source_rows(
             ),
         )
     )
+    cardio_events = list(
+        query_all(
+            "SELECT event_date, activity_type, duration_min, distance_miles, avg_pace_sec_mi "
+            "FROM cardio_events "
+            "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
+            "ORDER BY event_date ASC",
+            (
+                user_id,
+                as_of - timedelta(days=CHRONIC_WINDOW_DAYS * 3 - 1),
+                as_of,
+            ),
+        )
+    )
     training_phases = list(
         query_all(
             "SELECT id, name, phase_type, start_date, end_date, notes, target_notes, is_active "
@@ -322,6 +339,11 @@ def fetch_dashboard_source_rows(
         )
     )
     strength_progress = build_strength_progress_summary(strength_events, as_of=as_of)
+    workload_pace = build_workload_pace_summary(
+        strength_events=strength_events,
+        cardio_events=cardio_events,
+        as_of=as_of,
+    )
     phase_ctx = build_training_phase_context(training_phases, as_of=as_of)
     journal_ctx = format_journal_for_prompt(journal_rows, max_entries=30)
     return build_dashboard_context(
@@ -335,6 +357,7 @@ def fetch_dashboard_source_rows(
         recent_anomalies=recent_anomalies,
         metric_patterns=metric_patterns,
         strength_progress=strength_progress,
+        workload_pace=workload_pace,
         training_phase=phase_ctx,
         athlete_journal=journal_ctx,
     )

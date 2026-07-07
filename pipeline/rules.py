@@ -18,6 +18,7 @@ from pipeline.cardio_quality import (
     DEFAULT_RUN_PACE_MAX_SEC_MI,
     DEFAULT_RUN_PACE_MIN_SEC_MI,
 )
+from pipeline.pace_thresholds import DEFAULT_PACE_THRESHOLDS
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,7 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     # treated as suspect. Defaults live in pipeline.cardio_quality (single source).
     "cardio_run_pace_min_sec_mi": DEFAULT_RUN_PACE_MIN_SEC_MI,
     "cardio_run_pace_max_sec_mi": DEFAULT_RUN_PACE_MAX_SEC_MI,
+    **DEFAULT_PACE_THRESHOLDS,
 }
 
 # Severity ordering for sorting / "worst first" presentation.

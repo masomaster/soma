@@ -14,7 +14,7 @@ import math
 import os
 import random
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -31,6 +31,7 @@ from pipeline.dashboard_queries import (
     summarize_cardio_by_mode,
 )
 from pipeline.strength_analytics import build_strength_progress_summary
+from pipeline.workload_pace import build_workload_pace_summary, pace_status_message
 from pipeline.db_session import apply_rls_scope
 from pipeline.goal_tools import apply_coaching_writes
 from pipeline.guidelines import (
@@ -285,8 +286,13 @@ def _fixture_context() -> dict:
     from pipeline.dashboard_queries import build_dashboard_context
 
     today = date.today()
-    strength_progress = build_strength_progress_summary(
-        _fixture_strength_events(today), as_of=today
+    strength_events = _fixture_strength_events(today)
+    cardio_events = _fixture_cardio_events(today)
+    strength_progress = build_strength_progress_summary(strength_events, as_of=today)
+    workload_pace = build_workload_pace_summary(
+        strength_events=strength_events,
+        cardio_events=cardio_events,
+        as_of=today,
     )
     return build_dashboard_context(
         user_id="demo-user",
@@ -334,6 +340,7 @@ def _fixture_context() -> dict:
             },
         },
         strength_progress=strength_progress,
+        workload_pace=workload_pace,
         training_phase=_fixture_training_phase(today),
         athlete_journal=_fixture_athlete_journal(today),
     )
@@ -683,6 +690,80 @@ def _readiness_meta(score: Any) -> tuple[str, str]:
     if value >= 50:
         return ("🟡", "Moderate")
     return ("🔴", "Low")
+
+
+def _pace_light_card(title: str, domain: Mapping[str, Any] | None) -> None:
+    """Render a single workload-pace traffic light with supporting metrics."""
+    if not domain:
+        st.caption(f"{title}: no data yet")
+        return
+    emoji = str(domain.get("emoji") or "⚪")
+    label = str(domain.get("label") or "Building baseline")
+    st.markdown(f"### {emoji} {title}", help=pace_status_message(domain))
+    st.caption(label)
+    load = domain.get("this_week_load")
+    unit = str(domain.get("load_unit") or "")
+    if load is not None:
+        st.metric("This calendar week", _fmt(load, suffix=f" {unit}"))
+    wow = domain.get("wow_change_pct")
+    if isinstance(wow, (int, float)):
+        st.caption(f"Week over week: {wow:+.1f}%")
+    acwr = domain.get("acwr")
+    if isinstance(acwr, (int, float)):
+        st.caption(f"ACWR (vs 4-wk avg): {acwr:.2f}")
+    vs = domain.get("vs_monthly_avg_pct")
+    if isinstance(vs, (int, float)):
+        st.caption(f"Vs monthly avg: {vs:+.1f}%")
+
+
+def _render_workload_pace_lights(workload_pace: dict[str, Any] | None) -> None:
+    """Hero/overview strip: lifting + cardio traffic lights."""
+    if not workload_pace:
+        return
+    st.markdown("**Training pace**")
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            _pace_light_card("Lifting", workload_pace.get("lifting"))
+    with right:
+        with st.container(border=True):
+            _pace_light_card("Cardio", workload_pace.get("cardio"))
+
+
+def _render_pace_charts(
+    workload_pace: dict[str, Any] | None,
+    *,
+    domain_key: str,
+    title: str,
+    load_label: str,
+) -> None:
+    """WoW change + load vs 4-week average charts for one pace domain."""
+    if not workload_pace:
+        return
+    domain = workload_pace.get(domain_key)
+    if not isinstance(domain, dict):
+        return
+    rollups = domain.get("weekly_rollups") or []
+    if not rollups:
+        st.caption(f"No {title.lower()} history yet.")
+        return
+    df = _history_df(rollups, "week_start")
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown(f"**{title} · week-over-week %**")
+            _chart(df, {"wow_change_pct": "WoW % change"})
+    with right:
+        with st.container(border=True):
+            st.markdown(f"**{title} · this week vs 4-wk avg**")
+            _chart(
+                df,
+                {
+                    "load": f"This week ({load_label})",
+                    "four_week_avg_load": "4-wk avg",
+                },
+                kind="bar",
+            )
 
 
 _GOAL_STATUS_META: dict[str, tuple[str, str]] = {
@@ -1096,6 +1177,7 @@ def _render_hero(ctx: dict, mdf, fdf) -> None:
             st.markdown("**🎯 Today's focus**")
             st.info(ctx.get("todays_focus") or "No focus computed yet.")
             _render_training_phases(ctx.get("training_phase"), compact=True)
+            _render_workload_pace_lights(ctx.get("workload_pace"))
             chips = _active_alerts(ctx)
             if chips:
                 st.markdown("🚨 " + " &nbsp; ".join(f"`{c}`" for c in chips))
@@ -1152,6 +1234,7 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                     delta = f"{this_wk - last_wk:+.1f} mi vs last week"
                 st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" mi"), delta=delta)
         _render_training_phases(ctx.get("training_phase"), compact=False)
+        _render_workload_pace_lights(ctx.get("workload_pace"))
     with right:
         with st.container(border=True):
             st.markdown("**🔥 Readiness trend**")
@@ -1315,9 +1398,11 @@ def _render_exercise_progress(strength_progress: dict[str, Any] | None) -> None:
 def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
     f = ctx.get("features") or {}
     strength_progress = ctx.get("strength_progress") or {}
+    workload_pace = ctx.get("workload_pace") or {}
     phase_ctx = ctx.get("training_phase")
 
     _render_training_phases(phase_ctx, compact=False)
+    _render_workload_pace_lights(workload_pace)
 
     c = st.columns(4)
     c[0].metric("Strength sessions (7d)", _fmt(f.get("strength_sessions_7d")))
@@ -1380,6 +1465,20 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
                 kind="bar",
                 empty="No weekly summaries yet.",
             )
+
+    st.markdown("###### Training pace · week-over-week & vs monthly average")
+    pace_row = st.columns(2)
+    with pace_row[0]:
+        _render_pace_charts(workload_pace, domain_key="lifting", title="Lifting", load_label="lb")
+    with pace_row[1]:
+        _render_pace_charts(workload_pace, domain_key="cardio", title="Cardio", load_label="min")
+
+    st.markdown("###### Running & cycling · weekly miles")
+    cardio_pace_row = st.columns(2)
+    with cardio_pace_row[0]:
+        _render_pace_charts(workload_pace, domain_key="running", title="Running", load_label="mi")
+    with cardio_pace_row[1]:
+        _render_pace_charts(workload_pace, domain_key="cycling", title="Cycling", load_label="mi")
 
     st.markdown("###### Lifting progression")
     prog_left, prog_right = st.columns(2)

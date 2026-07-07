@@ -22,6 +22,7 @@ from typing import Any
 from pipeline.features import ACUTE_WINDOW_DAYS, LBS_PER_SHORT_TON, as_date
 from pipeline.rules import Flag
 from pipeline.units import km_to_miles
+from pipeline.workload_pace import pace_status_message
 
 GLANCE_HEADING = "## At a Glance"
 
@@ -101,6 +102,7 @@ def build_glance_metrics(
     run_sessions_7d: int | None = None,
     strength_progress: Mapping[str, Any] | None = None,
     training_phase: Mapping[str, Any] | None = None,
+    workload_pace: Mapping[str, Any] | None = None,
 ) -> list[tuple[str, str]]:
     """Build the ordered ``(label, value)`` pairs for the glance summary.
 
@@ -180,6 +182,14 @@ def build_glance_metrics(
                 detail += f" · {weeks_remaining} week(s) left"
             lines.append(("Training phase", detail))
 
+    if workload_pace:
+        lifting = workload_pace.get("lifting")
+        if isinstance(lifting, Mapping):
+            lines.append(("Lifting pace", pace_status_message(lifting)))
+        cardio = workload_pace.get("cardio")
+        if isinstance(cardio, Mapping):
+            lines.append(("Cardio pace", pace_status_message(cardio)))
+
     if goal_snapshot:
         mileage = goal_snapshot.get("mileage_check")
         if isinstance(mileage, Mapping):
@@ -234,6 +244,7 @@ def format_glance_section(
     run_sessions_7d: int | None = None,
     strength_progress: Mapping[str, Any] | None = None,
     training_phase: Mapping[str, Any] | None = None,
+    workload_pace: Mapping[str, Any] | None = None,
 ) -> str:
     """Convenience: build the glance metrics and render them to a Markdown block."""
     return render_glance_block(
@@ -245,5 +256,6 @@ def format_glance_section(
             run_sessions_7d=run_sessions_7d,
             strength_progress=strength_progress,
             training_phase=training_phase,
+            workload_pace=workload_pace,
         )
     )

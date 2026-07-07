@@ -36,6 +36,7 @@ from pipeline.rules import Flag
 from pipeline.strength_analytics import build_strength_progress_summary
 from pipeline.training_phase import build_training_phase_context
 from pipeline.athlete_journal import format_journal_for_prompt
+from pipeline.workload_pace import build_workload_pace_summary
 
 logger = logging.getLogger(__name__)
 
@@ -273,7 +274,14 @@ def run_daily_pipeline(
             as_of=run_date,
         )
         strength_events = io.load_strength_events(user_id, run_date)
+        cardio_events = io.load_cardio_events(user_id, run_date)
         strength_progress = build_strength_progress_summary(strength_events, as_of=run_date)
+        workload_pace = build_workload_pace_summary(
+            strength_events=strength_events,
+            cardio_events=cardio_events,
+            as_of=run_date,
+            thresholds=thresholds,
+        )
         phases = (
             list(io.load_training_phases(user_id, run_date))
             if io.load_training_phases is not None
@@ -301,6 +309,7 @@ def run_daily_pipeline(
             strength_progress=strength_progress,
             training_phase=training_phase,
             athlete_journal=athlete_journal,
+            workload_pace=workload_pace,
         )
         if io.persist_briefing is not None:
             io.persist_briefing(result.briefing.to_row())
