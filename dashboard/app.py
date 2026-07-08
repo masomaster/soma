@@ -1064,9 +1064,13 @@ def _render_auth_gate(cookie_manager) -> bool:
         st.rerun()
 
     if _cloud_dashboard():
-        email = st.text_input("Email", key="signin_email")
-        password = st.text_input("Password", type="password", key="signin_pw")
-        if st.button("Sign in", key="signin_btn"):
+        with st.form("cloud_signin_form", clear_on_submit=False):
+            email = st.text_input("Email", key="signin_email", autocomplete="email")
+            password = st.text_input(
+                "Password", type="password", key="signin_pw", autocomplete="current-password"
+            )
+            submitted = st.form_submit_button("Sign in", use_container_width=True)
+        if submitted:
             try:
                 _try_sign_in(email, password)
             except Exception as exc:
@@ -1080,18 +1084,26 @@ def _render_auth_gate(cookie_manager) -> bool:
     tab_in, tab_up = st.tabs(["Sign in", "Create account"])
 
     with tab_in:
-        email = st.text_input("Email", key="signin_email")
-        password = st.text_input("Password", type="password", key="signin_pw")
-        if st.button("Sign in", key="signin_btn"):
+        with st.form("local_signin_form", clear_on_submit=False):
+            email = st.text_input("Email", key="signin_email", autocomplete="email")
+            password = st.text_input(
+                "Password", type="password", key="signin_pw", autocomplete="current-password"
+            )
+            submitted = st.form_submit_button("Sign in", use_container_width=True)
+        if submitted:
             try:
                 _try_sign_in(email, password)
             except Exception as exc:
                 st.error(str(exc))
 
     with tab_up:
-        email2 = st.text_input("Email", key="signup_email")
-        password2 = st.text_input("Password", type="password", key="signup_pw")
-        if st.button("Create account", key="signup_btn"):
+        with st.form("local_signup_form", clear_on_submit=False):
+            email2 = st.text_input("Email", key="signup_email", autocomplete="email")
+            password2 = st.text_input(
+                "Password", type="password", key="signup_pw", autocomplete="new-password"
+            )
+            signup_submitted = st.form_submit_button("Create account", use_container_width=True)
+        if signup_submitted:
             try:
                 session = sign_up_with_password(
                     email=email2, password=password2, supabase_url=url, anon_key=key

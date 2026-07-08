@@ -16,6 +16,16 @@ class AuthError(Exception):
     """Raised when sign-in or sign-up fails."""
 
 
+def _normalize_email(email: str) -> str:
+    """Strip whitespace and lowercase — mobile autofill often varies casing."""
+    return email.strip().casefold()
+
+
+def _normalize_password(password: str) -> str:
+    """Strip surrounding whitespace — mobile keyboards/autofill often append it."""
+    return password.strip()
+
+
 def _auth_request(
     supabase_url: str,
     anon_key: str,
@@ -38,15 +48,14 @@ def _auth_request(
         with urllib.request.urlopen(req, timeout=30) as resp:
             raw = resp.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        detail = ""
+        detail = exc.read().decode("utf-8", errors="replace")
         try:
-            detail = exc.read().decode("utf-8", errors="replace")
             parsed = json.loads(detail)
-            msg = parsed.get("msg") or parsed.get("error_description") or parsed.get("message")
-            if msg:
-                raise AuthError(str(msg)) from None
-        except (json.JSONDecodeError, AuthError):
-            pass
+        except json.JSONDecodeError:
+            raise AuthError(detail or f"Auth HTTP {exc.code}") from None
+        msg = parsed.get("msg") or parsed.get("error_description") or parsed.get("message")
+        if msg:
+            raise AuthError(str(msg)) from None
         raise AuthError(detail or f"Auth HTTP {exc.code}") from None
     return json.loads(raw)
 
@@ -63,7 +72,7 @@ def sign_in_with_password(
         supabase_url,
         anon_key,
         "/auth/v1/token?grant_type=password",
-        {"email": email.strip(), "password": password},
+        {"email": _normalize_email(email), "password": _normalize_password(password)},
     )
     user = data.get("user") or {}
     user_id = user.get("id")
@@ -122,7 +131,7 @@ def sign_up_with_password(
         supabase_url,
         anon_key,
         "/auth/v1/signup",
-        {"email": email.strip(), "password": password},
+        {"email": _normalize_email(email), "password": _normalize_password(password)},
     )
     user = data.get("user") or data
     user_id = user.get("id")
