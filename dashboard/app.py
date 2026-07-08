@@ -687,6 +687,8 @@ def _await_cookie_sync(cookie_manager) -> None:
 
     if cookie_manager is None or st.session_state.get("auth_user_id"):
         return
+    if st.session_state.get("_signed_out"):
+        return
     if not auth_configured() or _fixture_mode_enabled():
         return
     if st.session_state.get("_cookie_synced"):
