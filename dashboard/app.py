@@ -14,6 +14,7 @@ import math
 import os
 import random
 import sys
+import time
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
@@ -584,17 +585,28 @@ def _cloud_dashboard() -> bool:
 # session instead of forcing another sign-in.
 _REFRESH_COOKIE = "soma_refresh_token"
 _REFRESH_COOKIE_DAYS = 30
+# Time to let the cookie component's browser round-trip finish before a rerun
+# tears it down (write side) / before the login gate renders (read side).
+_COOKIE_WRITE_SETTLE_SECONDS = 0.6
 
 
 def _cookie_manager():
-    """Return a per-session CookieManager, or None if the component is missing."""
+    """Return a CookieManager for this script run, or None if unavailable.
+
+    A fresh instance is built on every run *on purpose*: ``CookieManager``
+    reads the browser cookies inside ``__init__`` (via its ``getAll`` component)
+    and caches them on the instance. Persisting the instance in
+    ``st.session_state`` would freeze that snapshot at the very first run — when
+    the component has not yet mounted and reports no cookies — so ``.get()``
+    would return ``None`` forever and the refresh-token cookie could never be
+    read back after a page reload. Rebuilding each run lets the (stable-key)
+    component re-report the real cookies once it has mounted.
+    """
     try:
         import extra_streamlit_components as stx
     except ImportError:
         return None
-    if "_cookie_manager" not in st.session_state:
-        st.session_state._cookie_manager = stx.CookieManager(key="soma_cookies")
-    return st.session_state._cookie_manager
+    return stx.CookieManager(key="soma_cookies")
 
 
 def _store_refresh_cookie(cookie_manager, refresh_token: str) -> None:
@@ -611,8 +623,15 @@ def _store_refresh_cookie(cookie_manager, refresh_token: str) -> None:
         key="soma_set_refresh",
         expires_at=datetime.now(timezone.utc) + timedelta(days=_REFRESH_COOKIE_DAYS),
         secure=secure or None,
-        same_site="strict",
+        same_site="lax",
     )
+    # ``set`` is a frontend component: the cookie is only written after the
+    # browser receives the render delta and runs its JS. Callers rerun right
+    # after sign-in, which would tear the component down before that round-trip
+    # completes and silently drop the cookie — so give the browser a beat to
+    # persist it. (Supabase also rotates the refresh token on every refresh, so
+    # dropping this write breaks the *next* reload, not just the current one.)
+    time.sleep(_COOKIE_WRITE_SETTLE_SECONDS)
 
 
 def _clear_refresh_cookie(cookie_manager) -> None:
@@ -620,6 +639,11 @@ def _clear_refresh_cookie(cookie_manager) -> None:
         return
     if cookie_manager.get(_REFRESH_COOKIE) is not None:
         cookie_manager.delete(_REFRESH_COOKIE, key="soma_del_refresh")
+        # Same browser round-trip caveat as ``_store_refresh_cookie``: without a
+        # beat before the caller reruns, the delete component is torn down before
+        # the browser clears the cookie, so sign-out silently leaves the
+        # refresh token in place and the next load logs the user right back in.
+        time.sleep(_COOKIE_WRITE_SETTLE_SECONDS)
 
 
 def _restore_session_from_cookie(cookie_manager) -> None:
@@ -627,6 +651,8 @@ def _restore_session_from_cookie(cookie_manager) -> None:
     from dashboard.auth import AuthError, auth_configured, refresh_session
 
     if cookie_manager is None or st.session_state.get("auth_user_id"):
+        return
+    if st.session_state.get("_signed_out"):
         return
     if not auth_configured() or _fixture_mode_enabled():
         return
@@ -646,6 +672,28 @@ def _restore_session_from_cookie(cookie_manager) -> None:
     st.session_state.auth_email = session["email"]
     st.session_state.auth_token = session["access_token"]
     _store_refresh_cookie(cookie_manager, session["refresh_token"])
+
+
+def _await_cookie_sync(cookie_manager) -> None:
+    """Give the cookie component one render pass to report browser cookies.
+
+    On a fresh page load the ``CookieManager`` component has not mounted yet, so
+    the first script run sees no cookies. Rather than flash the login form (and
+    lose the persisted session), do a single short settle-and-rerun so the next
+    run can rehydrate from the refresh-token cookie. Guarded by a per-session
+    flag so genuine first-time visitors only pay for it once.
+    """
+    from dashboard.auth import auth_configured
+
+    if cookie_manager is None or st.session_state.get("auth_user_id"):
+        return
+    if not auth_configured() or _fixture_mode_enabled():
+        return
+    if st.session_state.get("_cookie_synced"):
+        return
+    st.session_state._cookie_synced = True
+    time.sleep(_COOKIE_WRITE_SETTLE_SECONDS)
+    st.rerun()
 
 
 # ---------------------------------------------------------------------------
@@ -1079,6 +1127,11 @@ def _render_sidebar(
             st.caption(f"Signed in as **{st.session_state.auth_email}**")
             if st.button("Sign out", use_container_width=True):
                 _clear_refresh_cookie(cookie_manager)
+                # Block cookie-based restore for the rest of this session in case
+                # the (already-mounted) cookie component reports a stale value on
+                # the rerun before the browser finishes clearing it. A real page
+                # reload drops this flag — and by then the cookie is gone.
+                st.session_state._signed_out = True
                 for key in (
                     "auth_user_id",
                     "auth_email",
@@ -1784,6 +1837,7 @@ def main() -> None:
 
     cookie_manager = _cookie_manager()
     _restore_session_from_cookie(cookie_manager)
+    _await_cookie_sync(cookie_manager)
 
     if not _render_auth_gate(cookie_manager):
         return
