@@ -273,6 +273,32 @@ def test_ingest_bytes_invalid_json_raises() -> None:
         )
 
 
+def test_hrv_name_aliases_map_to_hrv_rmssd() -> None:
+    """Health Sync / HAE send several HRV name spellings; all should land as hrv_rmssd."""
+    for name in (
+        "heart_rate_variability_sdnn",
+        "Heart Rate Variability",
+        "HRV",
+        "HKQuantityTypeIdentifierHeartRateVariabilitySDNN",
+        "hrv_sdnn",
+    ):
+        body = {
+            "data": {
+                "metrics": [
+                    {
+                        "name": name,
+                        "units": "ms",
+                        "data": [{"qty": 55.0, "date": "2024-06-01 08:00:00 +0000"}],
+                    }
+                ]
+            }
+        }
+        rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+        assert len(rows) == 1, name
+        assert rows[0]["metric"] == "hrv_rmssd"
+        assert rows[0]["value"] == pytest.approx(55.0)
+
+
 def test_upsert_biometrics_uses_on_conflict_do_update() -> None:
     cur = MagicMock()
     rows = [

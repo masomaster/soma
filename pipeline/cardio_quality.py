@@ -18,6 +18,36 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+# HealthKit / HAE workout names that usually mirror Hevy strength sessions.
+STRENGTH_LIKE_CARDIO_ACTIVITIES: frozenset[str] = frozenset(
+    {
+        "traditional strength training",
+        "functional strength training",
+        "core training",
+    }
+)
+
+
+def is_strength_like_cardio_activity(activity_type: Any) -> bool:
+    """True when ``activity_type`` is a strength-style workout mirrored into cardio."""
+    if not isinstance(activity_type, str):
+        return False
+    return activity_type.strip().lower() in STRENGTH_LIKE_CARDIO_ACTIVITIES
+
+
+CYCLING_KEYWORDS = ("cycl", "bike", "ride", "spin")
+
+
+def cardio_mode(activity_type: Any) -> str:
+    """Bucket a cardio ``activity_type`` into ``running`` / ``cycling`` / ``other``."""
+    a = str(activity_type or "").lower()
+    if "run" in a:
+        return "running"
+    if any(k in a for k in CYCLING_KEYWORDS):
+        return "cycling"
+    return "other"
+
+
 # Plausible run pace band, seconds per mile. Below the floor is faster than an
 # elite miler (data glitch); above the ceiling is slower than a brisk walk, so a
 # "run" that slow almost always means the distance was under-recorded.
@@ -37,9 +67,8 @@ def _num(value: Any) -> float | None:
 
 
 def _is_run(activity_type: Any) -> bool:
-    """Run detection: ``"run"`` substring, matching the convention used across
-    goal_progress / mileage_ramp / metrics_summary."""
-    return "run" in str(activity_type or "").lower()
+    """Run detection — same convention as :func:`cardio_mode`."""
+    return cardio_mode(activity_type) == "running"
 
 
 def run_pace_sec_per_mile(row: Mapping[str, Any]) -> float | None:

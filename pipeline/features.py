@@ -28,6 +28,7 @@ from pipeline.cardio_quality import (
     DEFAULT_RUN_PACE_MAX_SEC_MI,
     DEFAULT_RUN_PACE_MIN_SEC_MI,
     assess_cardio_quality,
+    is_strength_like_cardio_activity,
 )
 from pipeline.sleep_score import DEFAULT_SLEEP_NEED_HOURS, compute_sleep_score
 
@@ -245,6 +246,8 @@ def _cardio_training_load(
         d = _as_date(ev.get("event_date"))
         if d is None:
             continue
+        if is_strength_like_cardio_activity(ev.get("activity_type")):
+            continue
         minutes = _num(ev.get("duration_min")) or 0.0
         if _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS):
             sessions_7d.add(d)
@@ -328,6 +331,8 @@ def _effort_foster_cardio_au(
     for ev in cardio_events:
         d = _as_date(ev.get("event_date"))
         if d is None or not _in_window(d, as_of=as_of, days=days):
+            continue
+        if is_strength_like_cardio_activity(ev.get("activity_type")):
             continue
         rpe = _num(ev.get("session_rpe"))
         dur = _num(ev.get("duration_min"))

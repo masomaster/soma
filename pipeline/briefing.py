@@ -32,12 +32,12 @@ DEFAULT_BRIEFING_MODEL = "claude-haiku-4-5-20251001"
 
 SYSTEM_GUIDELINES = (
     "You are Soma, a concise personal fitness companion for a hobbyist athlete. "
-    "You are given PRE-COMPUTED signals (flags) and numeric features. Narrate and "
-    "prioritize those signals into a short morning check-in with neutral reminders "
-    "and gentle suggestions — not orders or warnings. Do NOT invent data, do NOT "
-    "contradict the flags, and do NOT perform your own statistical analysis of "
-    "raw history — only explain what you are given. Lead with the highest-priority "
-    "signal. TONE: warm, conversational, and low-pressure. Never use commanding or "
+    "You are given PRE-COMPUTED signals (flags) and numeric features. Turn those "
+    "signals into a short morning check-in of actionable reminders and gentle "
+    "suggestions — not orders or warnings. Do NOT invent data, do NOT contradict "
+    "the flags, and do NOT perform your own statistical analysis of raw history — "
+    "only explain what you are given. Lead with the highest-priority signal. "
+    "TONE: warm, conversational, and low-pressure. Never use commanding or "
     "alarmist phrasing (e.g. you must, critical, urgent, immediately, "
     "non-negotiable, mandatory). Prefer soft suggestions (might consider, worth "
     "noting, one idea for today). This is hobby training, not medical care — do "
@@ -54,6 +54,8 @@ SYSTEM_GUIDELINES = (
     "modality-split external exposure (minutes or US short tons) and "
     "effort_unified_index_* as a heuristic combined trend—not HR TRIMP or "
     "clinical stress. "
+    "WORKLOAD_PACE lights: red means overload; yellow underload means room to "
+    "build — never call underload 'overloaded'. "
     "STATISTICAL_SIGNALS lists z-score outliers vs the athlete's prior daily baseline "
     "(see baseline_n). Do not contradict listed z-scores or directions; if the "
     "anomalies list is empty, do not invent statistical outliers. "
@@ -61,19 +63,22 @@ SYSTEM_GUIDELINES = (
     "ACTIVE_PATTERNS lists confirmed cross-metric correlations — cite briefly, do not invent new ones. "
     "GOALS_STATUS and TODAYS_FOCUS are pre-computed weekly goal progress — narrate; do not invent counts. "
     "STRENGTH_PROGRESS and TRAINING_PHASE are pre-computed lifting trends and schedule blocks — cite briefly; "
-    "do not invent exercise numbers or phase dates. "
+    "do not invent exercise numbers or phase dates. Do NOT list individual key lifts "
+    "or top exercises unless a flag explicitly references one. "
     "ATHLETE_JOURNAL lists the athlete's own saved notes — respect them; do not invent journal entries. "
     "PERSONAL GOALS and INJURY HISTORY blocks are athlete-provided context — respect injury constraints "
     "and do not invent injuries or goals beyond what is stated. "
     "A DATA_QUALITY_* flag means a metric looks mis-recorded (e.g. a run's distance); "
     "mention it briefly and neutrally as a 'worth verifying' note — never alarm, and do "
     "not treat the suspect number as real. "
-    "Use plain sentences; at most light Markdown (bold, short bullets). "
+    "FORMAT: write ONLY Markdown bullet points for the coaching body — 3 to 5 "
+    "short bullets of concrete actions, suggestions, or reminders for today. "
+    "No paragraph prose, no numbered lists, no closing question. Each bullet is "
+    "one tight line. An optional single bold lead-in line before the bullets is "
+    "OK only when it names the top signal. "
     "Do NOT write your own title, date, or greeting line — a 'Morning Check-In' "
     "header is added for you, so begin directly with the substance. "
-    "Do NOT end with a question or a request for a reply (e.g. 'How are you "
-    "feeling?', 'Sound good?'); close with a calm, declarative sentence. "
-    "Keep it under 150 words."
+    "Keep the whole note under 120 words."
 )
 
 # LLM client contract: given (system, user_prompt) return the assistant text.
@@ -309,8 +314,9 @@ def build_prompt(
         "HRV and training signals (and same-day metrics only if a flag references them).\n"
         "- When recovery_hrv_days_7d is 0 but recovery_sleep_days_7d is not, do not "
         "invent HRV recovery narrative.\n"
-        "- acute_chronic_ratio null means the 7d vs 28d cardio ratio could not be "
-        "computed (often insufficient chronic minutes); do not describe it as high load.\n"
+        "- acute_chronic_ratio is the rolling 7d÷28d cardio minutes ratio on "
+        "daily_features (distinct from calendar-week ACWR on workload pace lights). "
+        "Null means it could not be computed; do not describe it as high load.\n"
         "- training_load_* are modality-split EXTERNAL training exposure (minutes or US short tons); "
         "they are not HR-derived physiological stress.\n"
         "- effort_unified_index_* is a HEURISTIC single scale (minutes + short tons × a fixed factor); "
@@ -318,7 +324,8 @@ def build_prompt(
         "- effort_foster_* uses session/set RPE when logged; NULL components mean RPE was not "
         "captured — do not invent Foster load.\n"
         "- All distances are in statute MILES (mi); report running distance in miles, never km.\n\n"
-        "Write the morning briefing now."
+        "Write the morning briefing now as 3–5 Markdown action bullets "
+        "(optional one-line bold lead-in). No paragraphs."
     )
 
 
@@ -334,6 +341,7 @@ def generate_briefing(
     active_patterns: Sequence[str] | None = None,
     goal_snapshot: Mapping[str, Any] | None = None,
     guidelines: GuidelinesContext | None = None,
+    week_activity: Mapping[str, Any] | None = None,
     run_sessions_7d: int | None = None,
     strength_progress: Mapping[str, Any] | None = None,
     training_phase: Mapping[str, Any] | None = None,
@@ -344,12 +352,18 @@ def generate_briefing(
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
 
     The returned ``coaching_note`` leads with a deterministic "At a Glance" metrics
-    summary (pre-computed here, not by the model), followed by the LLM prose.
+    summary (pre-computed here, not by the model), followed by LLM action bullets.
 
     Raises:
         ValueError: If the model returns empty text.
     """
     stat_block = stat_signals if stat_signals is not None else {"anomalies": [], "trends": []}
+    # Glance should not surface key-lift highlights.
+    strength_for_glance = None
+    if strength_progress:
+        strength_for_glance = {
+            k: v for k, v in strength_progress.items() if k != "top_exercises"
+        }
     prompt = build_prompt(
         feature_date=feature_date,
         flags=flags,
@@ -359,7 +373,7 @@ def generate_briefing(
         active_patterns=active_patterns,
         goal_snapshot=goal_snapshot,
         guidelines=guidelines,
-        strength_progress=strength_progress,
+        strength_progress=strength_for_glance,
         training_phase=training_phase,
         athlete_journal=athlete_journal,
         workload_pace=workload_pace,
@@ -372,8 +386,9 @@ def generate_briefing(
         daily_metrics=daily_metrics,
         flags=flags,
         goal_snapshot=goal_snapshot,
+        week_activity=week_activity,
         run_sessions_7d=run_sessions_7d,
-        strength_progress=strength_progress,
+        strength_progress=strength_for_glance,
         training_phase=training_phase,
         workload_pace=workload_pace,
     )

@@ -50,26 +50,66 @@ def test_calendar_week_strength_load_sums_working_sets():
 
 
 def test_build_workload_pace_summary_red_on_strength_spike():
-    anchor = date(2024, 6, 10)  # Monday
+    # Sunday = completed week so status uses the spike week itself.
+    anchor = date(2024, 6, 16)  # Sunday
     events: list[dict] = []
-    # Four stable weeks at ~10k lb
+    # Four stable weeks at ~10k lb ending Mon Jun 10 week
     for w in range(4):
-        week_start = anchor - timedelta(days=7 * (4 - w))
-        events.append(_strength_row(event_date=week_start, reps=10, weight_lbs=100))
-    # Current week spike to 20k lb (100% jump)
-    events.append(_strength_row(event_date=anchor, reps=20, weight_lbs=100))
+        week_start = date(2024, 6, 10) - timedelta(days=7 * (4 - w))
+        events.append(_strength_row(event_date=week_start, reps=10, weight_lbs=1000))
+    # Completed week of Jun 10 spikes to 20k lb
+    events.append(_strength_row(event_date=date(2024, 6, 10), reps=20, weight_lbs=1000))
     summary = build_workload_pace_summary(strength_events=events, cardio_events=[], as_of=anchor)
     lifting = summary["lifting"]
     assert lifting["status"] in ("yellow", "red")
+    assert lifting["direction"] == "high"
+    assert "Overloaded" in lifting["label"] or "ease up" in lifting["label"]
     assert lifting["wow_change_pct"] is not None
     assert lifting["wow_change_pct"] >= 50
 
 
+def test_midweek_status_uses_last_completed_week_not_partial():
+    # Saturday mid-week with light lifting so far — should NOT paint overload red
+    # from the incomplete week; status comes from prior completed week.
+    as_of = date(2024, 6, 15)  # Saturday
+    events: list[dict] = []
+    # Five completed/stable weeks ending Mon Jun 3 (prior week), then tiny current week.
+    for w in range(5):
+        week_start = date(2024, 6, 3) - timedelta(days=7 * (4 - w))
+        events.append(_strength_row(event_date=week_start, reps=10, weight_lbs=1000))
+    # Tiny Mon session in current week (Jun 10)
+    events.append(_strength_row(event_date=date(2024, 6, 10), reps=1, weight_lbs=100))
+    summary = build_workload_pace_summary(strength_events=events, cardio_events=[], as_of=as_of)
+    lifting = summary["lifting"]
+    assert lifting["this_week_load"] == 100.0
+    assert lifting["status_week_start"] == "2024-06-03"
+    assert lifting["status"] != "red"
+    assert "Overloaded" not in lifting["label"]
+
+
+def test_underload_is_yellow_not_overloaded_red():
+    # Completed Sunday week far below baseline.
+    as_of = date(2024, 6, 16)  # Sunday
+    events: list[dict] = []
+    for w in range(4):
+        week_start = date(2024, 6, 10) - timedelta(days=7 * (4 - w))
+        events.append(_strength_row(event_date=week_start, reps=20, weight_lbs=1000))
+    # Light completed week
+    events.append(_strength_row(event_date=date(2024, 6, 10), reps=2, weight_lbs=1000))
+    summary = build_workload_pace_summary(strength_events=events, cardio_events=[], as_of=as_of)
+    lifting = summary["lifting"]
+    assert lifting["acwr"] is not None and lifting["acwr"] < 0.6
+    assert lifting["status"] == "yellow"
+    assert lifting["direction"] == "low"
+    assert "Underloaded" in lifting["label"]
+    assert "Overloaded" not in lifting["label"]
+
+
 def test_build_workload_pace_summary_cardio_acwr_green_zone():
-    anchor = date(2024, 6, 10)
+    anchor = date(2024, 6, 16)  # Sunday — completed week
     events: list[dict] = []
     for w in range(5):
-        week_start = anchor - timedelta(days=7 * (4 - w))
+        week_start = date(2024, 6, 10) - timedelta(days=7 * (4 - w))
         events.append(
             _cardio_row(
                 event_date=week_start,
@@ -83,6 +123,19 @@ def test_build_workload_pace_summary_cardio_acwr_green_zone():
     assert cardio["status"] == "green"
     assert cardio["acwr"] is not None
     assert 0.8 <= cardio["acwr"] <= 1.3
+
+
+def test_strength_typed_cardio_excluded_from_cardio_minutes():
+    week_start = date(2024, 6, 3)
+    events = [
+        _cardio_row(event_date=week_start, activity_type="Outdoor Run", duration_min=40),
+        _cardio_row(
+            event_date=week_start,
+            activity_type="Traditional Strength Training",
+            duration_min=50,
+        ),
+    ]
+    assert calendar_week_cardio_load(events, week_start=week_start) == 40.0
 
 
 def test_running_and_cycling_weekly_rollups_present():

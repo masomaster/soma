@@ -4,7 +4,8 @@ Hevy syncs logged sessions into HealthKit as workouts (often *Traditional Streng
 Training*). Those become ``cardio_events`` with ``source = apple_health`` while the
 same session is already represented as ``strength_events`` with ``source = hevy``.
 This module removes those duplicates **per calendar day** when Hevy has any strength
-rows on that day, matching activity types in ``_APPLE_STRENGTH_ACTIVITY_FOR_HEVY_DEDUP``.
+rows on that day, matching activity types in
+:data:`pipeline.cardio_quality.STRENGTH_LIKE_CARDIO_ACTIVITIES`.
 """
 
 from __future__ import annotations
@@ -13,29 +14,17 @@ import logging
 from datetime import date
 from typing import Any
 
+from pipeline.cardio_quality import is_strength_like_cardio_activity
 from pipeline.features import as_date
 
 logger = logging.getLogger(__name__)
-
-# HealthKit / HAE workout ``name`` values (normalized to lower case) that usually
-# mirror Hevy-imported strength sessions rather than standalone cardio.
-_APPLE_STRENGTH_ACTIVITY_FOR_HEVY_DEDUP: frozenset[str] = frozenset(
-    {
-        "traditional strength training",
-        "functional strength training",
-        "core training",
-    }
-)
 
 
 def is_apple_strength_cardio_hevy_dup_candidate(row: dict[str, Any]) -> bool:
     """True if this row is Apple Health cardio that likely duplicates Hevy strength."""
     if row.get("source") != "apple_health":
         return False
-    raw = row.get("activity_type")
-    if not isinstance(raw, str):
-        return False
-    return raw.strip().lower() in _APPLE_STRENGTH_ACTIVITY_FOR_HEVY_DEDUP
+    return is_strength_like_cardio_activity(row.get("activity_type"))
 
 
 def _event_dates_for_hevy_on_days(

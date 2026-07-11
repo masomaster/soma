@@ -95,7 +95,11 @@ def _num(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
     if isinstance(value, (int, float)):
-        return float(value)
+        f = float(value)
+        # Pandas / JSON may surface missing scores as NaN.
+        if f != f:  # NaN
+            return None
+        return f
     return None
 
 
@@ -239,3 +243,40 @@ def _as_date(value: Any) -> date | None:
         except ValueError:
             return None
     return None
+
+
+def fill_missing_sleep_scores(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    sleep_need_hours: float = DEFAULT_SLEEP_NEED_HOURS,
+) -> list[dict[str, Any]]:
+    """Return copies of ``rows`` with null ``sleep_score`` filled from sleep signals.
+
+    Used by the dashboard (and optional backfills) so historical
+    ``daily_health_metrics`` nights that have ``sleep_hours`` but never got a
+    rollup-time score still chart. Personal HRV / RHR baselines are computed
+    from the same series when enough prior samples exist.
+    """
+    sorted_rows = sorted(
+        (dict(r) for r in rows),
+        key=lambda r: _as_date(r.get("metric_date")) or date.min,
+    )
+    out: list[dict[str, Any]] = []
+    for row in sorted_rows:
+        as_of = _as_date(row.get("metric_date"))
+        existing = _num(row.get("sleep_score"))
+        if existing is None and as_of is not None:
+            score = compute_sleep_score(
+                sleep_hours=_num(row.get("sleep_hours")),
+                sleep_deep_hrs=_num(row.get("sleep_deep_hrs")),
+                sleep_rem_hrs=_num(row.get("sleep_rem_hrs")),
+                resting_hr=_num(row.get("resting_hr")),
+                hrv_rmssd=_num(row.get("hrv_rmssd")),
+                sleep_need_hours=sleep_need_hours,
+                hrv_baseline=trailing_baseline(out, metric="hrv_rmssd", as_of=as_of),
+                resting_hr_baseline=trailing_baseline(out, metric="resting_hr", as_of=as_of),
+            )
+            if score is not None:
+                row["sleep_score"] = score
+        out.append(row)
+    return out

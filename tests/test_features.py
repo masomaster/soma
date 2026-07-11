@@ -131,6 +131,27 @@ def test_compute_daily_features_handles_empty_inputs():
     assert f["overall_readiness_score"] is None
 
 
+def test_cardio_training_load_excludes_strength_like_activities() -> None:
+    cardio = [
+        {"event_date": _d(0), "duration_min": 30, "activity_type": "Outdoor Run"},
+        {
+            "event_date": _d(0),
+            "duration_min": 50,
+            "activity_type": "Traditional Strength Training",
+            "session_rpe": 7.0,
+        },
+        {"event_date": _d(20), "duration_min": 60, "activity_type": "Run"},
+    ]
+    f = F.compute_daily_features(
+        user_id="u1", feature_date=RUN, strength_events=[], cardio_events=cardio
+    )
+    assert f["cardio_minutes_7d"] == 30.0
+    assert f["training_load_cardio_minutes_7d"] == 30.0
+    assert f["training_load_cardio_minutes_28d"] == 90.0
+    assert f["cardio_sessions_7d"] == 1
+    assert f["effort_foster_cardio_au_7d"] is None
+
+
 def test_effort_foster_from_rpe_and_session_rpe():
     strength = [
         {"event_date": _d(0), "set_type": "working", "reps": 5, "weight_lbs": 100, "rpe": 8.0},

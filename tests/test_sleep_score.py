@@ -189,3 +189,34 @@ def test_rollup_does_not_overwrite_existing_sleep_score() -> None:
     ]
     wide = F.rollup_daily_health_metrics(rows, user_id="u1", metric_date=RUN)
     assert wide["sleep_score"] == pytest.approx(42.0)
+
+
+def test_fill_missing_sleep_scores_backfills_nulls() -> None:
+    rows = [
+        {"metric_date": _d(1), "sleep_hours": 7.0, "resting_hr": 58},
+        {"metric_date": _d(2), "sleep_hours": 8.0, "sleep_deep_hrs": 1.5, "sleep_rem_hrs": 1.8},
+        {"metric_date": _d(3), "sleep_hours": 6.5, "sleep_score": 77.0},  # keep existing
+    ]
+    filled = {r["metric_date"]: r for r in S.fill_missing_sleep_scores(rows)}
+    assert filled[_d(1)]["sleep_score"] == pytest.approx(
+        S.compute_sleep_score(sleep_hours=7.0, resting_hr=58)
+    )
+    assert filled[_d(2)]["sleep_score"] == pytest.approx(
+        S.compute_sleep_score(
+            sleep_hours=8.0, sleep_deep_hrs=1.5, sleep_rem_hrs=1.8
+        )
+    )
+    assert filled[_d(3)]["sleep_score"] == pytest.approx(77.0)
+    assert 0.0 <= filled[_d(1)]["sleep_score"] <= 100.0
+
+
+def test_fill_missing_sleep_scores_treats_nan_as_missing() -> None:
+    rows = [
+        {"metric_date": _d(1), "sleep_hours": 7.5, "sleep_score": float("nan")},
+        {"metric_date": _d(2), "sleep_hours": 8.0, "sleep_score": 80.0},
+    ]
+    filled = {r["metric_date"]: r for r in S.fill_missing_sleep_scores(rows)}
+    assert filled[_d(1)]["sleep_score"] == pytest.approx(
+        S.compute_sleep_score(sleep_hours=7.5)
+    )
+    assert filled[_d(2)]["sleep_score"] == pytest.approx(80.0)

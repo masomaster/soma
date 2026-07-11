@@ -19,7 +19,7 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pipeline.coaching_chat import load_chat_messages, run_coaching_turn, save_chat_messages
 from pipeline.dashboard_queries import (
@@ -755,6 +755,9 @@ def _pace_light_card(title: str, domain: Mapping[str, Any] | None) -> None:
     unit = str(domain.get("load_unit") or "")
     if load is not None:
         st.metric("This calendar week", _fmt(load, suffix=f" {unit}"))
+    status_week = domain.get("status_week_start")
+    if status_week and status_week != (domain.get("weekly_rollups") or [{}])[-1].get("week_start"):
+        st.caption(f"Pace light uses completed week of {status_week}")
     wow = domain.get("wow_change_pct")
     if isinstance(wow, (int, float)):
         st.caption(f"Week over week: {wow:+.1f}%")
@@ -778,42 +781,6 @@ def _render_workload_pace_lights(workload_pace: dict[str, Any] | None) -> None:
     with right:
         with st.container(border=True):
             _pace_light_card("Cardio", workload_pace.get("cardio"))
-
-
-def _render_pace_charts(
-    workload_pace: dict[str, Any] | None,
-    *,
-    domain_key: str,
-    title: str,
-    load_label: str,
-) -> None:
-    """WoW change + load vs 4-week average charts for one pace domain."""
-    if not workload_pace:
-        return
-    domain = workload_pace.get(domain_key)
-    if not isinstance(domain, dict):
-        return
-    rollups = domain.get("weekly_rollups") or []
-    if not rollups:
-        st.caption(f"No {title.lower()} history yet.")
-        return
-    df = _history_df(rollups, "week_start")
-    left, right = st.columns(2)
-    with left:
-        with st.container(border=True):
-            st.markdown(f"**{title} · week-over-week %**")
-            _chart(df, {"wow_change_pct": "WoW % change"})
-    with right:
-        with st.container(border=True):
-            st.markdown(f"**{title} · this week vs 4-wk avg**")
-            _chart(
-                df,
-                {
-                    "load": f"This week ({load_label})",
-                    "four_week_avg_load": "4-wk avg",
-                },
-                kind="bar",
-            )
 
 
 _GOAL_STATUS_META: dict[str, tuple[str, str]] = {
@@ -891,8 +858,186 @@ def _history_df(rows: list[dict[str, Any]], date_key: str):
     return df
 
 
-def _chart(df, series: dict[str, str], *, kind: str = "line", empty: str = "No data in this range yet.") -> None:
-    """Render a chart for the present, non-empty columns, or a tidy caption."""
+def _enrich_metrics_trailing_avgs(mdf):
+    """Fill ``*_7d_avg`` from the daily series when the pipeline left them null.
+
+    Live ``daily_health_metrics`` often has sleep/HRV values but never computes
+    the trailing averages (fixtures do). Charts that overlay "7-day avg" need
+    these columns populated client-side.
+    """
+    if mdf is None or getattr(mdf, "empty", True):
+        return mdf
+    pairs = (("sleep_hours", "sleep_7d_avg"), ("hrv_rmssd", "hrv_7d_avg"))
+    for source, target in pairs:
+        if source not in mdf.columns or mdf[source].dropna().empty:
+            continue
+        need = target not in mdf.columns or mdf[target].dropna().empty
+        if need:
+            mdf[target] = mdf[source].rolling(window=7, min_periods=1).mean()
+    return mdf
+
+
+def _enrich_metrics_sleep_scores(mdf):
+    """Fill missing ``sleep_score`` from sleep duration / stages on the chart frame.
+
+    Historical nights often have ``sleep_hours`` but a null score because the
+    daily rollup only writes a score for ``run_date``. Compute the native Soma
+    score client-side so the Sleep tab graph is not empty.
+    """
+    if mdf is None or getattr(mdf, "empty", True):
+        return mdf
+    if "sleep_hours" not in mdf.columns or mdf["sleep_hours"].dropna().empty:
+        return mdf
+    if "sleep_score" in mdf.columns and mdf["sleep_score"].notna().all():
+        return mdf
+
+    from pipeline.sleep_score import fill_missing_sleep_scores
+
+    date_col = mdf.index.name or "metric_date"
+    records = mdf.reset_index().to_dict(orient="records")
+    for row in records:
+        if date_col != "metric_date" and date_col in row:
+            row["metric_date"] = row[date_col]
+    by_date = {
+        str(r["metric_date"])[:10]: r.get("sleep_score")
+        for r in fill_missing_sleep_scores(records)
+        if r.get("metric_date") is not None
+    }
+
+    def _key(idx: Any) -> str:
+        if hasattr(idx, "date") and callable(idx.date) and not isinstance(idx, date):
+            idx = idx.date()
+        return str(idx)[:10]
+
+    mdf = mdf.copy()
+    mdf["sleep_score"] = [by_date.get(_key(idx)) for idx in mdf.index]
+    return mdf
+
+
+def _enrich_metrics_frame(mdf):
+    """Apply all client-side metric enrichments for dashboard charts."""
+    return _enrich_metrics_trailing_avgs(_enrich_metrics_sleep_scores(mdf))
+
+
+def _series_has_data(df, col: str) -> bool:
+    return (
+        df is not None
+        and not getattr(df, "empty", True)
+        and col in df.columns
+        and bool(df[col].notna().any())
+    )
+
+
+# Chart x-axis grain: every dashboard time series is either daily or calendar-week.
+Grain = Literal["day", "week"]
+_GRAIN_X_TITLE: dict[str, str] = {
+    "day": "Day",
+    "week": "Week starting (Mon)",
+}
+
+
+def _sleep_stages_chart(mdf, *, empty: str = "No deep/REM stage hours in this range yet.") -> None:
+    """Stacked deep / REM / light hours for nights that have stage data.
+
+    Filters out blank nights so a sparse series does not render as a single
+    orphaned bar on an empty calendar axis. Light = total sleep − deep − REM
+    when total sleep is known (clamped at 0).
+    """
+    if mdf is None or getattr(mdf, "empty", True):
+        st.caption(empty)
+        return
+    need = [c for c in ("sleep_deep_hrs", "sleep_rem_hrs") if c in mdf.columns]
+    if not need:
+        st.caption(empty)
+        return
+    stage_nights = mdf.dropna(subset=need, how="all")
+    if stage_nights.empty:
+        st.caption(empty)
+        return
+
+    import altair as alt
+    import pandas as pd
+
+    plot = stage_nights.reset_index()
+    date_col = plot.columns[0]
+    deep = plot["sleep_deep_hrs"] if "sleep_deep_hrs" in plot.columns else 0.0
+    rem = plot["sleep_rem_hrs"] if "sleep_rem_hrs" in plot.columns else 0.0
+    deep = pd.to_numeric(deep, errors="coerce").fillna(0.0)
+    rem = pd.to_numeric(rem, errors="coerce").fillna(0.0)
+    if "sleep_hours" in plot.columns:
+        total = pd.to_numeric(plot["sleep_hours"], errors="coerce")
+        light = (total - deep - rem).clip(lower=0.0).fillna(0.0)
+    else:
+        light = pd.Series(0.0, index=plot.index)
+
+    long = pd.DataFrame(
+        {
+            date_col: list(plot[date_col]) * 3,
+            "stage": (["Deep"] * len(plot)) + (["REM"] * len(plot)) + (["Light / other"] * len(plot)),
+            "hours": list(deep) + list(rem) + list(light),
+        }
+    )
+    # Drop zero-height segments so the legend stays honest.
+    long = long[long["hours"] > 0.01]
+    if long.empty:
+        st.caption(empty)
+        return
+
+    x_title = _GRAIN_X_TITLE["day"]
+    chart = (
+        alt.Chart(long)
+        .mark_bar()
+        .encode(
+            x=alt.X(
+                f"{date_col}:T",
+                title=x_title,
+                axis=alt.Axis(format="%b %d", labelAngle=-30),
+            ),
+            y=alt.Y("hours:Q", title="Hours", stack="zero"),
+            color=alt.Color(
+                "stage:N",
+                title=None,
+                scale=alt.Scale(
+                    domain=["Deep", "REM", "Light / other"],
+                    range=["#3b5bdb", "#ae3ec9", "#adb5bd"],
+                ),
+                legend=alt.Legend(orient="top"),
+            ),
+            tooltip=[
+                alt.Tooltip(f"{date_col}:T", title=x_title, format="%Y-%m-%d"),
+                "stage:N",
+                alt.Tooltip("hours:Q", format=".1f"),
+            ],
+        )
+        .properties(height=280)
+    )
+    st.altair_chart(chart, use_container_width=True)
+
+    n = len(stage_nights)
+    deep_pct = (deep.sum() / max(deep.sum() + rem.sum() + light.sum(), 1e-6)) * 100.0
+    rem_pct = (rem.sum() / max(deep.sum() + rem.sum() + light.sum(), 1e-6)) * 100.0
+    st.caption(
+        f"{n} night{'s' if n != 1 else ''} with stage data · "
+        f"avg mix Deep {deep_pct:.0f}% / REM {rem_pct:.0f}% "
+        f"(targets ~18% deep, ~22% REM of total sleep)."
+    )
+
+
+def _time_chart(
+    df,
+    series: dict[str, str],
+    *,
+    grain: Grain,
+    kind: str = "line",
+    empty: str = "No data in this range yet.",
+    y_title: str | None = None,
+    height: int = 260,
+) -> None:
+    """Render a time series with an explicit Day / Week-starting x-axis.
+
+    ``grain=\"day\"`` → daily points (biometrics, readiness, sleep debt).
+    ``grain=\"week\"`` → ISO calendar weeks keyed by Monday week-start.
+    """
     if df is None or getattr(df, "empty", True):
         st.caption(empty)
         return
@@ -900,13 +1045,57 @@ def _chart(df, series: dict[str, str], *, kind: str = "line", empty: str = "No d
     if not present:
         st.caption(empty)
         return
-    data = df[list(present)].rename(columns=present)
-    if kind == "area":
-        st.area_chart(data, height=260)
-    elif kind == "bar":
-        st.bar_chart(data, height=260)
+
+    import altair as alt
+    import pandas as pd
+
+    data = df[list(present)].rename(columns=present).reset_index()
+    date_col = data.columns[0]
+    data[date_col] = pd.to_datetime(data[date_col], errors="coerce")
+    data = data.dropna(subset=[date_col])
+    long_df = data.melt(id_vars=[date_col], var_name="series", value_name="value").dropna(
+        subset=["value"]
+    )
+    if long_df.empty:
+        st.caption(empty)
+        return
+
+    x_title = _GRAIN_X_TITLE[grain]
+    x_enc = alt.X(
+        f"{date_col}:T",
+        title=x_title,
+        axis=alt.Axis(format="%b %d", labelAngle=-30),
+    )
+    y_enc = alt.Y("value:Q", title=y_title or "")
+    color = alt.Color("series:N", title=None, legend=alt.Legend(orient="top"))
+    tooltips = [
+        alt.Tooltip(f"{date_col}:T", title=x_title, format="%Y-%m-%d"),
+        "series:N",
+        alt.Tooltip("value:Q", format=".1f"),
+    ]
+
+    if kind == "bar":
+        mark = alt.Chart(long_df).mark_bar()
+    elif kind == "area":
+        mark = alt.Chart(long_df).mark_area(opacity=0.65)
     else:
-        st.line_chart(data, height=260)
+        mark = alt.Chart(long_df).mark_line(point=grain == "week")
+
+    chart = mark.encode(x=x_enc, y=y_enc, color=color, tooltip=tooltips).properties(height=height)
+    st.altair_chart(chart, use_container_width=True)
+
+
+def _chart(
+    df,
+    series: dict[str, str],
+    *,
+    grain: Grain = "day",
+    kind: str = "line",
+    empty: str = "No data in this range yet.",
+    y_title: str | None = None,
+) -> None:
+    """Backward-compatible wrapper — prefer passing ``grain`` explicitly."""
+    _time_chart(df, series, grain=grain, kind=kind, empty=empty, y_title=y_title)
 
 
 def _padded_chart(
@@ -914,14 +1103,15 @@ def _padded_chart(
     series: dict[str, str],
     *,
     pad: float,
+    grain: Grain = "day",
     empty: str = "No data in this range yet.",
+    y_title: str | None = None,
 ) -> None:
     """Line chart with a non-zero, padded y-domain so variation is visible.
 
     Streamlit's native ``st.line_chart`` always anchors the y-axis at 0, which
-    flattens tight biometric ranges (weight, resting HR, HRV…). This builds an
-    Altair chart with ``scale`` domain ``[min - pad, max + pad]`` and ``zero=False``
-    over every present series. Falls back to a tidy caption when there is no data.
+    flattens tight biometric ranges (weight, resting HR, HRV…). Uses the same
+    Day / Week-starting x-axis convention as :func:`_time_chart`.
     """
     if df is None or getattr(df, "empty", True):
         st.caption(empty)
@@ -931,27 +1121,155 @@ def _padded_chart(
         st.caption(empty)
         return
     import altair as alt
+    import pandas as pd
 
     data = df[list(present)].rename(columns=present).reset_index()
     date_col = data.columns[0]
+    data[date_col] = pd.to_datetime(data[date_col], errors="coerce")
     long_df = data.melt(id_vars=[date_col], var_name="series", value_name="value").dropna(
         subset=["value"]
     )
+    if long_df.empty:
+        st.caption(empty)
+        return
     lo = float(long_df["value"].min()) - pad
     hi = float(long_df["value"].max()) + pad
-    if lo == hi:  # single flat value — still give the line some breathing room
+    if lo == hi:
         lo, hi = lo - pad, hi + pad
+    x_title = _GRAIN_X_TITLE[grain]
     chart = (
         alt.Chart(long_df)
-        .mark_line()
+        .mark_line(point=True)
         .encode(
-            x=alt.X(f"{date_col}:T", title=None),
-            y=alt.Y("value:Q", scale=alt.Scale(domain=[lo, hi], zero=False), title=None),
+            x=alt.X(
+                f"{date_col}:T",
+                title=x_title,
+                axis=alt.Axis(format="%b %d", labelAngle=-30),
+            ),
+            y=alt.Y(
+                "value:Q",
+                scale=alt.Scale(domain=[lo, hi], zero=False),
+                title=y_title or "",
+            ),
             color=alt.Color("series:N", title=None, legend=alt.Legend(orient="top")),
+            tooltip=[
+                alt.Tooltip(f"{date_col}:T", title=x_title, format="%Y-%m-%d"),
+                "series:N",
+                alt.Tooltip("value:Q", format=".1f"),
+            ],
         )
         .properties(height=260)
     )
     st.altair_chart(chart, use_container_width=True)
+
+
+def _acwr_band_chart(df, *, empty: str = "No ACWR history yet.") -> None:
+    """Calendar-week ACWR with the 0.8–1.3 sweet-spot band shaded."""
+    if df is None or getattr(df, "empty", True) or "acwr" not in df.columns:
+        st.caption(empty)
+        return
+    series = df["acwr"].dropna()
+    if series.empty:
+        st.caption(empty)
+        return
+    import altair as alt
+    import pandas as pd
+
+    plot = series.reset_index()
+    date_col = plot.columns[0]
+    plot[date_col] = pd.to_datetime(plot[date_col], errors="coerce")
+    plot = plot.rename(columns={"acwr": "ACWR"}).dropna(subset=[date_col])
+    lo = max(0.0, float(plot["ACWR"].min()) - 0.2)
+    hi = max(1.8, float(plot["ACWR"].max()) + 0.2)
+    band = pd.DataFrame(
+        {date_col: [plot[date_col].min(), plot[date_col].max()], "y": [0.8, 0.8], "y2": [1.3, 1.3]}
+    )
+    x_title = _GRAIN_X_TITLE["week"]
+    x_enc = alt.X(
+        f"{date_col}:T",
+        title=x_title,
+        axis=alt.Axis(format="%b %d", labelAngle=-30),
+    )
+    band_layer = (
+        alt.Chart(band)
+        .mark_area(opacity=0.18, color="#2ecc71")
+        .encode(x=x_enc, y="y:Q", y2="y2:Q")
+    )
+    line = (
+        alt.Chart(plot)
+        .mark_line(point=True)
+        .encode(
+            x=x_enc,
+            y=alt.Y("ACWR:Q", scale=alt.Scale(domain=[lo, hi], zero=False), title="ACWR"),
+            tooltip=[
+                alt.Tooltip(f"{date_col}:T", title=x_title, format="%Y-%m-%d"),
+                alt.Tooltip("ACWR:Q", format=".2f"),
+            ],
+        )
+    )
+    rule_high = (
+        alt.Chart(pd.DataFrame({"y": [1.5]}))
+        .mark_rule(strokeDash=[4, 4], color="#e74c3c", opacity=0.7)
+        .encode(y="y:Q")
+    )
+    st.altair_chart((band_layer + line + rule_high).properties(height=260), use_container_width=True)
+    st.caption(
+        "X-axis: calendar week starting Monday. "
+        "Green band = sweet spot (0.8–1.3). Red dashed line = overload caution (~1.5). "
+        "Distinct from rolling 7d÷28d acute_chronic_ratio used by HIGH_TRAINING_LOAD flags."
+    )
+
+
+def _pace_weekly_df(workload_pace: dict[str, Any] | None, domain_key: str):
+    """Date-indexed DataFrame of calendar-week rollups for a pace domain."""
+    if not workload_pace:
+        return None
+    domain = workload_pace.get(domain_key)
+    if not isinstance(domain, dict):
+        return None
+    return _history_df(domain.get("weekly_rollups") or [], "week_start")
+
+
+def _render_pace_charts(
+    workload_pace: dict[str, Any] | None,
+    *,
+    domain_key: str,
+    title: str,
+    load_label: str,
+) -> None:
+    """WoW change + load vs 4-week average charts for one pace domain."""
+    df = _pace_weekly_df(workload_pace, domain_key)
+    if df is None or getattr(df, "empty", True):
+        st.caption(f"No {title.lower()} history yet.")
+        return
+    domain = (workload_pace or {}).get(domain_key) or {}
+    status_week = domain.get("status_week_start")
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown(f"**{title} · week-over-week %**")
+            _time_chart(
+                df,
+                {"wow_change_pct": "WoW %"},
+                grain="week",
+                y_title="% change vs prior week",
+            )
+            if status_week:
+                st.caption(f"Pace status uses week of {status_week} while the current week is still open.")
+    with right:
+        with st.container(border=True):
+            st.markdown(f"**{title} · weekly load vs 4-wk avg**")
+            _time_chart(
+                df,
+                {
+                    "load": f"This week ({load_label})",
+                    "four_week_avg_load": "4-wk avg",
+                },
+                grain="week",
+                kind="bar",
+                y_title=load_label,
+            )
+            st.caption("Bars are Mon–Sun calendar weeks; the current week is in-progress until Sunday.")
 
 
 def _latest_and_delta(df, col: str, lookback: int = 7) -> tuple[float | None, float | None]:
@@ -1253,8 +1571,12 @@ def _render_hero(ctx: dict, mdf, fdf) -> None:
 
     st.markdown("###### Trends at a glance · vs ~1 week ago")
     cols = st.columns(5)
-    _headline_metric(cols[0], "HRV", mdf, "hrv_rmssd", suffix=" ms",
-                     fallback=(ctx.get("today_metrics") or {}).get("hrv_rmssd"))
+    hrv_fallback = (ctx.get("today_metrics") or {}).get("hrv_rmssd")
+    _headline_metric(cols[0], "HRV", mdf, "hrv_rmssd", suffix=" ms", fallback=hrv_fallback)
+    if (mdf is None or getattr(mdf, "empty", True)
+            or "hrv_rmssd" not in getattr(mdf, "columns", [])
+            or mdf["hrv_rmssd"].dropna().empty) and hrv_fallback is None:
+        cols[0].caption("No HRV in Health Sync yet")
     _headline_metric(cols[1], "Sleep", mdf, "sleep_hours", suffix=" h",
                      fallback=(ctx.get("today_metrics") or {}).get("sleep_hours"))
     _headline_metric(cols[2], "Resting HR", mdf, "resting_hr", suffix=" bpm",
@@ -1304,11 +1626,39 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
         _render_workload_pace_lights(ctx.get("workload_pace"))
     with right:
         with st.container(border=True):
-            st.markdown("**🔥 Readiness trend**")
-            _chart(fdf, {"overall_readiness_score": "Readiness"})
+            st.markdown("**Readiness · by day**")
+            _time_chart(
+                fdf,
+                {"overall_readiness_score": "Readiness"},
+                grain="day",
+                y_title="Score /100",
+            )
         with st.container(border=True):
-            st.markdown("**🏃 Cardio load (rolling 7d)**")
-            _chart(fdf, {"training_load_cardio_minutes_7d": "Cardio load 7d"}, kind="area")
+            st.markdown("**Lifting volume · by calendar week**")
+            lifting_df = _pace_weekly_df(ctx.get("workload_pace"), "lifting")
+            _time_chart(
+                lifting_df,
+                {"load": "Volume (lb)"},
+                grain="week",
+                kind="bar",
+                empty="No lifting weeks yet.",
+                y_title="lb",
+            )
+            st.caption("Each bar = Mon–Sun week. Current week is in-progress until Sunday.")
+        with st.container(border=True):
+            st.markdown("**Cardio minutes · by calendar week**")
+            cardio_df = _pace_weekly_df(ctx.get("workload_pace"), "cardio")
+            _time_chart(
+                cardio_df,
+                {"load": "Minutes"},
+                grain="week",
+                kind="bar",
+                empty="No cardio weeks yet.",
+                y_title="min",
+            )
+            st.caption(
+                "Each bar = Mon–Sun week (excludes Apple Health strength-typed workouts)."
+            )
     st.divider()
     _render_alerts_row(ctx)
 
@@ -1317,6 +1667,8 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
     m = ctx.get("today_metrics") or {}
     c = st.columns(4)
     _headline_metric(c[0], "HRV (rMSSD)", mdf, "hrv_rmssd", suffix=" ms", fallback=m.get("hrv_rmssd"))
+    if not _series_has_data(mdf, "hrv_rmssd") and m.get("hrv_rmssd") is None:
+        c[0].caption("Enable HRV in Health Sync to populate")
     _headline_metric(c[1], "Resting HR", mdf, "resting_hr", suffix=" bpm", higher_is_better=False,
                      fallback=m.get("resting_hr"))
     _headline_metric(c[2], "Weight", mdf, "body_weight_lbs", suffix=" lb", higher_is_better=False)
@@ -1325,28 +1677,51 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
     left, right = st.columns(2)
     with left:
         with st.container(border=True):
-            st.markdown("**HRV vs 7-day average**")
-            _padded_chart(mdf, {"hrv_rmssd": "HRV", "hrv_7d_avg": "7-day avg"}, pad=5)
+            st.markdown("**HRV · by day**")
+            _padded_chart(
+                mdf,
+                {"hrv_rmssd": "HRV", "hrv_7d_avg": "7-day avg"},
+                pad=5,
+                grain="day",
+                y_title="ms",
+                empty="No HRV samples yet — enable Heart Rate Variability in Health Sync / HAE.",
+            )
         with st.container(border=True):
-            st.markdown("**Body weight**")
-            _padded_chart(mdf, {"body_weight_lbs": "Weight (lb)"}, pad=5)
+            st.markdown("**Body weight · by day**")
+            _padded_chart(mdf, {"body_weight_lbs": "Weight (lb)"}, pad=5, grain="day", y_title="lb")
     with right:
         with st.container(border=True):
-            st.markdown("**Resting heart rate**")
-            _padded_chart(mdf, {"resting_hr": "Resting HR"}, pad=5)
+            st.markdown("**Resting heart rate · by day**")
+            _padded_chart(mdf, {"resting_hr": "Resting HR"}, pad=5, grain="day", y_title="bpm")
         with st.container(border=True):
-            st.markdown("**Blood oxygen (SpO₂)**")
-            _padded_chart(mdf, {"spo2_pct": "SpO₂ %"}, pad=2)
+            st.markdown("**Blood oxygen (SpO₂) · by day**")
+            if _series_has_data(mdf, "spo2_pct"):
+                _padded_chart(mdf, {"spo2_pct": "SpO₂ %"}, pad=2, grain="day", y_title="%")
+            else:
+                st.caption("No SpO₂ in this range — not synced from Health yet.")
 
 
 def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
-    """Rolling-7d running vs cycling totals (miles + minutes) for the Training tab."""
+    """Calendar-week (Mon–as_of) running vs cycling totals for the Training tab."""
+    from pipeline.mileage_ramp import iso_week_start
+
     as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
+    week_start = iso_week_start(as_of)
+    days = (as_of - week_start).days + 1
     if mode == "fixture":
-        return summarize_cardio_by_mode(_fixture_cardio_events(as_of))
+        rows = [
+            r
+            for r in _fixture_cardio_events(as_of)
+            if week_start
+            <= date.fromisoformat(str(r["event_date"])[:10])
+            <= as_of
+        ]
+        return summarize_cardio_by_mode(rows)
     try:
         with _scoped_conn(ctx["user_id"]) as conn:
-            rows = fetch_cardio_events_window(conn, user_id=ctx["user_id"], as_of=as_of, days=7)
+            rows = fetch_cardio_events_window(
+                conn, user_id=ctx["user_id"], as_of=as_of, days=days
+            )
         return summarize_cardio_by_mode(rows)
     except Exception:
         return summarize_cardio_by_mode([])
@@ -1444,12 +1819,12 @@ def _render_exercise_progress(strength_progress: dict[str, Any] | None) -> None:
     left, right = st.columns(2)
     with left:
         with st.container(border=True):
-            st.markdown(f"**{selected} · top working weight**")
-            _chart(sdf, {"top_weight_lbs": "Top weight (lb)"})
+            st.markdown(f"**{selected} · top working weight · by session day**")
+            _chart(sdf, {"top_weight_lbs": "Top weight (lb)"}, grain="day", y_title="lb")
     with right:
         with st.container(border=True):
-            st.markdown(f"**{selected} · session volume**")
-            _chart(sdf, {"volume_lbs": "Volume (lb)"}, kind="area")
+            st.markdown(f"**{selected} · session volume · by session day**")
+            _chart(sdf, {"volume_lbs": "Volume (lb)"}, grain="day", kind="area", y_title="lb")
     latest = exercises[[ex.get("exercise_name") for ex in exercises].index(selected)]
     delta_weight = latest.get("weight_delta_vs_prior")
     delta_vol = latest.get("volume_change_pct_vs_prior")
@@ -1463,19 +1838,33 @@ def _render_exercise_progress(strength_progress: dict[str, Any] | None) -> None:
 
 
 def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
-    f = ctx.get("features") or {}
     strength_progress = ctx.get("strength_progress") or {}
     workload_pace = ctx.get("workload_pace") or {}
     phase_ctx = ctx.get("training_phase")
+    lifting = workload_pace.get("lifting") if isinstance(workload_pace.get("lifting"), dict) else {}
+    cardio = workload_pace.get("cardio") if isinstance(workload_pace.get("cardio"), dict) else {}
 
     _render_training_phases(phase_ctx, compact=False)
     _render_workload_pace_lights(workload_pace)
 
     c = st.columns(4)
-    c[0].metric("Strength sessions (7d)", _fmt(f.get("strength_sessions_7d")))
-    c[1].metric("Cardio minutes (7d)", _fmt(f.get("cardio_minutes_7d")))
-    _headline_metric(c[2], "Cardio load (7d)", fdf, "training_load_cardio_minutes_7d")
-    _headline_metric(c[3], "Effort index (7d)", fdf, "effort_unified_index_7d")
+    c[0].metric("Lifting this week", _fmt(lifting.get("this_week_load"), suffix=" lb"))
+    c[1].metric("Cardio this week", _fmt(cardio.get("this_week_load"), suffix=" min"))
+
+    def _acwr_txt(domain: Mapping[str, Any]) -> str:
+        v = domain.get("acwr")
+        return f"{v:.2f}" if isinstance(v, (int, float)) else "—"
+
+    c[2].metric(
+        "Lifting ACWR",
+        _acwr_txt(lifting),
+        help="Calendar-week load ÷ prior 4-week average (status week). Distinct from rolling 7d÷28d acute_chronic_ratio on daily_features.",
+    )
+    c[3].metric(
+        "Cardio ACWR",
+        _acwr_txt(cardio),
+        help="Calendar-week minutes ÷ prior 4-week average (status week). Distinct from rolling 7d÷28d acute_chronic_ratio on daily_features.",
+    )
 
     wow = strength_progress.get("week_over_week_change_pct")
     week_vol = strength_progress.get("this_week_volume_lbs")
@@ -1492,16 +1881,16 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
 
     totals = _cardio_mode_totals(ctx, mode)
     run_t, bike_t = totals["running"], totals["cycling"]
-    st.markdown("###### Cardio by activity · rolling 7 days")
+    st.markdown("###### Cardio by activity · this calendar week")
     mc = st.columns(2)
     mc[0].metric(
-        "🏃 Running (7d)",
+        "🏃 Running (this week)",
         _fmt(run_t["miles"], suffix=" mi"),
         delta=f"{_fmt(run_t['minutes'])} min · {int(run_t['sessions'])} sessions",
         delta_color="off",
     )
     mc[1].metric(
-        "🚴 Cycling (7d)",
+        "🚴 Cycling (this week)",
         _fmt(bike_t["miles"], suffix=" mi"),
         delta=f"{_fmt(bike_t['minutes'])} min · {int(bike_t['sessions'])} sessions",
         delta_color="off",
@@ -1510,62 +1899,111 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
     left, right = st.columns(2)
     with left:
         with st.container(border=True):
-            st.markdown("**Cardio minutes (rolling 7d)**")
-            _chart(fdf, {"cardio_minutes_7d": "Cardio min 7d"}, kind="area")
+            st.markdown("**Cardio minutes · by calendar week**")
+            _chart(
+                _pace_weekly_df(workload_pace, "cardio"),
+                {"load": "Minutes"},
+                grain="week",
+                kind="bar",
+                empty="No cardio weeks yet.",
+                y_title="min",
+            )
         with st.container(border=True):
-            st.markdown("**Strength tonnage (short tons, 7d)**")
-            _chart(fdf, {"strength_tonnage_7d": "Tonnage 7d"}, kind="area")
+            st.markdown("**Lifting volume · by calendar week**")
+            _chart(
+                _pace_weekly_df(workload_pace, "lifting"),
+                {"load": "Volume (lb)"},
+                grain="week",
+                kind="bar",
+                empty="No lifting weeks yet.",
+                y_title="lb",
+            )
     with right:
         with st.container(border=True):
-            st.markdown("**Acute:chronic workload ratio**")
-            _chart(fdf, {"acute_chronic_ratio": "ACWR"})
-            st.caption("Sweet spot ≈ 0.8–1.3; spikes above ~1.5 raise injury risk.")
+            st.markdown("**Cardio ACWR · by calendar week**")
+            _acwr_band_chart(_pace_weekly_df(workload_pace, "cardio"))
         with st.container(border=True):
-            st.markdown("**Weekly volume**")
+            st.markdown("**Lifting ACWR · by calendar week**")
+            _acwr_band_chart(_pace_weekly_df(workload_pace, "lifting"))
+
+    st.markdown("###### Weekly activity · by calendar week (separate scales)")
+    week_cols = st.columns(3)
+    with week_cols[0]:
+        with st.container(border=True):
+            st.markdown("**Strength sessions · by calendar week**")
             _chart(
                 wdf,
-                {
-                    "strength_sessions": "Strength",
-                    "running_miles": "Running mi",
-                    "cardio_minutes": "Cardio min",
-                },
+                {"strength_sessions": "Sessions"},
+                grain="week",
                 kind="bar",
                 empty="No weekly summaries yet.",
+                y_title="sessions",
+            )
+    with week_cols[1]:
+        with st.container(border=True):
+            st.markdown("**Running miles · by calendar week**")
+            _chart(
+                wdf,
+                {"running_miles": "Miles"},
+                grain="week",
+                kind="bar",
+                empty="No weekly summaries yet.",
+                y_title="mi",
+            )
+    with week_cols[2]:
+        with st.container(border=True):
+            st.markdown("**Cardio minutes · by calendar week**")
+            _chart(
+                wdf,
+                {"cardio_minutes": "Minutes"},
+                grain="week",
+                kind="bar",
+                empty="No weekly summaries yet.",
+                y_title="min",
             )
 
-    st.markdown("###### Training pace · week-over-week & vs monthly average")
+    st.markdown("###### Training pace · by calendar week")
     pace_row = st.columns(2)
     with pace_row[0]:
         _render_pace_charts(workload_pace, domain_key="lifting", title="Lifting", load_label="lb")
     with pace_row[1]:
         _render_pace_charts(workload_pace, domain_key="cardio", title="Cardio", load_label="min")
 
-    st.markdown("###### Running & cycling · weekly miles")
+    st.markdown("###### Running & cycling · by calendar week")
     cardio_pace_row = st.columns(2)
     with cardio_pace_row[0]:
         _render_pace_charts(workload_pace, domain_key="running", title="Running", load_label="mi")
     with cardio_pace_row[1]:
         _render_pace_charts(workload_pace, domain_key="cycling", title="Cycling", load_label="mi")
 
-    st.markdown("###### Lifting progression")
+    st.markdown("###### Lifting progression · by calendar week")
     prog_left, prog_right = st.columns(2)
     weekly_df = _history_df(strength_progress.get("weekly_rollups") or [], "week_start")
     focus_df = _history_df(strength_progress.get("focus_weekly") or [], "week_start")
     with prog_left:
         with st.container(border=True):
-            st.markdown("**Calendar-week lifting volume (lb)**")
-            _chart(weekly_df, {"volume_lbs": "Total volume"}, kind="area")
+            st.markdown("**Lifting volume · by calendar week**")
+            _chart(
+                weekly_df,
+                {"volume_lbs": "Total volume"},
+                grain="week",
+                kind="area",
+                y_title="lb",
+            )
+            st.caption("Same series as the pace lights — each point is a Mon–Sun week.")
     with prog_right:
         with st.container(border=True):
-            st.markdown("**Upper vs lower volume by week (lb)**")
+            st.markdown("**Upper vs lower volume · by calendar week**")
             _chart(
                 focus_df,
                 {
                     "upper_volume_lbs": "Upper",
                     "lower_volume_lbs": "Lower",
                 },
+                grain="week",
                 kind="bar",
                 empty="No focus split yet.",
+                y_title="lb",
             )
 
     with st.container(border=True):
@@ -1618,15 +2056,20 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
 
     if mode == "live":
         from pipeline.dashboard_queries import fetch_cardio_breakdown_7d
+        from pipeline.mileage_ramp import iso_week_start
 
         as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
+        week_start = iso_week_start(as_of)
+        days = (as_of - week_start).days + 1
         with _scoped_conn(ctx["user_id"]) as conn:
-            breakdown = fetch_cardio_breakdown_7d(conn, user_id=ctx["user_id"], as_of=as_of)
-        with st.expander("Cardio breakdown by source (rolling 7d)"):
+            breakdown = fetch_cardio_breakdown_7d(
+                conn, user_id=ctx["user_id"], as_of=as_of, days=days
+            )
+        with st.expander("Cardio breakdown by source (this calendar week)"):
             if breakdown:
                 st.dataframe(breakdown, use_container_width=True, hide_index=True)
             else:
-                st.caption("No cardio_events in the rolling 7-day window.")
+                st.caption("No cardio_events in this calendar week yet.")
 
 
 def _tab_sleep(ctx: dict, mdf, fdf) -> None:
@@ -1640,18 +2083,35 @@ def _tab_sleep(ctx: dict, mdf, fdf) -> None:
     left, right = st.columns(2)
     with left:
         with st.container(border=True):
-            st.markdown("**Sleep duration vs 7-day average**")
-            _padded_chart(mdf, {"sleep_hours": "Sleep (h)", "sleep_7d_avg": "7-day avg"}, pad=1)
+            st.markdown("**Sleep duration · by day**")
+            _padded_chart(
+                mdf,
+                {"sleep_hours": "Sleep (h)", "sleep_7d_avg": "7-day avg"},
+                pad=1,
+                grain="day",
+                y_title="h",
+            )
+            st.caption("X-axis is each night. The 7-day avg line is a trailing average of nightly hours.")
         with st.container(border=True):
-            st.markdown("**Sleep stages (deep + REM)**")
-            _chart(mdf, {"sleep_deep_hrs": "Deep", "sleep_rem_hrs": "REM"}, kind="bar")
+            st.markdown("**Sleep stages · by night**")
+            _sleep_stages_chart(mdf)
     with right:
         with st.container(border=True):
-            st.markdown("**Sleep score**")
-            _padded_chart(mdf, {"sleep_score": "Sleep score"}, pad=5)
+            st.markdown("**Sleep score · by day**")
+            if _series_has_data(mdf, "sleep_score"):
+                _padded_chart(mdf, {"sleep_score": "Sleep score"}, pad=5, grain="day", y_title="score")
+            else:
+                st.caption("Sleep score appears after nightly rollup has enough signals.")
         with st.container(border=True):
-            st.markdown("**Sleep debt (rolling 7d)**")
-            _chart(fdf, {"sleep_debt_7d": "Sleep debt (h)"}, kind="area")
+            st.markdown("**Sleep debt · by day**")
+            _chart(
+                fdf,
+                {"sleep_debt_7d": "Sleep debt (h)"},
+                grain="day",
+                kind="area",
+                y_title="h",
+            )
+            st.caption("X-axis is each day; the value is cumulative sleep debt over the prior 7 nights.")
 
 
 def _history_query_all(user_id: str, mode: str) -> QueryAll:
@@ -1875,7 +2335,7 @@ def main() -> None:
     _render_top_header(ctx, mode)
 
     history = _load_history(ctx, mode, days)
-    mdf = _history_df(history["metrics"], "metric_date")
+    mdf = _enrich_metrics_frame(_history_df(history["metrics"], "metric_date"))
     fdf = _history_df(history["features"], "feature_date")
     wdf = _history_df(history["weekly"], "week_start")
 

@@ -25,7 +25,7 @@ def test_build_prompt_includes_flags_and_features():
     assert "missing" not in prompt  # None values are dropped
     assert "2024-06-08" in prompt
     assert "US short tons" in prompt
-    assert "acute_chronic_ratio null" in prompt
+    assert "acute_chronic_ratio is the rolling" in prompt
     assert "recovery_sleep_days_7d is 0" in prompt
     assert "training_load_*" in prompt
     assert "effort_unified_index_*" in prompt
@@ -119,37 +119,41 @@ def test_generate_briefing_leads_with_glance_summary():
         Flag(code="HIGH_TRAINING_LOAD", severity="alert", message="ACWR high."),
         Flag(code="SPARSE_RECOVERY_DATA", severity="info", message="No recovery data."),
     ]
+    week_activity = {
+        "run_sessions": 4,
+        "strength_sessions": 3,
+        "strength_hard_sets": 42,
+        "strength_tonnage_short_tons": 12.5,
+        "strength_volume_lbs": 25000.0,
+        "cardio_sessions": 2,
+        "cardio_minutes": 95.0,
+    }
     briefing = B.generate_briefing(
         user_id="u1",
         feature_date=RUN,
         flags=flags,
-        features={
-            "strength_sessions_7d": 3,
-            "strength_hard_sets_7d": 42,
-            "strength_tonnage_7d": 12.5,
-            "cardio_sessions_7d": 2,
-            "cardio_minutes_7d": 95.0,
-            "overall_readiness_score": 71.0,
-        },
+        features={"overall_readiness_score": 71.0},
         daily_metrics={"resting_hr": 52, "hrv_rmssd": 48.0, "sleep_hours": 7.5},
-        run_sessions_7d=4,
-        llm=lambda system, user: "Load is up; keep cardio easy today.",
+        week_activity=week_activity,
+        llm=lambda system, user: (
+            "- Ease cardio today.\n- Keep lifting volume steady.\n- Prioritize sleep tonight."
+        ),
     )
     note = briefing.coaching_note
     glance_idx = note.index("## At a Glance")
-    prose_idx = note.index("Load is up")
-    # Summary comes first, prose afterwards.
+    prose_idx = note.index("Ease cardio")
     assert note.index("# Morning Check-In") < glance_idx < prose_idx
-    assert "- **Runs (7d):** 4" in note
-    assert "- **Strength (7d):** 3 sessions · 42 hard sets" in note
-    assert "- **Cardio (7d):** 2 sessions · 95 min" in note
-    assert "- **Lifting tonnage (7d):** 12.5 short tons (25,000 lb)" in note
+    assert "- **Runs (this week):** 4" in note
+    assert "- **Strength (this week):** 3 sessions · 42 hard sets" in note
+    assert "- **Cardio (this week):** 2 sessions · 95 min" in note
+    assert "- **Lifting tonnage (this week):** 12.5 short tons (25,000 lb)" in note
     assert "- **Resting HR:** 52 bpm" in note
     assert "- **HRV (last night):** 48 ms" in note
     assert "- **Sleep (last night):** 7.5 h" in note
     assert "- **Readiness:** 71/100" in note
-    # Only warning/alert severities are "red flags"; the info flag is excluded.
+    assert "Key lifts" not in note
     assert "- **Red flags:** 1 — HIGH_TRAINING_LOAD" in note
+    assert "action bullets" in B.SYSTEM_GUIDELINES or "bullet points" in B.SYSTEM_GUIDELINES
 
 
 def test_generate_briefing_rejects_empty_note():
@@ -205,5 +209,6 @@ def test_generate_briefing_strips_trailing_question():
 
 def test_system_guidelines_forbid_titles_and_questions():
     guidelines = B.SYSTEM_GUIDELINES.lower()
-    assert "not end with a question" in guidelines
+    assert "no closing question" in guidelines or "not end with a question" in guidelines
     assert "morning check-in" in guidelines
+    assert "bullet" in guidelines

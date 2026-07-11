@@ -268,13 +268,14 @@ def run_daily_pipeline(
             if io.load_running_sessions is not None
             else []
         )
-        run_sessions_7d = metrics_summary_mod.count_run_sessions_7d(
-            io.load_cardio_events(user_id, run_date),
-            running,
-            as_of=run_date,
-        )
         strength_events = io.load_strength_events(user_id, run_date)
         cardio_events = io.load_cardio_events(user_id, run_date)
+        week_activity = metrics_summary_mod.calendar_week_glance_activity(
+            as_of=run_date,
+            strength_events=strength_events,
+            cardio_events=cardio_events,
+            running_sessions=running,
+        )
         strength_progress = build_strength_progress_summary(strength_events, as_of=run_date)
         workload_pace = build_workload_pace_summary(
             strength_events=strength_events,
@@ -305,7 +306,7 @@ def run_daily_pipeline(
             active_patterns=active_patterns,
             goal_snapshot=result.goal_snapshot,
             guidelines=guidelines,
-            run_sessions_7d=run_sessions_7d,
+            week_activity=week_activity,
             strength_progress=strength_progress,
             training_phase=training_phase,
             athlete_journal=athlete_journal,

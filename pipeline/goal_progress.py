@@ -22,6 +22,7 @@ from pipeline.mileage_ramp import check_mileage_ramp, iso_week_start
 from pipeline.schedule_context import apply_schedule_to_focus_parts, is_goal_blocked
 from pipeline.features import calendar_week_strength_volume
 from pipeline.strength_analytics import weekly_focus_rollups, weekly_strength_rollups
+from pipeline.workload_pace import calendar_week_cardio_load
 
 STRENGTH_GOAL = "strength"
 RUNNING_GOAL_TYPES = ("running_long", "running_easy", "running_interval")
@@ -271,14 +272,13 @@ def compute_weekly_activity_summary(
     """Build a ``weekly_activity_summary`` row dict."""
     from pipeline.mileage_ramp import sum_running_km
 
-    week = _week_dates(week_start)
-    cardio_min = 0.0
-    for row in cardio_events or ():
-        ed = _parse_date(row.get("event_date"))
-        if ed in week:
-            dm = row.get("duration_min")
-            if dm is not None:
-                cardio_min += float(dm)
+    cardio_min = calendar_week_cardio_load(
+        cardio_events or (),
+        week_start=week_start,
+        mode=None,
+        metric="minutes",
+        run_pace_min_sec_mi=run_pace_min_sec_mi,
+    )
     running_km = sum_running_km(
         week_start=week_start,
         running_sessions=running_sessions,

@@ -117,3 +117,29 @@ def test_compute_weekly_activity_summary_calendar_strength_tonnage():
     assert summary["strength_hard_sets"] == 2
     assert summary["strength_volume_lbs"] == 3800.0
     assert summary["strength_short_tons"] == 1.9
+
+
+def test_compute_weekly_activity_summary_excludes_strength_like_cardio():
+    from pipeline.goal_progress import compute_weekly_activity_summary
+
+    week_start = date(2024, 6, 3)  # Monday
+    cardio = [
+        {
+            "event_date": date(2024, 6, 4),
+            "activity_type": "Outdoor Run",
+            "duration_min": 40,
+        },
+        {
+            "event_date": date(2024, 6, 5),
+            "activity_type": "Traditional Strength Training",
+            "duration_min": 50,
+        },
+    ]
+    row = compute_weekly_activity_summary(
+        user_id="u1",
+        week_start=week_start,
+        strength_events=[],
+        running_sessions=[],
+        cardio_events=cardio,
+    )
+    assert row["cardio_minutes"] == 40.0

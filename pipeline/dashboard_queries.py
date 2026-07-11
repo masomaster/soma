@@ -13,7 +13,12 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
-from pipeline.cardio_quality import DEFAULT_RUN_PACE_MIN_SEC_MI, is_overrecorded_distance
+from pipeline.cardio_quality import (
+    DEFAULT_RUN_PACE_MIN_SEC_MI,
+    cardio_mode,
+    is_overrecorded_distance,
+    is_strength_like_cardio_activity,
+)
 from pipeline.athlete_journal import format_journal_for_prompt
 from pipeline.features import ACUTE_WINDOW_DAYS, CHRONIC_WINDOW_DAYS
 from pipeline.strength_analytics import build_strength_progress_summary
@@ -403,16 +408,18 @@ def fetch_cardio_breakdown_7d(
     *,
     user_id: str,
     as_of: date | None = None,
+    days: int | None = None,
 ) -> list[dict[str, Any]]:
-    """Per-day cardio totals by source + source_app + activity (rolling 7d).
+    """Per-day cardio totals by source + source_app + activity.
 
-    ``source_app`` surfaces the originating HealthKit app (Nike Run Club / Strava /
-    Health Sync) so surviving duplicates are attributable. Matches the features window.
+    Defaults to the rolling acute window (7d). Pass ``days`` to use a different
+    lookback (e.g. days elapsed in the current calendar week).
     """
     from psycopg2.extras import RealDictCursor
 
     effective = as_of or _utc_today()
-    window_start = effective - timedelta(days=ACUTE_WINDOW_DAYS - 1)
+    lookback = days if days is not None and days > 0 else ACUTE_WINDOW_DAYS
+    window_start = effective - timedelta(days=lookback - 1)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             "SELECT event_date, source, "
@@ -425,24 +432,6 @@ def fetch_cardio_breakdown_7d(
             (user_id, window_start, effective),
         )
         return [dict(r) for r in cur.fetchall()]
-
-
-CYCLING_KEYWORDS = ("cycl", "bike", "ride", "spin")
-
-
-def cardio_mode(activity_type: Any) -> str:
-    """Bucket a cardio ``activity_type`` into ``running`` / ``cycling`` / ``other``.
-
-    Uses the same substring convention as the rest of the pipeline ("run"), plus
-    cycling synonyms, so Apple Health's "Outdoor Run" / "Outdoor Cycling" and
-    Strava's "Run" / "Ride" all map correctly.
-    """
-    a = str(activity_type or "").lower()
-    if "run" in a:
-        return "running"
-    if any(k in a for k in CYCLING_KEYWORDS):
-        return "cycling"
-    return "other"
 
 
 def summarize_cardio_by_mode(
@@ -463,6 +452,8 @@ def summarize_cardio_by_mode(
         "other": {"miles": 0.0, "minutes": 0.0, "sessions": 0},
     }
     for row in cardio_events or ():
+        if is_strength_like_cardio_activity(row.get("activity_type")):
+            continue
         mode = cardio_mode(row.get("activity_type"))
         agg = modes[mode]
         agg["sessions"] += 1

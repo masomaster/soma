@@ -203,7 +203,7 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
 
     def load_cardio_events(user_id: str, d: date) -> list[dict[str, Any]]:
         # activity_type + distance_miles are required by run detection
-        # (count_run_sessions_7d, goal_progress._running_done, mileage_ramp);
+        # (count_run_sessions_this_week, goal_progress._running_done, mileage_ramp);
         # omitting them makes every cardio row look like a non-run so runs,
         # running-goal completion, and weekly run distance all read as zero.
         return _query(

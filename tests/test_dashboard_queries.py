@@ -66,12 +66,21 @@ def test_summarize_cardio_by_mode_separates_running_and_cycling():
         {"activity_type": "Outdoor Cycling", "distance_miles": 12.0, "duration_min": 45.0},
         # Over-recorded run (1:40/mi) — distance excluded, but session/time still counted.
         {"activity_type": "Run", "distance_miles": 3.0, "duration_min": 5.0},
+        # Strength-typed Apple Health workout — excluded from all mode buckets.
+        {
+            "activity_type": "Traditional Strength Training",
+            "distance_miles": 0.0,
+            "duration_min": 55.0,
+        },
     ]
     totals = summarize_cardio_by_mode(events)
     assert totals["running"]["miles"] == pytest.approx(3.0)
     assert totals["running"]["sessions"] == 2
+    assert totals["running"]["minutes"] == pytest.approx(32.0)
     assert totals["cycling"]["miles"] == pytest.approx(12.0)
     assert totals["cycling"]["sessions"] == 1
+    assert totals["other"]["sessions"] == 0
+    assert totals["other"]["minutes"] == 0.0
 
 
 def test_validate_bounded_sql_rejects_insert():
