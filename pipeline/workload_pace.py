@@ -1,25 +1,31 @@
-"""Training pace indicators: week-over-week change, vs monthly average, and RYG status.
+"""Training pace indicators: rolling load change, vs monthly average, and RYG status.
 
 Pure functions over already-loaded ``strength_events`` / ``cardio_events`` rows.
 Indicators follow sports-science load-monitoring practice:
 
-- **Acute:chronic ratio (ACWR):** calendar-week load ÷ average of prior four
-  complete calendar weeks (monthly chronic baseline). Sweet spot ≈ 0.8–1.3;
-  elevated injury-risk signal above ~1.5; underload below ~0.8.
-- **Week-over-week % change:** flags rapid ramps (>10–15% cardio, >12–20%
-  strength) and sharp drop-offs.
+- **Acute:chronic ratio (ACWR):** last-7-day load ÷ average of the prior four
+  7-day windows (28-day chronic baseline). Sweet spot ≈ 0.8–1.3; elevated
+  injury-risk signal above ~1.5; underload below ~0.8.
+- **Week-over-week % change:** last 7 days vs the prior 7 days — flags rapid
+  ramps (>10–15% cardio, >12–20% strength).
 - **Vs monthly average %:** same chronic baseline expressed as percent delta.
 
-Status lights use the **last completed** Mon–Sun week while the current week is
-still in progress (partial weeks otherwise look falsely underloaded). Red is
-reserved for **overload** spikes; underload caps at yellow with distinct labels.
+**Pace lights** always use rolling windows ending on ``as_of`` (today), not a
+stale completed calendar week. Calendar-week series remain available for charts.
+
+Traffic lights:
+
+- **Green** — load is fine to continue (includes underload / room to push).
+- **Yellow** — borderline overload; proceed carefully.
+- **Red** — overloaded; ease up.
+
 Strength-typed Apple Health workouts are excluded from cardio minutes so they
 are not double-counted against Hevy lifting volume.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import date, timedelta
 from typing import Any, Literal
 
@@ -32,10 +38,14 @@ from pipeline.cardio_quality import (
 from pipeline.features import as_date
 from pipeline.mileage_ramp import iso_week_start
 from pipeline.pace_thresholds import DEFAULT_PACE_THRESHOLDS
-from pipeline.strength_analytics import calendar_week_volume_lbs
+from pipeline.strength_analytics import is_hard_set
 
 PaceStatus = Literal["green", "yellow", "red", "unknown"]
 PaceDirection = Literal["high", "low"]
+
+# Inclusive calendar days needed for acute 7d + four prior 7d chronic windows
+# (oldest day is as_of - 34). Used by DB loaders so pace lights are not truncated.
+PACE_HISTORY_DAYS = 35
 
 _STATUS_EMOJI: dict[PaceStatus, str] = {
     "green": "🟢",
@@ -56,21 +66,21 @@ def _num(value: Any) -> float | None:
 
 
 def _label_for(status: PaceStatus, direction: PaceDirection | None) -> str:
-    if status == "green":
-        return "Good to go"
     if status == "unknown":
         return "Building baseline"
     if direction == "low":
         return "Underloaded — room to push"
     if status == "red":
         return "Overloaded — take it easy"
-    return "Cautious — ease up a little"
+    if status == "yellow":
+        return "Cautious — ease up a little"
+    return "Good to go"
 
 
 def _status_from_acwr(
     acwr: float | None, th: Mapping[str, float]
 ) -> tuple[PaceStatus, PaceDirection | None]:
-    """Map ACWR to status. Underload caps at yellow; red is overload-only."""
+    """Map ACWR to status. Underload is green; yellow/red are overload-only."""
     if acwr is None:
         return "unknown", None
     if acwr > th["pace_acwr_yellow_high"]:
@@ -78,7 +88,7 @@ def _status_from_acwr(
     if acwr > th["pace_acwr_green_high"]:
         return "yellow", "high"
     if acwr < th["pace_acwr_green_low"]:
-        return "yellow", "low"
+        return "green", "low"
     return "green", None
 
 
@@ -89,7 +99,7 @@ def _status_from_wow(
     spike_yellow: float,
     spike_red: float,
 ) -> tuple[PaceStatus, PaceDirection | None]:
-    """WoW spikes can go red; drops cap at yellow (deload ≠ overload)."""
+    """WoW spikes can go yellow/red; drops are green (deload ≠ overload)."""
     if wow_pct is None:
         return "unknown", None
     if wow_pct >= spike_red:
@@ -97,14 +107,14 @@ def _status_from_wow(
     if wow_pct >= spike_yellow:
         return "yellow", "high"
     if wow_pct <= -th["pace_wow_drop_yellow_pct"]:
-        return "yellow", "low"
+        return "green", "low"
     return "green", None
 
 
 def _status_from_vs_month(
     vs_pct: float | None, th: Mapping[str, float]
 ) -> tuple[PaceStatus, PaceDirection | None]:
-    """Above-month spikes can go red; below-month caps at yellow."""
+    """Above-month spikes can go yellow/red; below-month is green."""
     if vs_pct is None:
         return "unknown", None
     if vs_pct >= th["pace_vs_month_red_pct"]:
@@ -112,7 +122,7 @@ def _status_from_vs_month(
     if vs_pct >= th["pace_vs_month_yellow_pct"]:
         return "yellow", "high"
     if vs_pct <= -th["pace_vs_month_yellow_pct"]:
-        return "yellow", "low"
+        return "green", "low"
     return "green", None
 
 
@@ -197,18 +207,108 @@ def _compose_domain_status(
     return status, direction, signals
 
 
-def _status_row_index(weekly_rollups: Sequence[Mapping[str, Any]], *, as_of: date) -> int:
-    """Index of the week used for RYG status (last completed while in-progress)."""
-    if not weekly_rollups:
-        return -1
-    latest = weekly_rollups[-1]
-    week_start = as_date(latest.get("week_start"))
-    if week_start is None:
-        return -1
-    week_end = week_start + timedelta(days=6)
-    if as_of < week_end and len(weekly_rollups) >= 2:
-        return -2
-    return -1
+def window_strength_load_lbs(
+    strength_events: Sequence[Mapping[str, Any]],
+    *,
+    start: date,
+    end: date,
+) -> float:
+    """Working-set volume (lb) for inclusive ``[start, end]``."""
+    if end < start:
+        return 0.0
+    days = {start + timedelta(days=i) for i in range((end - start).days + 1)}
+    vol = 0.0
+    for ev in strength_events:
+        d = as_date(ev.get("event_date"))
+        if d not in days or not is_hard_set(ev.get("set_type")):
+            continue
+        reps = _num(ev.get("reps"))
+        weight = _num(ev.get("weight_lbs"))
+        if reps is None or weight is None:
+            continue
+        vol += reps * weight
+    return round(vol, 1)
+
+
+def window_cardio_load(
+    cardio_events: Sequence[Mapping[str, Any]],
+    *,
+    start: date,
+    end: date,
+    mode: str | None = None,
+    metric: str = "minutes",
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
+) -> float:
+    """Sum cardio load for inclusive ``[start, end]``."""
+    if end < start:
+        return 0.0
+    days = {start + timedelta(days=i) for i in range((end - start).days + 1)}
+    total = 0.0
+    for row in cardio_events:
+        d = as_date(row.get("event_date"))
+        if d not in days:
+            continue
+        total += _cardio_row_load(
+            row, mode=mode, metric=metric, run_pace_min_sec_mi=run_pace_min_sec_mi
+        )
+    return round(total, 2)
+
+
+def rolling_pace_metrics(
+    *,
+    acute_load: float,
+    prior_7d_load: float,
+    prior_four_week_loads: Sequence[float],
+) -> dict[str, float | None]:
+    """Derive WoW / ACWR / vs-month from rolling window loads."""
+    wow: float | None
+    if prior_7d_load > 0:
+        wow = round((acute_load - prior_7d_load) / prior_7d_load * 100.0, 1)
+    elif acute_load > 0:
+        # Return-from-rest / first load: no prior week to ratio against. Signal
+        # a large positive ramp so lights go yellow/red instead of "unknown".
+        wow = 100.0
+    else:
+        wow = None
+    prior = [float(v) for v in prior_four_week_loads]
+    if len(prior) < 4 or all(v <= 0 for v in prior):
+        chronic = None
+    else:
+        chronic = sum(prior) / len(prior)
+    acwr: float | None
+    vs_month: float | None
+    if chronic and chronic > 0:
+        acwr = round(acute_load / chronic, 3)
+        vs_month = round((acute_load - chronic) / chronic * 100.0, 1)
+        chronic_out = round(chronic, 2)
+    else:
+        acwr = None
+        vs_month = None
+        chronic_out = None
+    return {
+        "wow_change_pct": wow,
+        "four_week_avg_load": chronic_out,
+        "acwr": acwr,
+        "vs_monthly_avg_pct": vs_month,
+    }
+
+
+def _rolling_window_loads(
+    load_fn: Callable[[date, date], float],
+    *,
+    as_of: date,
+) -> tuple[float, float, list[float], date, date]:
+    """Acute 7d, prior 7d, and four prior 7d windows ending before acute."""
+    acute_end = as_of
+    acute_start = as_of - timedelta(days=6)
+    acute = float(load_fn(acute_start, acute_end))
+    four: list[float] = []
+    for back in range(4, 0, -1):
+        end = as_of - timedelta(days=7 * back)
+        start = end - timedelta(days=6)
+        four.append(float(load_fn(start, end)))
+    prior = four[-1] if four else 0.0
+    return acute, prior, four, acute_start, acute_end
 
 
 def _domain_block(
@@ -219,34 +319,42 @@ def _domain_block(
     th: Mapping[str, float],
     spike_yellow: float,
     spike_red: float,
+    load_fn: Callable[[date, date], float],
 ) -> dict[str, Any]:
-    latest = weekly_rollups[-1] if weekly_rollups else {}
-    status_idx = _status_row_index(weekly_rollups, as_of=as_of)
-    status_row: Mapping[str, Any] = (
-        weekly_rollups[status_idx] if weekly_rollups else {}
+    acute, prior_7d, four_weeks, acute_start, acute_end = _rolling_window_loads(
+        load_fn, as_of=as_of
+    )
+    metrics = rolling_pace_metrics(
+        acute_load=acute,
+        prior_7d_load=prior_7d,
+        prior_four_week_loads=four_weeks,
     )
     status, direction, signals = _compose_domain_status(
-        acwr=_num(status_row.get("acwr")),
-        wow_pct=_num(status_row.get("wow_change_pct")),
-        vs_month_pct=_num(status_row.get("vs_monthly_avg_pct")),
+        acwr=_num(metrics["acwr"]),
+        wow_pct=_num(metrics["wow_change_pct"]),
+        vs_month_pct=_num(metrics["vs_monthly_avg_pct"]),
         th=th,
         spike_yellow=spike_yellow,
         spike_red=spike_red,
     )
-    prior = weekly_rollups[-2] if len(weekly_rollups) >= 2 else {}
+    latest = weekly_rollups[-1] if weekly_rollups else {}
+    calendar_prior = weekly_rollups[-2] if len(weekly_rollups) >= 2 else {}
     return {
         "status": status,
         "direction": direction,
         "emoji": _STATUS_EMOJI[status],
         "label": _label_for(status, direction),
         "load_unit": load_unit,
+        "acute_load": round(acute, 2),
+        "prior_7d_load": round(prior_7d, 2),
         "this_week_load": latest.get("load"),
-        "last_week_load": prior.get("load") if prior else None,
-        "status_week_start": status_row.get("week_start"),
-        "wow_change_pct": status_row.get("wow_change_pct"),
-        "four_week_avg_load": status_row.get("four_week_avg_load"),
-        "vs_monthly_avg_pct": status_row.get("vs_monthly_avg_pct"),
-        "acwr": status_row.get("acwr"),
+        "last_week_load": calendar_prior.get("load") if calendar_prior else None,
+        "acute_window_start": acute_start.isoformat(),
+        "acute_window_end": acute_end.isoformat(),
+        "wow_change_pct": metrics["wow_change_pct"],
+        "four_week_avg_load": metrics["four_week_avg_load"],
+        "vs_monthly_avg_pct": metrics["vs_monthly_avg_pct"],
+        "acwr": metrics["acwr"],
         "weekly_rollups": list(weekly_rollups),
         "contributing_signals": signals,
     }
@@ -258,7 +366,9 @@ def calendar_week_strength_load_lbs(
     week_start: date,
 ) -> float:
     """Working-set volume (lb) for a Mon–Sun calendar week."""
-    return calendar_week_volume_lbs(strength_events, week_start=week_start)
+    return window_strength_load_lbs(
+        strength_events, start=week_start, end=week_start + timedelta(days=6)
+    )
 
 
 def _cardio_row_load(
@@ -296,16 +406,14 @@ def calendar_week_cardio_load(
     Strength-typed Apple Health workouts (Traditional Strength Training, etc.)
     are excluded so they are not double-counted against Hevy lifting volume.
     """
-    week = {week_start + timedelta(days=i) for i in range(7)}
-    total = 0.0
-    for row in cardio_events:
-        d = as_date(row.get("event_date"))
-        if d not in week:
-            continue
-        total += _cardio_row_load(
-            row, mode=mode, metric=metric, run_pace_min_sec_mi=run_pace_min_sec_mi
-        )
-    return round(total, 2)
+    return window_cardio_load(
+        cardio_events,
+        start=week_start,
+        end=week_start + timedelta(days=6),
+        mode=mode,
+        metric=metric,
+        run_pace_min_sec_mi=run_pace_min_sec_mi,
+    )
 
 
 def calendar_week_cardio_sessions(
@@ -373,6 +481,9 @@ def build_workload_pace_summary(
         th=th,
         spike_yellow=th["pace_wow_spike_yellow_strength_pct"],
         spike_red=th["pace_wow_spike_red_strength_pct"],
+        load_fn=lambda start, end: window_strength_load_lbs(
+            strength_events, start=start, end=end
+        ),
     )
 
     cardio_minutes_weekly = weekly_load_rollups(
@@ -390,6 +501,9 @@ def build_workload_pace_summary(
         th=th,
         spike_yellow=th["pace_wow_spike_yellow_cardio_pct"],
         spike_red=th["pace_wow_spike_red_cardio_pct"],
+        load_fn=lambda start, end: window_cardio_load(
+            cardio_events, start=start, end=end, mode=None, metric="minutes"
+        ),
     )
 
     running_miles_weekly = weekly_load_rollups(

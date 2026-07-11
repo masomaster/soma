@@ -218,6 +218,15 @@ def _iter_hae_metric_samples(
         return []
     canonical = _canonical_for_hae_name(name_raw)
     if canonical is None or canonical not in DAILY_HEALTH_METRIC_COLUMNS:
+        key = _normalize_vendor_metric_name(name_raw)
+        # Surface likely-HRV names that we failed to map so CloudWatch shows why
+        # recovery charts stay empty even when Health Sync is "enabled."
+        if any(token in key for token in ("hrv", "variability", "sdnn", "rmssd")):
+            logger.warning(
+                "HAE HRV-like metric not mapped: name=%r normalized=%r",
+                name_raw,
+                key,
+            )
         return []
 
     units = block.get("units")

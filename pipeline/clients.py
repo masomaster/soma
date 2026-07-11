@@ -19,8 +19,13 @@ from typing import Any
 
 from pipeline.briefing import LLMClient
 from pipeline.features import CHRONIC_WINDOW_DAYS
+from pipeline.workload_pace import PACE_HISTORY_DAYS
 
 logger = logging.getLogger(__name__)
+
+# Strength/cardio/running windows must cover rolling pace lights (35d) and
+# feature chronic windows (28d).
+_EVENT_LOOKBACK_DAYS = max(CHRONIC_WINDOW_DAYS, PACE_HISTORY_DAYS)
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 ANTHROPIC_VERSION = "2023-06-01"
@@ -181,7 +186,7 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
             "SELECT event_date, exercise_name, set_type, reps, weight_lbs, rpe "
             "FROM strength_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s",
-            (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
+            (user_id, d - timedelta(days=_EVENT_LOOKBACK_DAYS - 1), d),
         )
 
     def load_training_phases(user_id: str, d: date) -> list[dict[str, Any]]:
@@ -202,14 +207,13 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
         )
 
     def load_cardio_events(user_id: str, d: date) -> list[dict[str, Any]]:
-        # activity_type + distance_miles are required by run detection
-        # (count_run_sessions_this_week, goal_progress._running_done, mileage_ramp);
-        # omitting them makes every cardio row look like a non-run so runs,
-        # running-goal completion, and weekly run distance all read as zero.
+        # activity_type + distance_miles are required by mileage_ramp /
+        # workload_pace (total running distance + cardio load). Soma does not
+        # classify runs as easy/interval/long.
         return _query(
             "SELECT event_date, activity_type, distance_miles, duration_min, session_rpe "
             "FROM cardio_events WHERE user_id = %s AND event_date BETWEEN %s AND %s",
-            (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
+            (user_id, d - timedelta(days=_EVENT_LOOKBACK_DAYS - 1), d),
         )
 
     def load_active_patterns(user_id: str, d: date) -> list[dict[str, Any]]:
@@ -234,7 +238,7 @@ def build_db_loaders(conn: Any) -> dict[str, Callable[..., Sequence[Mapping[str,
         return _query(
             "SELECT session_date, run_type, distance_km, duration_min, source "
             "FROM running_sessions WHERE user_id = %s AND session_date BETWEEN %s AND %s",
-            (user_id, d - timedelta(days=CHRONIC_WINDOW_DAYS - 1), d),
+            (user_id, d - timedelta(days=_EVENT_LOOKBACK_DAYS - 1), d),
         )
 
     def load_schedule_exceptions(user_id: str, d: date) -> list[dict[str, Any]]:

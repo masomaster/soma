@@ -11,7 +11,15 @@ from collections.abc import Mapping, Sequence
 from datetime import date
 from typing import Any
 
-RUNNING_GOAL_TYPES = frozenset({"running_long", "running_easy", "running_interval"})
+RUNNING_GOAL_TYPES = frozenset(
+    {
+        "running",
+        # Legacy typed goals — still match schedule exceptions that reference them.
+        "running_long",
+        "running_easy",
+        "running_interval",
+    }
+)
 
 
 def _parse_date(raw: Any) -> date | None:

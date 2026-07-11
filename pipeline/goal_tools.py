@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
@@ -22,11 +23,15 @@ from pipeline.units import miles_to_km
 VALID_GOAL_TYPES = frozenset(
     {
         "strength",
+        # Legacy typed running goals remain writable (e.g. deactivate) but are
+        # ignored by goal progress — injury signals use total mileage + cardio load.
         "running_long",
         "running_easy",
         "running_interval",
     }
 )
+
+DEFAULT_RUN_TYPE = "run"
 
 PARSE_SYSTEM = (
     "You extract structured goal updates from athlete chat. Respond with ONLY "
@@ -34,6 +39,8 @@ PARSE_SYSTEM = (
     "\"target_min\": int|null, \"target_max\": int|null, \"target_label\": str|null, "
     "\"deactivate\": bool, \"notes\": str|null}], "
     "\"narrative_note\": str|null}. One patch per goal_type max. "
+    "Prefer strength goals; typed running goals (easy/interval/long) are legacy — "
+    "Soma tracks total running mileage and cardio load, not run classification. "
     "Do not invent goal types outside the allowed set."
 )
 
@@ -152,7 +159,7 @@ def log_run_row(
     *,
     user_id: str,
     session_date: date,
-    run_type: str,
+    run_type: str | None = None,
     distance_miles: float | None = None,
     duration_min: float | None = None,
     notes: str | None = None,
@@ -163,14 +170,18 @@ def log_run_row(
 
     The athlete-facing interface is miles; ``running_sessions`` stores the base
     metric unit, so the miles input is converted to ``distance_km`` here.
+
+    ``run_type`` is stored for schema compatibility only (defaults to ``run``).
+    Soma does not classify or coach on easy / interval / long — injury
+    prevention uses total mileage and cardio load.
     """
-    if run_type not in ("long", "easy", "interval"):
-        raise ValueError(f"Invalid run_type: {run_type!r}")
-    sid = source_id or f"{source}:{session_date.isoformat()}:{run_type}"
+    stored_type = (run_type or DEFAULT_RUN_TYPE).strip().lower() or DEFAULT_RUN_TYPE
+    # Unique suffix so same-day multi-run logs do not collide on ON CONFLICT DO NOTHING.
+    sid = source_id or f"{source}:{session_date.isoformat()}:{stored_type}:{uuid.uuid4().hex[:8]}"
     row: dict[str, Any] = {
         "user_id": user_id,
         "session_date": session_date,
-        "run_type": run_type,
+        "run_type": stored_type,
         "source": source,
         "source_id": sid,
     }
@@ -202,17 +213,19 @@ COACHING_TOOL_SCHEMAS: list[dict[str, Any]] = [
     },
     {
         "name": "log_run",
-        "description": "Log a running session (long, easy, or interval).",
+        "description": (
+            "Log a running session by date, distance (miles), and optional duration. "
+            "Do not classify easy/interval/long — Soma uses total mileage only."
+        ),
         "input_schema": {
             "type": "object",
             "properties": {
                 "session_date": {"type": "string", "format": "date"},
-                "run_type": {"type": "string", "enum": ["long", "easy", "interval"]},
                 "distance_miles": {"type": "number"},
                 "duration_min": {"type": "number"},
                 "notes": {"type": "string"},
             },
-            "required": ["session_date", "run_type"],
+            "required": ["session_date"],
         },
     },
     {
@@ -346,9 +359,8 @@ def apply_tool_call(
         sd = arguments.get("session_date")
         if not isinstance(sd, str):
             raise ValueError("session_date required")
-        run_type = arguments.get("run_type")
-        if not isinstance(run_type, str):
-            raise ValueError("run_type required")
+        raw_type = arguments.get("run_type")
+        run_type = raw_type if isinstance(raw_type, str) else None
         row = log_run_row(
             user_id=user_id,
             session_date=date.fromisoformat(sd[:10]),
@@ -490,9 +502,7 @@ def apply_coaching_writes(
             if not isinstance(row, Mapping):
                 continue
             persistence.insert_running_session(cur, row)
-            applied.append(
-                f"Logged run: {row.get('run_type')} on {row.get('session_date')}"
-            )
+            applied.append(f"Logged run on {row.get('session_date')}")
         elif action == "insert_schedule_exception":
             row = write.get("row")
             if not isinstance(row, Mapping):

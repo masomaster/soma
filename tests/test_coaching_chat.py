@@ -44,7 +44,7 @@ def test_chat_prompt_includes_precomputed_correlations():
 
 
 def test_extract_tool_calls():
-    text = 'Sure.\n{"tool_calls": [{"name": "log_run", "arguments": {"run_type": "easy"}}]}'
+    text = 'Sure.\n{"tool_calls": [{"name": "log_run", "arguments": {"session_date": "2024-06-08", "distance_miles": 5}}]}'
     calls = extract_tool_calls(text)
     assert len(calls) == 1
     assert calls[0]["name"] == "log_run"

@@ -322,10 +322,6 @@ def _fixture_context() -> dict:
         goal_snapshot={
             "goals_status": {
                 "strength": {"completed": 1, "target": "3-4x", "status": "behind"},
-                "running": {
-                    "interval": {"done": False, "status": "not_yet"},
-                    "easy": {"done": True, "status": "done"},
-                },
             },
             "todays_focus": "Strength session needed — 1 of 3-4x done",
             "mileage_check": {"flag": None, "this_week_km": 6.4, "last_week_km": 9.1},
@@ -349,7 +345,7 @@ def _fixture_context() -> dict:
 
 def _fixture_guidelines() -> GuidelinesContext:
     return GuidelinesContext(
-        my_goals="Build to 3-4 strength sessions per week. Long run Sundays.",
+        my_goals="Build to 3-4 strength sessions per week. Keep weekly running mileage progressive.",
         injury_history="Left shoulder impingement — avoid heavy overhead pressing.",
     )
 
@@ -751,22 +747,19 @@ def _pace_light_card(title: str, domain: Mapping[str, Any] | None) -> None:
     label = str(domain.get("label") or "Building baseline")
     st.markdown(f"### {emoji} {title}", help=pace_status_message(domain))
     st.caption(label)
-    load = domain.get("this_week_load")
+    load = domain.get("acute_load")
     unit = str(domain.get("load_unit") or "")
     if load is not None:
-        st.metric("This calendar week", _fmt(load, suffix=f" {unit}"))
-    status_week = domain.get("status_week_start")
-    if status_week and status_week != (domain.get("weekly_rollups") or [{}])[-1].get("week_start"):
-        st.caption(f"Pace light uses completed week of {status_week}")
+        st.metric("Last 7 days", _fmt(load, suffix=f" {unit}"))
     wow = domain.get("wow_change_pct")
     if isinstance(wow, (int, float)):
-        st.caption(f"Week over week: {wow:+.1f}%")
+        st.caption(f"Vs prior 7 days: {wow:+.1f}%")
     acwr = domain.get("acwr")
     if isinstance(acwr, (int, float)):
-        st.caption(f"ACWR (vs 4-wk avg): {acwr:.2f}")
+        st.caption(f"ACWR (vs 4×7d avg): {acwr:.2f}")
     vs = domain.get("vs_monthly_avg_pct")
     if isinstance(vs, (int, float)):
-        st.caption(f"Vs monthly avg: {vs:+.1f}%")
+        st.caption(f"Vs 28d avg: {vs:+.1f}%")
 
 
 def _render_workload_pace_lights(workload_pace: dict[str, Any] | None) -> None:
@@ -1242,8 +1235,6 @@ def _render_pace_charts(
     if df is None or getattr(df, "empty", True):
         st.caption(f"No {title.lower()} history yet.")
         return
-    domain = (workload_pace or {}).get(domain_key) or {}
-    status_week = domain.get("status_week_start")
     left, right = st.columns(2)
     with left:
         with st.container(border=True):
@@ -1254,8 +1245,7 @@ def _render_pace_charts(
                 grain="week",
                 y_title="% change vs prior week",
             )
-            if status_week:
-                st.caption(f"Pace status uses week of {status_week} while the current week is still open.")
+            st.caption("Chart is Mon–Sun calendar weeks. Pace lights use rolling 7-day windows through today.")
     with right:
         with st.container(border=True):
             st.markdown(f"**{title} · weekly load vs 4-wk avg**")
@@ -1266,10 +1256,9 @@ def _render_pace_charts(
                     "four_week_avg_load": "4-wk avg",
                 },
                 grain="week",
-                kind="bar",
                 y_title=load_label,
             )
-            st.caption("Bars are Mon–Sun calendar weeks; the current week is in-progress until Sunday.")
+            st.caption("Points are Mon–Sun calendar weeks; the current week is in-progress until Sunday.")
 
 
 def _latest_and_delta(df, col: str, lookback: int = 7) -> tuple[float | None, float | None]:
@@ -1472,6 +1461,9 @@ def _render_sidebar(
                     "chat_sessions",
                     "active_chat_session",
                     "chat_session_counter",
+                    "chat_session_select",
+                    "_last_query_results",
+                    "_coaching_saved",
                 ):
                     st.session_state.pop(key, None)
                 st.rerun()
@@ -1576,7 +1568,9 @@ def _render_hero(ctx: dict, mdf, fdf) -> None:
     if (mdf is None or getattr(mdf, "empty", True)
             or "hrv_rmssd" not in getattr(mdf, "columns", [])
             or mdf["hrv_rmssd"].dropna().empty) and hrv_fallback is None:
-        cols[0].caption("No HRV in Health Sync yet")
+        cols[0].caption(
+            "No HRV in Soma yet — confirm samples in Apple Health → Heart → HRV."
+        )
     _headline_metric(cols[1], "Sleep", mdf, "sleep_hours", suffix=" h",
                      fallback=(ctx.get("today_metrics") or {}).get("sleep_hours"))
     _headline_metric(cols[2], "Resting HR", mdf, "resting_hr", suffix=" bpm",
@@ -1640,11 +1634,10 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                 lifting_df,
                 {"load": "Volume (lb)"},
                 grain="week",
-                kind="bar",
                 empty="No lifting weeks yet.",
                 y_title="lb",
             )
-            st.caption("Each bar = Mon–Sun week. Current week is in-progress until Sunday.")
+            st.caption("Each point = Mon–Sun week. Current week is in-progress until Sunday.")
         with st.container(border=True):
             st.markdown("**Cardio minutes · by calendar week**")
             cardio_df = _pace_weekly_df(ctx.get("workload_pace"), "cardio")
@@ -1652,12 +1645,11 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                 cardio_df,
                 {"load": "Minutes"},
                 grain="week",
-                kind="bar",
                 empty="No cardio weeks yet.",
                 y_title="min",
             )
             st.caption(
-                "Each bar = Mon–Sun week (excludes Apple Health strength-typed workouts)."
+                "Each point = Mon–Sun week (excludes Apple Health strength-typed workouts)."
             )
     st.divider()
     _render_alerts_row(ctx)
@@ -1668,7 +1660,7 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
     c = st.columns(4)
     _headline_metric(c[0], "HRV (rMSSD)", mdf, "hrv_rmssd", suffix=" ms", fallback=m.get("hrv_rmssd"))
     if not _series_has_data(mdf, "hrv_rmssd") and m.get("hrv_rmssd") is None:
-        c[0].caption("Enable HRV in Health Sync to populate")
+        c[0].caption("No HRV samples in Soma — see Apple Health → Heart → HRV.")
     _headline_metric(c[1], "Resting HR", mdf, "resting_hr", suffix=" bpm", higher_is_better=False,
                      fallback=m.get("resting_hr"))
     _headline_metric(c[2], "Weight", mdf, "body_weight_lbs", suffix=" lb", higher_is_better=False)
@@ -1684,7 +1676,7 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
                 pad=5,
                 grain="day",
                 y_title="ms",
-                empty="No HRV samples yet — enable Heart Rate Variability in Health Sync / HAE.",
+                empty="No HRV samples in Soma yet. Check Apple Health → Heart → HRV, then HAE export.",
             )
         with st.container(border=True):
             st.markdown("**Body weight · by day**")
@@ -1848,8 +1840,8 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
     _render_workload_pace_lights(workload_pace)
 
     c = st.columns(4)
-    c[0].metric("Lifting this week", _fmt(lifting.get("this_week_load"), suffix=" lb"))
-    c[1].metric("Cardio this week", _fmt(cardio.get("this_week_load"), suffix=" min"))
+    c[0].metric("Lifting · last 7d", _fmt(lifting.get("acute_load"), suffix=" lb"))
+    c[1].metric("Cardio · last 7d", _fmt(cardio.get("acute_load"), suffix=" min"))
 
     def _acwr_txt(domain: Mapping[str, Any]) -> str:
         v = domain.get("acwr")
@@ -1858,12 +1850,12 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
     c[2].metric(
         "Lifting ACWR",
         _acwr_txt(lifting),
-        help="Calendar-week load ÷ prior 4-week average (status week). Distinct from rolling 7d÷28d acute_chronic_ratio on daily_features.",
+        help="Last 7 days ÷ average of the prior four 7-day windows. Yellow/red = overload only; underload stays green.",
     )
     c[3].metric(
         "Cardio ACWR",
         _acwr_txt(cardio),
-        help="Calendar-week minutes ÷ prior 4-week average (status week). Distinct from rolling 7d÷28d acute_chronic_ratio on daily_features.",
+        help="Last 7 days ÷ average of the prior four 7-day windows. Yellow/red = overload only; underload stays green.",
     )
 
     wow = strength_progress.get("week_over_week_change_pct")
@@ -1904,7 +1896,6 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
                 _pace_weekly_df(workload_pace, "cardio"),
                 {"load": "Minutes"},
                 grain="week",
-                kind="bar",
                 empty="No cardio weeks yet.",
                 y_title="min",
             )
@@ -1914,7 +1905,6 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
                 _pace_weekly_df(workload_pace, "lifting"),
                 {"load": "Volume (lb)"},
                 grain="week",
-                kind="bar",
                 empty="No lifting weeks yet.",
                 y_title="lb",
             )
@@ -1935,7 +1925,6 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
                 wdf,
                 {"strength_sessions": "Sessions"},
                 grain="week",
-                kind="bar",
                 empty="No weekly summaries yet.",
                 y_title="sessions",
             )
@@ -1946,7 +1935,6 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
                 wdf,
                 {"running_miles": "Miles"},
                 grain="week",
-                kind="bar",
                 empty="No weekly summaries yet.",
                 y_title="mi",
             )
@@ -1957,7 +1945,6 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
                 wdf,
                 {"cardio_minutes": "Minutes"},
                 grain="week",
-                kind="bar",
                 empty="No weekly summaries yet.",
                 y_title="min",
             )
@@ -1987,10 +1974,9 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
                 weekly_df,
                 {"volume_lbs": "Total volume"},
                 grain="week",
-                kind="area",
                 y_title="lb",
             )
-            st.caption("Same series as the pace lights — each point is a Mon–Sun week.")
+            st.caption("Calendar-week lifting volume (pace lights use rolling 7-day windows).")
     with prog_right:
         with st.container(border=True):
             st.markdown("**Upper vs lower volume · by calendar week**")
@@ -2001,7 +1987,6 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
                     "lower_volume_lbs": "Lower",
                 },
                 grain="week",
-                kind="bar",
                 empty="No focus split yet.",
                 y_title="lb",
             )
@@ -2144,15 +2129,20 @@ def _render_query_details(query_results: list[dict[str, Any]]) -> None:
 
 # Recent exchanges (user+assistant pairs) shown expanded; older ones collapse.
 _CHAT_RECENT_TURNS = 3
+_CHAT_STARTERS = (
+    "How's my recovery looking?",
+    "Am I ramping cardio too fast?",
+    "Summarize this week's lifting.",
+)
 
 
 def _init_chat_sessions(user_id: str, mode: str) -> None:
     """Seed in-memory chat sessions, loading any persisted history into the first.
 
     Sessions are an in-memory UX grouping (``coaching_chat_messages`` has no
-    session dimension), so persisted history rehydrates into "Session 1" only;
-    additional sessions live for the browser session. Writes still persist per the
-    existing single-stream behavior.
+    session dimension), so persisted history rehydrates into the first chat only;
+    additional chats live for the browser session. Writes still persist to the
+    single DB stream.
     """
     if "chat_sessions" in st.session_state:
         return
@@ -2163,41 +2153,93 @@ def _init_chat_sessions(user_id: str, mode: str) -> None:
                 initial = load_chat_messages(conn, user_id=user_id)
         except Exception:
             initial = []
-    st.session_state.chat_sessions = {"session-1": {"title": "Session 1", "messages": initial}}
+    title = "Previous chat" if initial else "New chat"
+    st.session_state.chat_sessions = {
+        "session-1": {"title": title, "messages": initial, "persist": True}
+    }
     st.session_state.active_chat_session = "session-1"
     st.session_state.chat_session_counter = 1
+    st.session_state.chat_session_select = "session-1"
 
 
 def _new_chat_session() -> None:
+    """Start a blank ephemeral chat (not written to the shared DB stream)."""
     n = int(st.session_state.get("chat_session_counter", 1)) + 1
     st.session_state.chat_session_counter = n
     sid = f"session-{n}"
-    st.session_state.chat_sessions[sid] = {"title": f"Session {n}", "messages": []}
+    st.session_state.chat_sessions[sid] = {
+        "title": "New chat",
+        "messages": [],
+        "persist": False,
+    }
     st.session_state.active_chat_session = sid
+    # Keep selectbox widget state in sync (otherwise it overwrites active on next run).
+    st.session_state.chat_session_select = sid
+    st.session_state.pop("_last_query_results", None)
+    st.session_state.pop("_coaching_saved", None)
+
+
+def _on_chat_session_select() -> None:
+    sid = st.session_state.get("chat_session_select")
+    if isinstance(sid, str) and sid in st.session_state.get("chat_sessions", {}):
+        st.session_state.active_chat_session = sid
+        st.session_state.pop("_last_query_results", None)
 
 
 def _active_chat_messages() -> list[dict[str, str]]:
     sessions = st.session_state.chat_sessions
-    return sessions[st.session_state.active_chat_session]["messages"]
+    active = st.session_state.active_chat_session
+    if active not in sessions:
+        active = next(iter(sessions))
+        st.session_state.active_chat_session = active
+        st.session_state.chat_session_select = active
+    return sessions[active]["messages"]
+
+
+def _title_from_first_message(text: str) -> str:
+    cleaned = " ".join(text.strip().split())
+    if len(cleaned) <= 36:
+        return cleaned or "New chat"
+    return f"{cleaned[:33].rstrip()}…"
 
 
 def _render_chat_session_controls() -> None:
     sessions = st.session_state.chat_sessions
     ids = list(sessions)
-    left, right = st.columns([4, 1], vertical_alignment="bottom")
-    with left:
-        active = st.selectbox(
-            "Chat session",
-            ids,
-            index=ids.index(st.session_state.active_chat_session),
-            format_func=lambda sid: sessions[sid]["title"],
-            key="chat_session_select",
-        )
+    active = st.session_state.active_chat_session
+    if active not in ids:
+        active = ids[0]
         st.session_state.active_chat_session = active
-    with right:
-        if st.button("➕ New session", use_container_width=True):
+
+    left, mid, right = st.columns([3, 1, 1], vertical_alignment="bottom")
+    msgs = sessions[active]["messages"]
+    with left:
+        if len(ids) > 1:
+            st.selectbox(
+                "Chat",
+                ids,
+                index=ids.index(active),
+                format_func=lambda sid: sessions[sid]["title"],
+                key="chat_session_select",
+                on_change=_on_chat_session_select,
+                label_visibility="collapsed",
+            )
+        else:
+            st.caption(sessions[active]["title"])
+    with mid:
+        if st.button("New chat", use_container_width=True, type="primary"):
             _new_chat_session()
             st.rerun()
+    with right:
+        if msgs and st.button("Clear", use_container_width=True, help="Clear this view only"):
+            sessions[active]["messages"] = []
+            sessions[active]["title"] = "New chat"
+            st.session_state.pop("_last_query_results", None)
+            st.rerun()
+    if not sessions[active].get("persist", True):
+        st.caption("This chat is local-only — it won’t merge into saved history.")
+    elif msgs:
+        st.caption("Clear empties this view; saved history reloads with the primary chat.")
 
 
 def _render_chat_message(msg: dict) -> None:
@@ -2209,12 +2251,11 @@ def _render_chat_message(msg: dict) -> None:
 def _render_chat_history(messages: list[dict[str, str]]) -> None:
     """Render the conversation oldest→newest; collapse older turns by default."""
     if not messages:
-        st.info("👋 Ask Soma anything about your training, recovery, or trends to get started.")
         return
     recent_count = _CHAT_RECENT_TURNS * 2
     if len(messages) > recent_count:
         older, recent = messages[:-recent_count], messages[-recent_count:]
-        with st.expander(f"Show earlier messages ({len(older)})", expanded=False):
+        with st.expander(f"Earlier messages ({len(older)})", expanded=False):
             for msg in older:
                 _render_chat_message(msg)
     else:
@@ -2223,22 +2264,33 @@ def _render_chat_history(messages: list[dict[str, str]]) -> None:
         _render_chat_message(msg)
 
 
+def _render_chat_empty_state() -> str | None:
+    """Empty-thread welcome + starter chips. Returns a starter click, if any."""
+    st.markdown(
+        "Ask about recovery, training load, sleep, or goals. "
+        "Notes you ask Soma to remember are saved to your journal."
+    )
+    cols = st.columns(len(_CHAT_STARTERS))
+    for col, starter in zip(cols, _CHAT_STARTERS, strict=True):
+        with col:
+            if st.button(starter, use_container_width=True, key=f"chat_starter:{starter}"):
+                return starter
+    return None
+
+
 def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> None:
-    st.markdown("#### 💬 Coaching chat")
+    st.markdown("#### Coaching chat")
     journal = ctx.get("athlete_journal") or []
     if journal:
-        with st.expander("Your saved notes (journal)", expanded=False):
+        with st.expander(f"Journal ({len(journal)} notes)", expanded=False):
             for entry in journal[:12]:
                 if not isinstance(entry, dict):
                     continue
                 stamp = entry.get("entry_date") or "?"
                 cat = entry.get("category") or "note"
-                st.markdown(f"**{stamp}** · {cat}")
+                st.markdown(f"**{stamp}** · _{cat}_")
                 st.caption(str(entry.get("body") or ""))
-    st.caption(
-        "Tell the coach anything to remember — workout feel, supplements, schedule changes. "
-        "Trend questions (sleep, HRV, etc.) run a read-only history query automatically."
-    )
+
     saved_msg = st.session_state.pop("_coaching_saved", None)
     if saved_msg:
         st.success(f"Saved: {saved_msg}")
@@ -2248,8 +2300,20 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
     _render_chat_session_controls()
     messages = _active_chat_messages()
 
-    user_input = st.chat_input("Ask Soma…")
-    if user_input:
+    starter = None if messages else _render_chat_empty_state()
+    _render_chat_history(messages)
+    debug_tools = st.session_state.pop("_debug_tool_results", None)
+    if debug_tools and _debug_enabled():
+        with st.expander("🛠 Tool calls (developer — not saved)"):
+            st.json(debug_tools)
+
+    typed = st.chat_input("Message Soma…")
+    user_input = starter or typed
+    if not user_input:
+        _render_query_details(st.session_state.get("_last_query_results") or [])
+        return
+
+    with st.spinner("Thinking…"):
         turn = run_coaching_turn(
             user_id=user_id,
             user_message=user_input,
@@ -2259,49 +2323,51 @@ def _page_chat(ctx: dict, mode: str, guidelines: GuidelinesContext | None) -> No
             guidelines=guidelines,
             query_all=_history_query_all(user_id, mode),
         )
-        st.session_state["_last_query_results"] = turn.get("query_results") or []
-        messages.append({"role": "user", "content": user_input})
-        messages.append({"role": "assistant", "content": turn["reply"]})
-        pending = turn.get("pending_writes") or []
-        if pending and mode == "live":
-            try:
-                applied = _persist_coaching_writes(user_id, pending)
-                if applied:
-                    _load_live_context.clear()
-                    st.session_state["_coaching_saved"] = "; ".join(applied)
-                with _scoped_conn(user_id, read_only=False) as conn:
-                    save_chat_messages(
-                        conn,
-                        user_id=user_id,
-                        messages=[
-                            ("user", user_input),
-                            ("assistant", turn["reply"]),
-                        ],
-                    )
-                    conn.commit()
-                st.rerun()
-            except Exception as exc:
-                st.error(f"Failed to save: {exc}")
-        elif pending and turn.get("tool_results") and _debug_enabled():
-            with st.expander("🛠 Tool calls (developer — not saved)"):
-                st.json(turn["tool_results"])
-        elif mode == "live":
-            try:
-                with _scoped_conn(user_id, read_only=False) as conn:
-                    save_chat_messages(
-                        conn,
-                        user_id=user_id,
-                        messages=[
-                            ("user", user_input),
-                            ("assistant", turn["reply"]),
-                        ],
-                    )
-                    conn.commit()
-            except Exception:
-                pass
+    st.session_state["_last_query_results"] = turn.get("query_results") or []
+    if not messages:
+        active = st.session_state.active_chat_session
+        st.session_state.chat_sessions[active]["title"] = _title_from_first_message(user_input)
+    messages.append({"role": "user", "content": user_input})
+    messages.append({"role": "assistant", "content": turn["reply"]})
+    pending = turn.get("pending_writes") or []
+    active = st.session_state.active_chat_session
+    should_persist = bool(
+        mode == "live"
+        and st.session_state.chat_sessions.get(active, {}).get("persist", True)
+    )
+    if pending and mode == "live":
+        try:
+            applied = _persist_coaching_writes(user_id, pending)
+            if applied:
+                _load_live_context.clear()
+                st.session_state["_coaching_saved"] = "; ".join(applied)
+        except Exception as exc:
+            st.error(f"Failed to save coaching writes: {exc}")
+            _render_chat_history(messages)
+            _render_query_details(st.session_state.get("_last_query_results") or [])
+            return
+    elif pending and turn.get("tool_results") and _debug_enabled():
+        st.session_state["_debug_tool_results"] = turn["tool_results"]
 
-    _render_chat_history(messages)
-    _render_query_details(st.session_state.get("_last_query_results") or [])
+    if should_persist:
+        try:
+            with _scoped_conn(user_id, read_only=False) as conn:
+                save_chat_messages(
+                    conn,
+                    user_id=user_id,
+                    messages=[
+                        ("user", user_input),
+                        ("assistant", turn["reply"]),
+                    ],
+                )
+                conn.commit()
+        except Exception as exc:
+            st.error(f"Failed to save chat: {exc}")
+            _render_chat_history(messages)
+            _render_query_details(st.session_state.get("_last_query_results") or [])
+            return
+
+    st.rerun()
 
 
 def main() -> None:

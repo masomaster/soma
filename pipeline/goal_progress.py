@@ -15,8 +15,6 @@ from typing import Any
 from pipeline.cardio_quality import (
     DEFAULT_RUN_PACE_MAX_SEC_MI,
     DEFAULT_RUN_PACE_MIN_SEC_MI,
-    assess_cardio_quality,
-    has_suspect_distance,
 )
 from pipeline.mileage_ramp import check_mileage_ramp, iso_week_start
 from pipeline.schedule_context import apply_schedule_to_focus_parts, is_goal_blocked
@@ -25,12 +23,11 @@ from pipeline.strength_analytics import weekly_focus_rollups, weekly_strength_ro
 from pipeline.workload_pace import calendar_week_cardio_load
 
 STRENGTH_GOAL = "strength"
-RUNNING_GOAL_TYPES = ("running_long", "running_easy", "running_interval")
-RUN_TYPE_BY_GOAL = {
-    "running_long": "long",
-    "running_easy": "easy",
-    "running_interval": "interval",
-}
+# Legacy typed running goals stay in DB but are unused — injury signals use
+# total mileage + cardio load (mileage_check / workload_pace).
+LEGACY_TYPED_RUNNING_GOALS = frozenset(
+    {"running_long", "running_easy", "running_interval"}
+)
 
 
 def _parse_date(raw: Any) -> date | None:
@@ -42,56 +39,6 @@ def _parse_date(raw: Any) -> date | None:
         except ValueError:
             return None
     return None
-
-
-def _week_dates(week_start: date) -> set[date]:
-    return {week_start + timedelta(days=i) for i in range(7)}
-
-
-def _running_done(
-    goal_type: str,
-    *,
-    week_start: date,
-    running_sessions: Sequence[Mapping[str, Any]],
-    cardio_events: Sequence[Mapping[str, Any]] | None = None,
-    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
-    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
-) -> bool:
-    run_type = RUN_TYPE_BY_GOAL.get(goal_type)
-    if run_type is None:
-        return False
-    week = _week_dates(week_start)
-    for row in running_sessions:
-        sd = _parse_date(row.get("session_date"))
-        if sd in week and row.get("run_type") == run_type:
-            return True
-    for row in cardio_events or ():
-        ed = _parse_date(row.get("event_date"))
-        if ed not in week:
-            continue
-        activity = str(row.get("activity_type") or "").lower()
-        if "run" not in activity:
-            continue
-        if run_type == "long":
-            if "long" in activity:
-                return True
-            # Only trust distance for the long-run threshold when it is not
-            # flagged suspect (a corrupt-high distance must not fake a long run).
-            if (row.get("distance_miles") or 0) >= 6 and not has_suspect_distance(
-                assess_cardio_quality(
-                    row,
-                    run_pace_min_sec_mi=run_pace_min_sec_mi,
-                    run_pace_max_sec_mi=run_pace_max_sec_mi,
-                )
-            ):
-                return True
-        if run_type == "interval" and ("interval" in activity or "tempo" in activity):
-            return True
-        if run_type == "easy" and run_type in activity:
-            return True
-        if run_type == "easy" and "run" in activity:
-            return True
-    return False
 
 
 def _target_label(goal: Mapping[str, Any]) -> str:
@@ -136,11 +83,7 @@ def compute_goal_status(
     run_date: date,
     goals: Sequence[Mapping[str, Any]],
     strength_events: Sequence[Mapping[str, Any]],
-    running_sessions: Sequence[Mapping[str, Any]],
-    cardio_events: Sequence[Mapping[str, Any]] | None = None,
     exceptions: Sequence[Mapping[str, Any]] | None = None,
-    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
-    run_pace_max_sec_mi: float = DEFAULT_RUN_PACE_MAX_SEC_MI,
 ) -> dict[str, Any]:
     """Build ``goals_status`` JSON for briefing / snapshot."""
     week_start = iso_week_start(run_date)
@@ -162,6 +105,8 @@ def compute_goal_status(
             continue
         if eff_until is not None and run_date > eff_until:
             continue
+        if gtype in LEGACY_TYPED_RUNNING_GOALS:
+            continue
         blocked = is_goal_blocked(gtype, run_date=run_date, exceptions=exceptions or ())
         if gtype == STRENGTH_GOAL:
             tmin = goal.get("target_min")
@@ -177,33 +122,6 @@ def compute_goal_status(
             status["strength"] = {
                 "completed": strength_completed,
                 "target": _target_label(goal),
-                "status": st,
-                "schedule_note": blocked,
-            }
-        elif gtype in RUNNING_GOAL_TYPES:
-            done = _running_done(
-                gtype,
-                week_start=week_start,
-                running_sessions=running_sessions,
-                cardio_events=cardio_events,
-                run_pace_min_sec_mi=run_pace_min_sec_mi,
-                run_pace_max_sec_mi=run_pace_max_sec_mi,
-            )
-            st = "done" if done else "not_yet"
-            if not done:
-                st = _pace_status(
-                    completed=0,
-                    target_min=1,
-                    run_date=run_date,
-                    week_start=week_start,
-                )
-            if blocked:
-                st = "skipped"
-            if "running" not in status:
-                status["running"] = {}
-            key = RUN_TYPE_BY_GOAL[gtype]
-            status["running"][key] = {
-                "done": done,
                 "status": st,
                 "schedule_note": blocked,
             }
@@ -229,24 +147,7 @@ def suggest_todays_focus(
             urgency = " needed" if st == "urgent" else " session"
             parts.append(f"Strength{urgency} — {completed} of {target} done")
 
-    running = goals_status.get("running")
-    if isinstance(running, dict):
-        for key, label in (
-            ("interval", "Interval run"),
-            ("long", "Long run"),
-            ("easy", "Easy run"),
-        ):
-            item = running.get(key)
-            if not isinstance(item, dict):
-                continue
-            if item.get("status") == "skipped":
-                note = item.get("schedule_note")
-                if note:
-                    parts.append(f"{label} skipped ({note})")
-                continue
-            if item.get("status") in ("behind", "urgent", "not_yet") and not item.get("done"):
-                suffix = " still pending" if item.get("status") != "urgent" else " urgent"
-                parts.append(f"{label}{suffix}")
+    # Running focus comes from mileage_check / workload_pace, not typed goals.
 
     parts = apply_schedule_to_focus_parts(
         parts,
@@ -333,11 +234,7 @@ def build_daily_goal_snapshot(
         run_date=run_date,
         goals=goals,
         strength_events=strength_events,
-        running_sessions=running_sessions,
-        cardio_events=cardio_events,
         exceptions=exceptions,
-        run_pace_min_sec_mi=run_pace_min_sec_mi,
-        run_pace_max_sec_mi=run_pace_max_sec_mi,
     )
     mileage_check = check_mileage_ramp(
         run_date=run_date,

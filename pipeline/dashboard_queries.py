@@ -101,8 +101,8 @@ Tables (all have user_id; always filter by user_id):
 - strength_events(event_date, exercise_name, reps, weight_lbs)
 - cardio_events(event_date, activity_type, duration_min, distance_miles)
 - metric_patterns(metric_a, metric_b, lag_days, correlation, sample_n, status, description)
-- goals(goal_type, target_min, target_max, is_active)
-- running_sessions(session_date, run_type, distance_km)
+- running_sessions(session_date, distance_km)  -- run_type column exists but is unused; track total mileage only
+- goals(goal_type, target_min, target_max, is_active)  -- prefer strength; typed running_* goals are legacy/ignored
 - training_phases(id, name, phase_type, start_date, end_date, notes, target_notes, is_active)
 - athlete_journal_entries(entry_date, category, body, created_at)
 - provider_connections(provider, status, last_sync_at)

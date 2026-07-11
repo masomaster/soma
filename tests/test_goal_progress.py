@@ -22,6 +22,7 @@ def _goals():
             "target_label": "3-4x",
             "is_active": True,
         },
+        # Legacy typed running goals — retained in DB but ignored for status.
         {"goal_type": "running_interval", "is_active": True, "target_min": 1},
         {"goal_type": "running_easy", "is_active": True, "target_min": 1},
     ]
@@ -33,33 +34,30 @@ def test_compute_goal_status_strength_behind_on_thursday():
         run_date=RUN,
         goals=_goals(),
         strength_events=strength,
-        running_sessions=[],
     )
     assert status["strength"]["completed"] == 1
     assert status["strength"]["status"] in ("behind", "urgent")
 
 
-def test_running_easy_done_from_session():
+def test_typed_running_goals_ignored():
     status = compute_goal_status(
         run_date=RUN,
         goals=_goals(),
         strength_events=[],
-        running_sessions=[
-            {"session_date": RUN - __import__("datetime").timedelta(days=2), "run_type": "easy"}
-        ],
     )
-    assert status["running"]["easy"]["done"] is True
-    assert status["running"]["easy"]["status"] == "done"
+    assert "running" not in status
 
 
-def test_suggest_todays_focus_includes_pending():
+def test_suggest_todays_focus_strength_only():
     goals_status = {
         "strength": {"completed": 1, "target": "3-4x", "status": "behind"},
         "running": {"interval": {"done": False, "status": "not_yet"}},
     }
     focus = suggest_todays_focus(goals_status=goals_status, run_date=RUN)
     assert "Strength" in focus
-    assert "Interval" in focus
+    assert "Interval" not in focus
+    assert "Easy" not in focus
+    assert "Long" not in focus
 
 
 def test_build_daily_goal_snapshot_shape():
@@ -73,6 +71,7 @@ def test_build_daily_goal_snapshot_shape():
     assert snap["user_id"] == "u1"
     assert "goals_status" in snap
     assert "mileage_check" in snap
+    assert "running" not in snap["goals_status"]
     assert isinstance(snap["todays_focus"], str)
 
 

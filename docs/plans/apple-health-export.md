@@ -44,9 +44,11 @@ There is **no** separate Renpho API ingest and **no** separate Google Health / F
 
 **HRV note:** HAE often exposes **SDNN** as `heart_rate_variability_sdnn`. Soma stores it under **`hrv_rmssd`** as a **v0 proxy** — not identical to RMSSD.
 
+**Fitbit / Health Sync caveat:** Fitbit reports **RMSSD**; Apple Health’s only HRV type is **SDNN**. Many Fitbit→Apple Health bridges (including Health Sync) either **do not write HRV** into HealthKit or write it inconsistently — enabling “HRV” in the bridge is not enough if **Apple Health → Browse → Heart → Heart Rate Variability** has no samples. Soma only sees what HAE posts; if that HealthKit type is empty, Soma stays empty even while sleep / resting HR flow fine. Prefer an Apple Watch SDNN sample, or a bridge that explicitly writes `HeartRateVariabilitySDNN`, and include **Heart Rate Variability** in the HAE metrics automation.
+
 **Body composition (Renpho scale):** Enable Renpho → Apple Health sync in the Renpho app. Include **`body_mass`**, **`body_fat_percentage`**, and **`lean_body_mass`** in your HAE metrics automation. Soma maps them to **`body_weight_lbs`**, **`body_fat_pct`**, and **`muscle_mass_lbs`**.
 
-**Google Fit / Fitbit (Health Sync):** Use the **Health Sync** app to mirror Android-side sleep, activities, and related metrics into Apple Health. They are exported by the **same** HAE POST as Watch data — no second Soma endpoint.
+**Google Fit / Fitbit (Health Sync):** Use the **Health Sync** app to mirror Android-side sleep, activities, and related metrics into Apple Health. They are exported by the **same** HAE POST as Watch data — no second Soma endpoint. **HRV is the common gap** — see the Fitbit caveat above.
 
 **Sleep stages & sleep score:** when a `sleep_analysis` row carries per-stage durations (`deep`/`rem`), Soma maps them to **`sleep_deep_hrs`** / **`sleep_rem_hrs`** (unit-aware hours). Fitbit's proprietary 0–100 *sleep score* **cannot** flow through Apple Health — HealthKit has no sleep-score type — so Soma **computes its own** `sleep_score` from the stages + recovery signals during the daily rollup. To capture Fitbit stages you need a Fitbit→Apple Health bridge app (SyncFit / myFitnessSync / Sync Solver). See **[fitbit-sleep-score.md](./fitbit-sleep-score.md)**.
 

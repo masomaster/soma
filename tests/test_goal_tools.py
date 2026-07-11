@@ -39,15 +39,32 @@ def test_parse_goal_patches_from_json():
 
 
 def test_apply_tool_log_run():
-    # The tool's athlete-facing interface is miles; storage stays in km.
+    # Athlete-facing interface is miles; storage stays in km. Run type is optional.
+    out = apply_tool_call(
+        "log_run",
+        {"session_date": "2024-06-08", "distance_miles": 10},
+        user_id="u1",
+    )
+    assert out["action"] == "insert_running_session"
+    assert out["row"]["run_type"] == "run"
+    assert out["row"]["distance_km"] == pytest.approx(10 * 1.609344)
+    # Unique source_id so same-day multi-run logs do not collide.
+    assert out["row"]["source_id"].startswith("manual:2024-06-08:run:")
+    out2 = apply_tool_call(
+        "log_run",
+        {"session_date": "2024-06-08", "distance_miles": 3},
+        user_id="u1",
+    )
+    assert out2["row"]["source_id"] != out["row"]["source_id"]
+
+
+def test_apply_tool_log_run_stores_optional_legacy_type():
     out = apply_tool_call(
         "log_run",
         {"session_date": "2024-06-08", "run_type": "long", "distance_miles": 10},
         user_id="u1",
     )
-    assert out["action"] == "insert_running_session"
     assert out["row"]["run_type"] == "long"
-    assert out["row"]["distance_km"] == pytest.approx(10 * 1.609344)
 
 
 def test_apply_tool_schedule_exception():

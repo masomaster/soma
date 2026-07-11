@@ -283,8 +283,9 @@ def build_prompt(
             if k != "as_of"
         }
         pace_block = (
-            "WORKLOAD_PACE (pre-computed green/yellow/red training pace lights — "
-            "narrate briefly when yellow or red; do not recompute):\n"
+            "WORKLOAD_PACE (pre-computed green/yellow/red training pace lights from "
+            "rolling 7-day windows — green includes underload; yellow/red are overload "
+            "only; narrate briefly when yellow or red; do not recompute):\n"
             f"{json.dumps(compact_pace, indent=2, sort_keys=True, default=str)}\n\n"
         )
     return (
@@ -315,7 +316,8 @@ def build_prompt(
         "- When recovery_hrv_days_7d is 0 but recovery_sleep_days_7d is not, do not "
         "invent HRV recovery narrative.\n"
         "- acute_chronic_ratio is the rolling 7d÷28d cardio minutes ratio on "
-        "daily_features (distinct from calendar-week ACWR on workload pace lights). "
+        "daily_features (same family as workload-pace ACWR, which uses last-7d ÷ "
+        "avg of prior four 7d windows). "
         "Null means it could not be computed; do not describe it as high load.\n"
         "- training_load_* are modality-split EXTERNAL training exposure (minutes or US short tons); "
         "they are not HR-derived physiological stress.\n"
