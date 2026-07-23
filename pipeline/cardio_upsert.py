@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -28,11 +29,34 @@ _CARDIO_COLUMNS: tuple[str, ...] = (
     "session_rpe",
     "notes",
     "quality_flags",
+    "avg_watts",
+    "max_watts",
+    "normalized_power",
+    "work_kj",
+    "device_watts",
+    "power_mmp_json",
 )
 
 # Columns tolerated as absent on an incoming row (defaulted to NULL). Additive
 # fields so older producers (e.g. the source_app backfill) keep working.
-_OPTIONAL_CARDIO_COLUMNS: frozenset[str] = frozenset({"quality_flags"})
+_OPTIONAL_CARDIO_COLUMNS: frozenset[str] = frozenset(
+    {
+        "quality_flags",
+        "avg_watts",
+        "max_watts",
+        "normalized_power",
+        "work_kj",
+        "device_watts",
+        "power_mmp_json",
+    }
+)
+
+
+def _cell(row: dict[str, Any], column: str) -> Any:
+    value = row.get(column)
+    if column == "power_mmp_json" and isinstance(value, dict):
+        return json.dumps(value)
+    return value
 
 
 def upsert_cardio_events(cur: Any, rows: list[dict[str, Any]]) -> None:
@@ -50,7 +74,7 @@ def upsert_cardio_events(cur: Any, rows: list[dict[str, Any]]) -> None:
         ]
         if missing:
             raise KeyError(f"cardio_events row missing keys: {missing}")
-    values = [tuple(row.get(c) for c in _CARDIO_COLUMNS) for row in rows]
+    values = [tuple(_cell(row, c) for c in _CARDIO_COLUMNS) for row in rows]
     col_sql = ", ".join(_CARDIO_COLUMNS)
     sql = (
         f"INSERT INTO cardio_events ({col_sql}) VALUES %s "

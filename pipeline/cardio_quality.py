@@ -56,6 +56,8 @@ DEFAULT_RUN_PACE_MAX_SEC_MI = 1080.0  # 18:00 / mi
 
 # quality_flags token: the recorded distance (hence pace) is not trustworthy.
 FLAG_IMPLAUSIBLE_RUN_PACE = "implausible_run_pace"
+# FIT/TCX/GPX session had no power samples (still useful as cardio duration).
+FLAG_NO_POWER = "no_power"
 
 
 def _num(value: Any) -> float | None:
