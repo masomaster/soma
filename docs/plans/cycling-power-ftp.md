@@ -20,7 +20,7 @@ After the Strava archive is ingested once, do **not** re-export on a schedule. O
 1. **Ongoing (scheduled):** BOLT → ELEMNT companion → **Dropbox** auto-export of `.fit` → sync folder → recurring `python -m pipeline.fit_ingest --source wahoo_fit` (cron / EventBridge / local schedule — ops choice).
 2. **One-time backfill:** Strava website → **Request Your Archive** (free) → unzip → **single** `python -m pipeline.fit_ingest --source strava_export` run.
 3. Adapter writes a **JSON raw envelope** (base64 payload + sha256) to S3 under the usual `raw/{user_id}/{source}/…/.json` key, then normalizes to `cardio_events` (including `avg_watts`, `power_mmp_json`, …).
-4. Optional `--estimate-ftp` aggregates 90-day best MMP → Coggan 20-min or critical-power estimate → `daily_health_metrics.ftp_*`.
+4. Optional `--estimate-ftp` aggregates 90-day best MMP → prefers 60/30-min anchors, else scaled critical power / outdoor Coggan → `daily_health_metrics.ftp_*`.
 
 Sources: `wahoo_fit` (Dropbox, recurring), `strava_export` (archive, one-shot). Dedup priority: **wahoo_fit > strava_export > apple_health**.
 
@@ -86,11 +86,16 @@ Migration [`0011_cardio_power_and_ftp.sql`](../../schema/migrations/0011_cardio_
 
 ## FTP method (honest limits)
 
-Deterministic math in [`pipeline/power_math.py`](../../pipeline/power_math.py) — **not** the LLM:
+Deterministic math in [`pipeline/power_math.py`](../../pipeline/power_math.py) — **not** the LLM.
+Estimates prefer **longer sustained efforts** so short anaerobic peaks cannot inflate FTP:
 
-1. **Coggan 20-min** when best 20-min MMP exists and is ≥ ~85% of best 5-min MMP → `ftp = 0.95 × MMP_20`.
-2. Else **critical power** (2-parameter fit on mid-duration MMP points) when ≥3 points exist → `ftp ≈ CP`.
-3. Else `insufficient_data`.
+1. **Best 60-min MMP** when present → `ftp ≈ MMP_60` (closest to the definition of FTP).
+2. Else **best 30-min** → `ftp = 0.95 × MMP_30`.
+3. Else **critical power** (2-parameter fit on 5–30 min MMP) → `ftp = 0.95 × CP`, then clamp so the result cannot exceed observed 30/60-min MMP.
+4. Else **Coggan 20-min** when the effort gate passes → `ftp = 0.90 × MMP_20` (outdoor-conservative; classic lab protocol uses 0.95 on a paced test).
+5. Else `insufficient_data`.
+
+MMP curves are **monotone-clamped** (longer windows cannot exceed shorter) before fitting, because pointwise-max across rides can create non-physiological envelopes.
 
 **Caveats:** Outdoor best efforts include drafting, surges, and non-maximal “hard” days. Treat `ftp_watts` as an **estimate**; use `ftp_confidence` and re-run after more hard rides. Session RPE is optional later for labeling intentional efforts — not required for v1.
 

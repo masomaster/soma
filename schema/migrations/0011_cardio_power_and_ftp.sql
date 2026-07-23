@@ -27,8 +27,8 @@ ALTER TABLE public.daily_health_metrics
     ADD COLUMN IF NOT EXISTS ftp_confidence FLOAT;
 
 COMMENT ON COLUMN public.daily_health_metrics.ftp_watts IS
-    'Estimated functional threshold power (watts) from recent ride MMP / critical power.';
+    'Estimated functional threshold power (watts) from recent ride MMP (prefers 60/30-min anchors, else scaled CP / outdoor Coggan).';
 COMMENT ON COLUMN public.daily_health_metrics.ftp_method IS
-    'Estimator used: coggan_20min | critical_power | insufficient_data.';
+    'Estimator used: mmp_60 | mmp_30 | critical_power | coggan_20min | insufficient_data.';
 COMMENT ON COLUMN public.daily_health_metrics.ftp_confidence IS
     'Heuristic confidence in [0, 1] for the FTP estimate (not a statistical CI).';
