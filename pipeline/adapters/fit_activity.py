@@ -19,6 +19,7 @@ import hashlib
 import json
 import logging
 import re
+import warnings
 import xml.etree.ElementTree as ET
 from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, timedelta, timezone
@@ -201,61 +202,69 @@ def parse_fit_records(payload: bytes) -> dict[str, Any]:
     session_name: str | None = None
     device_watts = True
 
-    with fitdecode.FitReader(payload) as fit:
-        for frame in fit:
-            if frame.frame_type != fitdecode.FIT_FRAME_DATA:
-                continue
-            name = frame.name
-            if name == "sport":
-                if frame.has_field("name"):
-                    sport = frame.get_value("name")
-                elif frame.has_field("sport"):
-                    sport = frame.get_value("sport")
-            elif name == "session":
-                if sport is None and frame.has_field("sport"):
-                    sport = frame.get_value("sport")
-                if frame.has_field("sport_profile_name"):
-                    session_name = str(frame.get_value("sport_profile_name") or "") or None
-            elif name == "record":
-                ts = None
-                if frame.has_field("timestamp"):
-                    ts = _fit_timestamp_to_dt(frame.get_value("timestamp"))
-                if ts is not None:
-                    timestamps.append(ts)
-                if frame.has_field("power"):
-                    raw_p = frame.get_value("power")
-                    if raw_p is None:
-                        watts.append(None)
-                    else:
-                        try:
-                            watts.append(float(raw_p))
-                        except (TypeError, ValueError):
+    # Wahoo/Strava FITs often omit developer-field defs; fitdecode warns and
+    # inserts dummies. Harmless for power/HR records — suppress the spam.
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*field_definition_number.*",
+            category=UserWarning,
+            module=r"fitdecode(\..*)?",
+        )
+        with fitdecode.FitReader(payload) as fit:
+            for frame in fit:
+                if frame.frame_type != fitdecode.FIT_FRAME_DATA:
+                    continue
+                name = frame.name
+                if name == "sport":
+                    if frame.has_field("name"):
+                        sport = frame.get_value("name")
+                    elif frame.has_field("sport"):
+                        sport = frame.get_value("sport")
+                elif name == "session":
+                    if sport is None and frame.has_field("sport"):
+                        sport = frame.get_value("sport")
+                    if frame.has_field("sport_profile_name"):
+                        session_name = str(frame.get_value("sport_profile_name") or "") or None
+                elif name == "record":
+                    ts = None
+                    if frame.has_field("timestamp"):
+                        ts = _fit_timestamp_to_dt(frame.get_value("timestamp"))
+                    if ts is not None:
+                        timestamps.append(ts)
+                    if frame.has_field("power"):
+                        raw_p = frame.get_value("power")
+                        if raw_p is None:
                             watts.append(None)
-                else:
-                    # Keep timeline alignment when power field absent on this record.
-                    if watts or timestamps:
-                        watts.append(None)
-                if frame.has_field("heart_rate"):
-                    try:
-                        hrs.append(int(frame.get_value("heart_rate")))
-                    except (TypeError, ValueError):
-                        pass
-                if frame.has_field("distance"):
-                    try:
-                        distances.append(float(frame.get_value("distance")))
-                    except (TypeError, ValueError):
-                        pass
-                if frame.has_field("altitude"):
-                    try:
-                        altitudes.append(float(frame.get_value("altitude")))
-                    except (TypeError, ValueError):
-                        pass
-                elif frame.has_field("enhanced_altitude"):
-                    try:
-                        altitudes.append(float(frame.get_value("enhanced_altitude")))
-                    except (TypeError, ValueError):
-                        pass
-
+                        else:
+                            try:
+                                watts.append(float(raw_p))
+                            except (TypeError, ValueError):
+                                watts.append(None)
+                    else:
+                        # Keep timeline alignment when power field absent on this record.
+                        if watts or timestamps:
+                            watts.append(None)
+                    if frame.has_field("heart_rate"):
+                        try:
+                            hrs.append(int(frame.get_value("heart_rate")))
+                        except (TypeError, ValueError):
+                            pass
+                    if frame.has_field("distance"):
+                        try:
+                            distances.append(float(frame.get_value("distance")))
+                        except (TypeError, ValueError):
+                            pass
+                    if frame.has_field("altitude"):
+                        try:
+                            altitudes.append(float(frame.get_value("altitude")))
+                        except (TypeError, ValueError):
+                            pass
+                    elif frame.has_field("enhanced_altitude"):
+                        try:
+                            altitudes.append(float(frame.get_value("enhanced_altitude")))
+                        except (TypeError, ValueError):
+                            pass
     started_at = timestamps[0] if timestamps else None
     ended_at = timestamps[-1] if timestamps else None
     duration_sec = 0.0
@@ -334,9 +343,17 @@ def _local(tag: str) -> str:
     return tag
 
 
+def _xml_root_from_payload(payload: bytes) -> ET.Element:
+    """Parse XML bytes; tolerate leading whitespace/BOM (common in Strava ``.tcx.gz``)."""
+    text = payload.decode("utf-8-sig", errors="replace").lstrip()
+    if text.startswith("\ufeff"):
+        text = text.lstrip("\ufeff").lstrip()
+    return ET.fromstring(text)
+
+
 def parse_tcx(payload: bytes) -> dict[str, Any]:
     """Extract session + power from a TCX document."""
-    root = ET.fromstring(payload)
+    root = _xml_root_from_payload(payload)
     watts: list[float | None] = []
     hrs: list[int] = []
     distances: list[float] = []
@@ -420,7 +437,7 @@ def parse_tcx(payload: bytes) -> dict[str, Any]:
 
 def parse_gpx(payload: bytes) -> dict[str, Any]:
     """Extract session + power from GPX (Garmin TrackPointExtension watts when present)."""
-    root = ET.fromstring(payload)
+    root = _xml_root_from_payload(payload)
     watts: list[float | None] = []
     hrs: list[int] = []
     altitudes: list[float] = []
@@ -535,10 +552,13 @@ def session_to_cardio_row(
     if not isinstance(watts, list):
         watts = []
     avg_w, max_w = avg_and_max_watts(watts)
-    has_power = any(w is not None for w in watts)
+    # Treat all-null / all-zero streams as no usable power (sensor connected, no work).
+    has_power = any(w is not None and float(w) > 0 for w in watts)
     mmp = mean_maximal_power(watts) if has_power else {}
     np_val = normalized_power(watts) if has_power else None
     work = work_kilojoules(watts) if has_power else None
+    if not has_power:
+        avg_w, max_w = None, None
     dist_m = session.get("distance_m")
     dist_mi = round(float(dist_m) / METERS_PER_MILE, 4) if dist_m is not None else None
     elev_m = session.get("elevation_m")
