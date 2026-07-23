@@ -19,8 +19,10 @@ Traffic lights:
 - **Yellow** — borderline overload; proceed carefully.
 - **Red** — overloaded; ease up.
 
-Strength-typed Apple Health workouts are excluded from cardio minutes so they
-are not double-counted against Hevy lifting volume.
+Strength-typed Apple Health workouts and Fitbit/Health Sync NEAT walks are
+excluded from cardio minutes so they are not double-counted against Hevy
+lifting volume or inflate overload lights. Query-time near-dup collapse covers
+historical Apple/Strava/Wahoo mirrors still present in the DB.
 """
 
 from __future__ import annotations
@@ -35,6 +37,7 @@ from pipeline.cardio_quality import (
     is_overrecorded_distance,
     is_strength_like_cardio_activity,
 )
+from pipeline.cardio_training_load import filter_cardio_for_training_load
 from pipeline.features import as_date
 from pipeline.mileage_ramp import iso_week_start
 from pipeline.pace_thresholds import DEFAULT_PACE_THRESHOLDS
@@ -465,6 +468,7 @@ def build_workload_pace_summary(
 ) -> dict[str, Any]:
     """Compact workload-pace block for dashboard, briefing, and rules."""
     th = {**DEFAULT_PACE_THRESHOLDS, **(thresholds or {})}
+    cardio_for_load = filter_cardio_for_training_load(cardio_events)
 
     lifting_weekly = weekly_load_rollups(
         strength_events,
@@ -487,7 +491,7 @@ def build_workload_pace_summary(
     )
 
     cardio_minutes_weekly = weekly_load_rollups(
-        cardio_events,
+        cardio_for_load,
         as_of=as_of,
         weeks=lookback_weeks,
         week_load_fn=lambda ev, week_start: calendar_week_cardio_load(
@@ -502,12 +506,12 @@ def build_workload_pace_summary(
         spike_yellow=th["pace_wow_spike_yellow_cardio_pct"],
         spike_red=th["pace_wow_spike_red_cardio_pct"],
         load_fn=lambda start, end: window_cardio_load(
-            cardio_events, start=start, end=end, mode=None, metric="minutes"
+            cardio_for_load, start=start, end=end, mode=None, metric="minutes"
         ),
     )
 
     running_miles_weekly = weekly_load_rollups(
-        cardio_events,
+        cardio_for_load,
         as_of=as_of,
         weeks=lookback_weeks,
         week_load_fn=lambda ev, week_start: calendar_week_cardio_load(
@@ -519,7 +523,7 @@ def build_workload_pace_summary(
         ),
     )
     cycling_miles_weekly = weekly_load_rollups(
-        cardio_events,
+        cardio_for_load,
         as_of=as_of,
         weeks=lookback_weeks,
         week_load_fn=lambda ev, week_start: calendar_week_cardio_load(

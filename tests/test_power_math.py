@@ -76,6 +76,7 @@ def test_estimate_prefers_60min_when_hour_looks_maximal() -> None:
 
 def test_estimate_skips_soft_hour_on_ftp_test_day() -> None:
     # 2019-shaped FTP test: hard 20-min, soft hour from warmup/cooldown.
+    # Soft 30-min vs 20-min → prefer outdoor Coggan over soft 30 / soft 60.
     best = {
         "300": 269.0,
         "720": 257.0,
@@ -84,9 +85,21 @@ def test_estimate_skips_soft_hour_on_ftp_test_day() -> None:
         "3600": 140.6,
     }
     est = estimate_ftp_from_best_mmp(best)
-    assert est["ftp_method"] == "mmp_30"
-    assert est["ftp_watts"] == round(217.8 * MMP_30_TO_FTP_FACTOR, 1)
+    assert est["ftp_method"] == "coggan_20min"
+    assert est["ftp_watts"] == round(251.8 * COGGAN_20MIN_FACTOR, 1)
     assert est["ftp_watts"] > 200.0
+
+
+def test_estimate_skips_soft_hour_without_30min_anchor() -> None:
+    # Soft hour with only a hard 20-min — do not trust ~141W as FTP.
+    best = {
+        "300": 269.0,
+        "1200": 251.8,
+        "3600": 140.6,
+    }
+    est = estimate_ftp_from_best_mmp(best)
+    assert est["ftp_method"] == "coggan_20min"
+    assert est["ftp_watts"] == round(251.8 * COGGAN_20MIN_FACTOR, 1)
 
 
 def test_estimate_prefers_30min_over_inflated_coggan() -> None:

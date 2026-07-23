@@ -291,16 +291,28 @@ def critical_power_ftp(
 # Hour MMP is trusted only when it is close to best 30-min (not a soft hour on
 # an FTP-test day with a hard 20-min and easy warmup/cooldown).
 _HOUR_PLAUSIBLE_VS_30_RATIO = 0.88
+# When 30-min is missing, still reject hours that sit far below best 20-min
+# (classic soft-hour FTP-test shape: hard 20, easy filler to 60). Kept looser
+# than the 30-min gate because cross-ride best-20 can sit well above true FTP.
+_HOUR_PLAUSIBLE_VS_20_RATIO = 0.70
 
 
-def _hour_looks_maximal(m60: float, *, m30: float | None) -> bool:
-    """True when best 60-min power is consistent with best 30-min.
+def _hour_looks_maximal(
+    m60: float,
+    *,
+    m30: float | None,
+    m20: float | None = None,
+) -> bool:
+    """True when best 60-min power is consistent with mid-duration anchors.
 
-    Without a 30-min anchor, trust the hour over short-peak models (avoids
-    letting outdoor Coggan re-inflate past a solid hour effort).
+    Soft hours (hard 20-min + easy warmup/cooldown) fail the 30-min and/or 20-min
+    ratio checks so shorter sustained models can win. Without any mid-duration
+    anchor, trust the hour over short-peak models.
     """
-    if m30 is not None and m30 > 0:
-        return m60 >= m30 * _HOUR_PLAUSIBLE_VS_30_RATIO
+    if m30 is not None and m30 > 0 and m60 < m30 * _HOUR_PLAUSIBLE_VS_30_RATIO:
+        return False
+    if m20 is not None and m20 > 0 and m60 < m20 * _HOUR_PLAUSIBLE_VS_20_RATIO:
+        return False
     return True
 
 
@@ -325,23 +337,48 @@ def estimate_ftp_from_best_mmp(
     """Estimate FTP from sustained anchors, with soft-hour and spike guards.
 
     Priority:
-    1. ``mmp_60`` — best 60-min mean when the hour looks maximal vs 30-min
-    2. ``mmp_30`` — 0.95 × best 30-min mean (also caps short-peak models)
+    1. ``mmp_60`` — best 60-min mean when the hour looks maximal vs 30/20-min
+    2. After a *soft hour* (or no hour): prefer outdoor Coggan 20-min when the
+       30-min window also looks soft vs 20-min (FTP-test shape with cooldown),
+       else ``mmp_30`` × 0.95 (caps incidental outdoor 20-min spikes)
     3. ``critical_power`` — 0.95 × CP from mid-duration MMP
-    4. ``coggan_20min`` — 0.90 × best 20-min (outdoor-conservative)
+    4. Remaining Coggan 20-min fallback
 
-    Soft hours (FTP-test days with hard 20-min + easy warmup/cooldown) skip
-    ``mmp_60`` so a solid 30-min estimate can win.
+    Soft hours (FTP-test days with hard 20-min + easy filler) skip ``mmp_60``.
     """
     curve = monotone_mmp(best_mmp)
     m60 = _mmp_get(curve, MMP_60MIN_SEC)
     m30 = _mmp_get(curve, MMP_30MIN_SEC)
+    m20 = _mmp_get(curve, COGGAN_20MIN_SEC)
+    soft_hour = (
+        m60 is not None
+        and m60 > 0
+        and not _hour_looks_maximal(m60, m30=m30, m20=m20)
+    )
 
-    if m60 is not None and m60 > 0 and _hour_looks_maximal(m60, m30=m30):
+    if m60 is not None and m60 > 0 and not soft_hour:
         return _estimate_result(
             ftp_watts=m60,
             ftp_method="mmp_60",
             ftp_confidence=0.92,
+            curve=curve,
+        )
+
+    coggan = coggan_ftp_from_mmp(curve)
+    # Soft 30-min vs hard 20-min (common on FTP-test days that also soft-hour).
+    soft_30 = (
+        m20 is not None
+        and m20 > 0
+        and m30 is not None
+        and m30 > 0
+        and m30 < m20 * _HOUR_PLAUSIBLE_VS_30_RATIO
+    )
+    if soft_hour and soft_30 and coggan is not None:
+        ftp, conf = coggan
+        return _estimate_result(
+            ftp_watts=ftp,
+            ftp_method="coggan_20min",
+            ftp_confidence=conf,
             curve=curve,
         )
 
@@ -363,7 +400,6 @@ def estimate_ftp_from_best_mmp(
             curve=curve,
         )
 
-    coggan = coggan_ftp_from_mmp(curve)
     if coggan is not None:
         ftp, conf = coggan
         return _estimate_result(

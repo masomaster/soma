@@ -236,17 +236,18 @@ def _cardio_training_load(
     cardio_events: Sequence[Mapping[str, Any]], *, as_of: date
 ) -> dict[str, Any]:
     """Legacy cardio windows plus ``training_load_cardio_minutes_*`` (7d + 28d)."""
+    # Lazy import avoids features ↔ cardio_training_load ↔ apple_health_cardio_dedup cycle.
+    from pipeline.cardio_training_load import filter_cardio_for_training_load
+
     sessions_7d: set[date] = set()
     minutes_7d = 0.0
     minutes_14d = 0.0
     minutes_acute = 0.0
     minutes_chronic = 0.0
     minutes_28d = 0.0
-    for ev in cardio_events:
+    for ev in filter_cardio_for_training_load(cardio_events):
         d = _as_date(ev.get("event_date"))
         if d is None:
-            continue
-        if is_strength_like_cardio_activity(ev.get("activity_type")):
             continue
         minutes = _num(ev.get("duration_min")) or 0.0
         if _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS):

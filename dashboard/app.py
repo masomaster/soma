@@ -10,6 +10,7 @@ Run: ``streamlit run dashboard/app.py`` (requires ``pip install -e '.[dashboard]
 from __future__ import annotations
 
 import json
+import html
 import math
 import os
 import random
@@ -1664,11 +1665,25 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
     left, right = st.columns([2, 3])
     with left:
         with st.container(border=True):
-            st.markdown("**📝 Latest briefing**")
+            st.markdown("**🎯 Today's plan**")
+            focus = ctx.get("todays_focus")
+            if focus:
+                st.write(focus)
+            else:
+                st.caption("_No live focus computed yet._")
             briefing = ctx.get("briefing") or {}
-            st.write(briefing.get("coaching_note") or "_No briefing available yet._")
-            if briefing.get("flags"):
-                st.caption("Flags: " + " ".join(f"`{f}`" for f in briefing["flags"]))
+            note = briefing.get("coaching_note")
+            bdate = briefing.get("date") or briefing.get("briefing_date")
+            if note:
+                with st.expander(
+                    f"Last emailed briefing{f' · {bdate}' if bdate else ''} (not live)",
+                    expanded=False,
+                ):
+                    st.write(note)
+                    if briefing.get("flags"):
+                        st.caption(
+                            "Flags: " + " ".join(f"`{f}`" for f in briefing["flags"])
+                        )
         with st.container(border=True):
             st.markdown("**🎯 Goal progress**")
             goals = ctx.get("goals_status")
@@ -1684,16 +1699,17 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                     delta = f"{this_wk - last_wk:+.1f} mi vs last week"
                 st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" mi"), delta=delta)
         _render_training_phases(ctx.get("training_phase"), compact=False)
-        _render_workload_pace_lights(ctx.get("workload_pace"))
-        # Compact streak glance — full month grids live on the Training tab.
+        # Compact week-streak glance — full month grids live on the Training tab.
+        # Pace lights stay in the hero only (avoid repeating lift/cardio colors).
         mode = "fixture" if _fixture_mode_enabled() else "live"
         cal = _load_workout_calendar(ctx, mode)
         with st.container(border=True):
-            st.markdown("**🔥 Workout streak**")
-            sc = st.columns(2)
-            sc[0].metric("Current", f"{cal.get('current_streak', 0)} days")
-            sc[1].metric("Longest", f"{cal.get('longest_streak', 0)} days")
-            st.caption("Lifting + cardio + Fitbit · see Training for the month calendar.")
+            st.markdown("**🔥 Workout week streak**")
+            sc = st.columns(3)
+            sc[0].metric("Overall", f"{cal.get('current_week_streak', 0)} wk")
+            sc[1].metric("Lifting", f"{cal.get('lifting_week_streak', 0)} wk")
+            sc[2].metric("Cardio", f"{cal.get('cardio_week_streak', 0)} wk")
+            st.caption("Consecutive ISO weeks · see Training for the month calendar.")
     with right:
         with st.container(border=True):
             st.markdown("**Readiness · by day**")
@@ -1703,32 +1719,7 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                 grain="day",
                 y_title="Score /100",
             )
-        with st.container(border=True):
-            st.markdown("**Lifting volume · by calendar week**")
-            lifting_df = _pace_weekly_df(ctx.get("workload_pace"), "lifting")
-            _time_chart(
-                lifting_df,
-                {"load": "Volume (lb)"},
-                grain="week",
-                empty="No lifting weeks yet.",
-                y_title="lb",
-            )
-            st.caption("Each point = Mon–Sun week. Current week is in-progress until Sunday.")
-        with st.container(border=True):
-            st.markdown("**Cardio minutes · by calendar week**")
-            cardio_df = _pace_weekly_df(ctx.get("workload_pace"), "cardio")
-            _time_chart(
-                cardio_df,
-                {"load": "Minutes"},
-                grain="week",
-                empty="No cardio weeks yet.",
-                y_title="min",
-            )
-            st.caption(
-                "Each point = Mon–Sun week (excludes Apple Health strength-typed workouts)."
-            )
-    st.divider()
-    _render_alerts_row(ctx)
+        _render_alerts_row(ctx)
 
 
 def _tab_recovery(ctx: dict, mdf, fdf) -> None:
@@ -1771,6 +1762,7 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
 
 def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
     """Calendar-week (Mon–as_of) running vs cycling totals for the Training tab."""
+    from pipeline.cardio_training_load import filter_cardio_for_training_load
     from pipeline.mileage_ramp import iso_week_start
 
     as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
@@ -1784,13 +1776,13 @@ def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
             <= date.fromisoformat(str(r["event_date"])[:10])
             <= as_of
         ]
-        return summarize_cardio_by_mode(rows)
+        return summarize_cardio_by_mode(filter_cardio_for_training_load(rows))
     try:
         with _scoped_conn(ctx["user_id"]) as conn:
             rows = fetch_cardio_events_window(
                 conn, user_id=ctx["user_id"], as_of=as_of, days=days
             )
-        return summarize_cardio_by_mode(rows)
+        return summarize_cardio_by_mode(filter_cardio_for_training_load(rows))
     except Exception:
         return summarize_cardio_by_mode([])
 
@@ -1850,7 +1842,7 @@ def _render_cycling_power_section(ctx: dict, mdf, mode: str) -> None:
         _fmt(metrics.get("ftp_watts"), suffix=" W"),
         help=(
             "Outdoor estimate from recent mean-maximal power (not a lab test). "
-            "Prefers best 60/30-min power over short-peak models."
+            "Skips soft hours; prefers maximal 60/30-min power, else Coggan 20-min."
         ),
     )
     method = _ftp_method_label(metrics.get("ftp_method"))
@@ -2064,95 +2056,102 @@ def _calendar_status(cell: Mapping[str, Any]) -> str:
     return "Cardio"
 
 
-def _render_month_calendar_chart(month: Mapping[str, Any]) -> None:
-    """Altair month grid: Mon–Sun columns, one row per week."""
-    import altair as alt
-    import pandas as pd
+_CAL_STATUS_STYLE: dict[str, tuple[str, str]] = {
+    # background, text
+    "Rest": ("#eef1f6", "#64748b"),
+    "Lifting": ("#2563eb", "#ffffff"),
+    "Cardio": ("#0d9488", "#ffffff"),
+    "Lift + cardio": ("#7c3aed", "#ffffff"),
+    "Fitbit / walk": ("#d97706", "#ffffff"),
+    "Out of range": ("transparent", "#cbd5e1"),
+}
 
+
+def _render_month_calendar_chart(month: Mapping[str, Any]) -> None:
+    """CSS month grid: Mon–Sun columns, one row per week."""
     grid = list(month.get("grid") or [])
     if not grid:
         st.caption("No calendar days.")
         return
 
-    rows: list[dict[str, Any]] = []
+    by_week: dict[int, list[Mapping[str, Any]]] = {}
     for cell in grid:
-        status = _calendar_status(cell)
-        rows.append(
-            {
-                "weekday": int(cell["weekday"]),
-                "weekday_name": cell["weekday_name"],
-                "week_index": int(cell["week_index"]),
-                "day_label": str(cell["day"]) if cell.get("in_month") else "",
-                "status": status,
-                "tooltip_date": cell.get("date_iso"),
-                "tooltip_detail": cell.get("label") or status,
-                "in_month": bool(cell.get("in_month")),
-            }
-        )
-    df = pd.DataFrame(rows)
-    color_scale = alt.Scale(
-        domain=["Rest", "Lifting", "Cardio", "Lift + cardio", "Fitbit / walk", "Out of range"],
-        range=["#e8e8e8", "#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#f3f4f6"],
+        by_week.setdefault(int(cell["week_index"]), []).append(cell)
+
+    headers = "".join(
+        f'<th style="padding:4px 0;font-size:0.72rem;font-weight:600;'
+        f'color:#64748b;text-align:center;letter-spacing:0.04em">{d}</th>'
+        for d in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
     )
-    chart = (
-        alt.Chart(df)
-        .mark_rect(stroke="#ffffff", strokeWidth=2, cornerRadius=3)
-        .encode(
-            x=alt.X(
-                "weekday:O",
-                title=None,
-                axis=alt.Axis(
-                    labelExpr="['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][datum.value]",
-                    labelAngle=0,
-                    ticks=False,
-                    domain=False,
-                ),
-            ),
-            y=alt.Y("week_index:O", title=None, axis=None),
-            color=alt.Color(
-                "status:N",
-                scale=color_scale,
-                legend=alt.Legend(title=None, orient="bottom", columns=3),
-            ),
-            tooltip=[
-                alt.Tooltip("tooltip_date:N", title="Date"),
-                alt.Tooltip("status:N", title="Status"),
-                alt.Tooltip("tooltip_detail:N", title="Activities"),
-            ],
+    body_rows: list[str] = []
+    for week_idx in sorted(by_week):
+        cells_html: list[str] = []
+        for cell in sorted(by_week[week_idx], key=lambda c: int(c["weekday"])):
+            status = _calendar_status(cell)
+            bg, fg = _CAL_STATUS_STYLE.get(status, ("#eef1f6", "#64748b"))
+            day_label = str(cell["day"]) if cell.get("in_month") else ""
+            tip = html.escape(f"{cell.get('date_iso') or ''}: {cell.get('label') or status}")
+            weight = "700" if cell.get("worked_out") else "500"
+            cells_html.append(
+                f'<td title="{tip}" style="padding:3px">'
+                f'<div style="aspect-ratio:1;display:flex;align-items:center;'
+                f'justify-content:center;border-radius:10px;background:{bg};'
+                f'color:{fg};font-size:0.85rem;font-weight:{weight};'
+                f'box-shadow:{"inset 0 0 0 1px rgba(15,23,42,0.06)" if status == "Rest" else "none"};'
+                f'">{html.escape(day_label)}</div></td>'
+            )
+        body_rows.append("<tr>" + "".join(cells_html) + "</tr>")
+
+    legend_bits = []
+    for label, (bg, fg) in _CAL_STATUS_STYLE.items():
+        if label == "Out of range":
+            continue
+        legend_bits.append(
+            f'<span style="display:inline-flex;align-items:center;gap:6px;'
+            f'margin-right:12px;font-size:0.75rem;color:#475569">'
+            f'<span style="width:10px;height:10px;border-radius:3px;background:{bg};'
+            f'display:inline-block"></span>{html.escape(label)}</span>'
         )
-        .properties(height=max(140, 28 * (df["week_index"].nunique() + 1)))
+
+    st.markdown(
+        f'<div style="overflow-x:auto">'
+        f'<table style="width:100%;border-collapse:separate;border-spacing:0;'
+        f'table-layout:fixed"><thead><tr>{headers}</tr></thead>'
+        f'<tbody>{"".join(body_rows)}</tbody></table>'
+        f'<div style="margin-top:10px">{"".join(legend_bits)}</div></div>',
+        unsafe_allow_html=True,
     )
-    labels = (
-        alt.Chart(df[df["in_month"]])
-        .mark_text(fontSize=11, fontWeight=500)
-        .encode(
-            x="weekday:O",
-            y="week_index:O",
-            text="day_label:N",
-            color=alt.value("#111827"),
-        )
-    )
-    st.altair_chart(chart + labels, use_container_width=True)
 
 
 def _render_workout_calendar(ctx: dict, mode: str) -> None:
-    """Training-tab section: streak metrics + current/previous month grids."""
+    """Training-tab section: week-streak metrics + current/previous month grids."""
     calendar = _load_workout_calendar(ctx, mode)
     st.markdown("###### Workout calendar · lifting + cardio + Fitbit")
-    streak_cols = st.columns(3)
-    streak_cols[0].metric("🔥 Current streak", f"{calendar.get('current_streak', 0)} days")
-    streak_cols[1].metric("🏅 Longest streak", f"{calendar.get('longest_streak', 0)} days")
+    streak_cols = st.columns(4)
+    streak_cols[0].metric(
+        "🔥 Week streak",
+        f"{calendar.get('current_week_streak', 0)} wk",
+        help="Consecutive ISO weeks with at least one workout day.",
+    )
+    streak_cols[1].metric(
+        "🏅 Longest weeks",
+        f"{calendar.get('longest_week_streak', 0)} wk",
+    )
     streak_cols[2].metric(
-        "📅 Active days (window)",
-        f"{calendar.get('workout_days_count', 0)}",
-        help="Distinct days with lifting, cardio, or Fitbit/Health Sync activity "
-        "from the start of last month through today.",
+        "🏋️ Lifting weeks",
+        f"{calendar.get('lifting_week_streak', 0)} wk",
+        help="Consecutive weeks that included a lifting day.",
+    )
+    streak_cols[3].metric(
+        "🏃 Cardio weeks",
+        f"{calendar.get('cardio_week_streak', 0)} wk",
+        help="Consecutive weeks that included a cardio day "
+        "(Fitbit walks still count as cardio days on the calendar).",
     )
     months = list(calendar.get("months") or [])
     if not months:
         st.caption("No workout days in this window yet.")
         return
-    # Render previous month then current month left→right when both present.
     cols = st.columns(len(months))
     for col, month in zip(cols, months):
         with col:
@@ -2163,7 +2162,8 @@ def _render_workout_calendar(ctx: dict, mode: str) -> None:
                 _render_month_calendar_chart(month)
     st.caption(
         "One calendar for Hevy lifts, Apple Health / Strava cardio, and Fitbit "
-        "(Health Sync) activities. Apple strength mirrors are ignored on Hevy days."
+        "(Health Sync) activities. Apple strength mirrors are ignored on Hevy days. "
+        "Fitbit walks mark the day but are excluded from cardio training-load minutes."
     )
 
 
