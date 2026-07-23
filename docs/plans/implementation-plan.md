@@ -381,7 +381,7 @@ Go beyond week-level `suggest_todays_focus` when life interrupts the plan:
 
 ### Phase 10 — Integrated delivery refinement (guidelines, corpus, operator polish, recurring)
 
-**Repo status (2026-07):** Runtime wiring shipped (`pipeline/guidelines.py`, S3 bucket + IAM on briefing Lambda, dashboard read/write for `append_goal_note`, prompt injection tests). Corpus operator docs: [`scripts/guidelines-corpus.md`](../../scripts/guidelines-corpus.md) + `expert-principles.md` skeleton under fixtures. **Recurring:** inbox/HTML/prompt polish per operator traffic — not a code gate.
+**Repo status (2026-07):** Runtime wiring shipped (`pipeline/guidelines.py`, S3 bucket + IAM on briefing Lambda, dashboard read/write for `append_goal_note`, prompt injection tests). Corpus operator docs + condensation CLI: [`scripts/guidelines-corpus.md`](../../scripts/guidelines-corpus.md), [`scripts/condense_expert_principles.py`](../../scripts/condense_expert_principles.py), `pipeline/guidelines_corpus.py`, and `expert-principles.md` skeleton under fixtures. **Recurring:** paste owned transcripts → human-review draft → `make guidelines-sync`; inbox/HTML/prompt polish per operator traffic — not a code gate.
 
 **Training guidelines + expert transcript corpus** (briefing context — **Guidelines Files** and **Prompt Template & LLM Call** in [project-overview.md](./project-overview.md)):
 

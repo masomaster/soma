@@ -1,5 +1,5 @@
 # Default: `make` runs tests. Use `make install` once (or after Python upgrade).
-.PHONY: install test compile cdk-synth dashboard dashboard-live guidelines-sync
+.PHONY: install test compile cdk-synth dashboard dashboard-live guidelines-sync guidelines-condense
 
 .DEFAULT_GOAL := test
 
@@ -45,6 +45,13 @@ dashboard-live:
 	@test -x $(PY) || $(MAKE) install
 	$(PIP) install -q -e ".[dashboard]"
 	SOMA_DASHBOARD_FIXTURE=0 $(STREAMLIT) run dashboard/app.py
+
+# Print (or --llm draft) expert-principles condensation from
+# tmp/guidelines-transcripts/. See scripts/guidelines-corpus.md.
+TRANSCRIPTS_DIR ?= tmp/guidelines-transcripts
+guidelines-condense:
+	@test -x $(PY) || $(MAKE) install
+	$(PY) scripts/condense_expert_principles.py --transcripts-dir "$(TRANSCRIPTS_DIR)" --print-prompt
 
 # Upload the local guidelines corpus (my-goals.md / injury-history.md /
 # expert-principles.md under guidelines/{user_id}/) to the deployed S3 bucket.
