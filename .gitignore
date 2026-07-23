@@ -98,6 +98,11 @@ localstack-data/
 tmp/
 scratch/
 raw-dumps/
+# Operator-pasted YouTube captions (copyrighted) — keep out of git
+exercise_science_video_transcripts.md
+**/guidelines-transcripts/*.md
+!**/guidelines-transcripts/README.md
+!tests/fixtures/guidelines-transcripts/**
 
 # --- OS & editors ---
 .DS_Store

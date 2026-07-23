@@ -1,36 +1,70 @@
 # Expert Training Principles
 
-Human-reviewed bullets distilled from trusted coaches and researchers.
-The briefing and coaching chat cite this file — they do not invent principles.
+Human-reviewed bullets distilled from RP Strength / Dr. Mike Israetel videos
+(time-efficient lifting, cardio-by-goal, minimal-equipment intensity). The
+briefing and coaching chat cite this file — they do not invent principles.
 
-## Volume landmarks (RP / Israetel-style)
+## Time-efficient strength (RP minimalist templates)
 
-- Most lifters grow best with **~10–20 hard sets per muscle per week**, split across 2+ sessions (MEV near the low end; MRV is individual).
-- When sleep or HRV is suppressed for several days, **reduce volume before intensity**.
-- Deloads are planned reductions (~40–50% volume), not random off weeks; keep some intensity so skill does not decay.
+- Prefer **antagonist supersets / tri-sets** with **~5–10 s** between exercises
+  (up to ~30 s if form slips) so short sessions still hit volume + some cardio.
+- Session templates that work: **push+pull**, **squat+hinge**, then an
+  **isolation pair**; or a 4-day upper/lower with 2–3 pairings per day.
+- Dose: **2–3×/week full-body** (~20–40 min) or **4–5×/week** alternating
+  upper/lower (~30 min). Start at **1 set per exercise**, build to **2–3**
+  (up to ~5 if time/recovery allow).
+- Target **~10–20 reps** (first set often **15–20**); keep most sets at
+  **~1–2 RIR**, or true failure on safe home/isolation work when intensity is
+  the limiter.
+- Progress: **+1 rep/week for 1–2 months**, then bump load or harden leverage;
+  swap exercises freely if pairings stay non-overlapping.
+- Always **full ROM**, controlled eccentric, powerful concentric — never
+  sacrifice technique for rest length; rest longer instead.
 
-## Progressive overload & proximity to failure (Nippard / Ethier-style)
+## Cardio by goal (RP / Israetel)
 
-- Progress load, reps, or quality every **1–2 weeks** on key compounds when recovery allows.
-- Stop a set **1–2 reps shy of form breakdown** for most working sets; reserve true failure for safer isolation work.
-- Prioritize **full ROM with control** over load chasing on compounds.
+Match dose to the goal; intensity is a **technical** choice, not punishment.
 
-## Recovery
+- **Strength/power focus:** favor easy modalities (walk, swim, elliptical);
+  keep most work **under ~140 bpm** and **under ~30 min**. **~8k daily steps**
+  is often enough in a hard lifting block; more dedicated cardio can cost
+  strength expression.
+- **Muscularity / hypertrophy:** **~8–12k steps**; extra cardio usually
+  **under ~140 bpm** and **under ~60 min**, **3–7×/week**. Long hard sessions
+  (~160–180 bpm × 60 min) commonly add fatigue that **slows muscle gains**.
+- **Health (alongside lifting):** steps help (**~10k**), but walking alone is
+  not enough for best health adaptations — include at least **~3×/week ×
+  ~15 min** where HR is **~150+** (talking gets hard). A strong trade-off for
+  many is **~4–6×/week × 30–45 min** at **150+ bpm**, if sleep/strength hold.
+- **Leanness:** **~10k steps** can drive fat loss if intake is controlled;
+  more cardio only if recovery and **strength (muscle proxy)** stay stable.
+  Hard **150+ bpm** work **3–6×/week × 30–60 min** can accelerate leanness,
+  especially if leg size is not a priority.
+- **Endurance focus:** sport-specific; wave easy/moderate/hard days; rotate
+  modalities to spare joints; get a dedicated endurance coach/app beyond
+  hobby doses.
 
-- Sleep is the highest-leverage recovery tool; treat chronic short sleep as a programming constraint, not a willpower gap.
-- HRV well below personal baseline for multiple days → bias toward easier sessions or volume cuts.
+## Cardio practices & pitfalls
 
-## Cardio & health
+- Choose modalities you **enjoy**, can **repeat**, and that **joints tolerate**;
+  switch (bike/elliptical/swim) when one pattern irritates tissue.
+- **Ramp gradually:** start ~**3×/week × ~15 min** just out of breath — jumping
+  to high volume/running invites shin splints and burnout.
+- **Track steps** so NEAT does not silently drop in a deficit.
+- Excess cardio usually **slows gains before it erases them**; if size/strength
+  stall after a cardio increase, back off. Do not use cardio as self-punishment.
 
-- Keep **easy days truly easy**; hard intervals and long runs need recovery between.
-- Increase weekly mileage gradually; large week-over-week jumps raise injury risk (~10% rule as a soft ceiling, not a law).
-- Zone 2 / conversational aerobic work supports metabolic and cardiovascular health alongside lifting.
+## Minimal equipment / travel
 
-## Injury prevention
+- Scale difficulty via **leverage and ROM** (foot position, bar height,
+  regressions) so every set still lands in a productive rep range.
+- Short rests condense time and raise heart rate; hypertrophy still needs
+  **near-limit effort** on each set.
+- Bias weekly sets toward lagging muscle groups; keep a separate lower-body
+  plan — upper-only circuits do not replace legs.
 
-- Rotate or substitute exercises when a joint trend flares; don't grind through sharp pain.
-- Avoid training the same movement pattern to failure on consecutive days.
+## Sources
 
-## How this file is built
-
-Paste owned/official transcripts into `tmp/guidelines-transcripts/`, then run `scripts/condense_expert_principles.py` (or synthesize in Cursor). Human-review before `make guidelines-sync`. See `scripts/guidelines-corpus.md`.
+- RP Strength — time-efficient / dumbbell templates (`Q-xQX79woHI`, `p8fBbQSDKQY`)
+- Dr. Mike Israetel / RP — cardio by goal 2026 (`0r_AlKrc70c`)
+- Dr. Mike + Jared Feather / RP — at-home upper minimal equipment (`HjWZ-kKJXgc`)

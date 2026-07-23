@@ -67,6 +67,20 @@ def test_skeleton_fits_prompt_budget() -> None:
     assert text.startswith("# Expert Training Principles")
     assert len(text) <= TARGET_EXPERT_PRINCIPLES_CHARS
     assert "Israetel" in text or "RP" in text
+    assert "150+" in text  # health cardio floor from RP cardio-by-goal video
+    assert "1–2 RIR" in text or "RIR" in text
+
+
+def test_fixture_matches_skeleton() -> None:
+    fixture = (
+        Path(__file__).resolve().parent
+        / "fixtures"
+        / "guidelines"
+        / "guidelines"
+        / "demo-user"
+        / "expert-principles.md"
+    )
+    assert fixture.read_text(encoding="utf-8").strip() == skeleton_expert_principles().strip()
 
 
 def test_discover_missing_dir(tmp_path: Path) -> None:
