@@ -24,6 +24,8 @@ All resources use **un-suffixed** `soma-*` names.
 
 **CalDAV scheduled ingest:** Scheduler `soma-caldav-ingest` (**08:00 UTC**) → Lambda `soma-caldav-ingest` → **`interventions`** (`calendar_busy`). Secrets: **`soma-caldav`**, **`soma-db`**, **`soma-tenant`**. `caldav` is bundled in the shared Lambda layer (`pipeline_layer.py`).
 
+**Wahoo FIT (Dropbox API):** EventBridge **Scheduler** `soma-wahoo-fit-ingest` (**08:30 UTC**) → Lambda `soma-wahoo-fit-ingest` → Dropbox list/download → **`cardio_events`** (`wahoo_fit`) + FTP. Secret **`soma-dropbox`** (JSON). `fitdecode` is in the shared Lambda layer. No Mac required — see [cycling-power-ftp.md](../docs/plans/cycling-power-ftp.md).
+
 **Strava scheduled ingest:** Lambda `soma-strava-ingest` deployed; **no Scheduler** until the Strava API subscription is active (`schedule_enabled=False`). Secret **`soma-strava`** when unpaused.
 
 **Weekly signal job:** Scheduler `soma-weekly-signal` (**Sunday 12:00 UTC**) recomputes **`metric_patterns`** and optional Sonnet **`llm_pattern`** rows (`ENABLE_WEEKLY_PATTERN_LLM` on the weekly Lambda only).

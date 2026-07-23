@@ -42,6 +42,16 @@ NAME_HEVY = "soma-hevy"
 NAME_CALDAV = "soma-caldav"
 NAME_APPLE_WEBHOOK = "soma-apple-health-webhook"
 NAME_STRAVA = "soma-strava"
+NAME_DROPBOX = "soma-dropbox"
+
+_DROPBOX_PLACEHOLDER = json.dumps(
+    {
+        "DROPBOX_APP_KEY": _PLACEHOLDER,
+        "DROPBOX_APP_SECRET": _PLACEHOLDER,
+        "DROPBOX_REFRESH_TOKEN": _PLACEHOLDER,
+        "DROPBOX_FOLDER": "",
+    }
+)
 
 
 def _seed_or_no_value(seed_yes: CfnCondition, placeholder: str) -> object:
@@ -148,6 +158,12 @@ class RuntimeSecrets(Construct):
             "Strava OAuth access token when API unpaused (plain string)",
             _PLACEHOLDER,
         )
+        self.dropbox_arn = _bind(
+            "DropboxSecret",
+            NAME_DROPBOX,
+            "Dropbox app key/secret + offline refresh token + folder (JSON)",
+            _DROPBOX_PLACEHOLDER,
+        )
 
     def _grant(self, fn: lambda_.IFunction, *secret_arns: str) -> None:
         fn.add_to_role_policy(
@@ -175,6 +191,9 @@ class RuntimeSecrets(Construct):
 
     def grant_strava(self, fn: lambda_.IFunction) -> None:
         self._grant(fn, self.db_arn, self.strava_arn, self.tenant_arn)
+
+    def grant_dropbox(self, fn: lambda_.IFunction) -> None:
+        self._grant(fn, self.db_arn, self.dropbox_arn, self.tenant_arn)
 
     def grant_weekly_signal(self, fn: lambda_.IFunction) -> None:
         self._grant(fn, self.db_arn, self.briefing_arn, self.tenant_arn)
@@ -209,6 +228,13 @@ class RuntimeSecrets(Construct):
         return {
             "SOMA_DB_SECRET_ARN": self.db_arn,
             "SOMA_STRAVA_SECRET_ARN": self.strava_arn,
+            "SOMA_TENANT_SECRET_ARN": self.tenant_arn,
+        }
+
+    def env_dropbox(self) -> dict[str, str]:
+        return {
+            "SOMA_DB_SECRET_ARN": self.db_arn,
+            "SOMA_DROPBOX_SECRET_ARN": self.dropbox_arn,
             "SOMA_TENANT_SECRET_ARN": self.tenant_arn,
         }
 

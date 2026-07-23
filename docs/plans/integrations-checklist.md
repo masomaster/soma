@@ -10,7 +10,7 @@ Use it to confirm scope before building adapters. For future changes: edit this 
 |---|---------|----------------------|----------------------------|------------------|
 | 1 | **Hevy** | Lifting — sets, reps, weight, RPE | REST API (API key header) | High — primary strength source |
 | 2 | **Strava** | Runs/rides — GPS, HR, pace, elevation | OAuth2 + REST | **Paused** — Standard Tier needs an **active Strava subscription**; repo has adapter + fixtures only until unpaused (§ Strava API access) |
-| 2b | **Wahoo FIT (Dropbox)** | Cycling **power** (watts), MMP → FTP | Recurring Dropbox `.fit` → `pipeline.fit_ingest --source wahoo_fit` | **Ongoing** power path — see [cycling-power-ftp.md](./cycling-power-ftp.md). Not the live Strava API. |
+| 2b | **Wahoo FIT (Dropbox API)** | Cycling **power** (watts), MMP → FTP | Recurring Dropbox API → Lambda `soma-wahoo-fit-ingest` (`source=wahoo_fit`) | **Ongoing** power path — see [cycling-power-ftp.md](./cycling-power-ftp.md). No Mac required. |
 | 2c | **Strava bulk export** | Legacy ride files with power (when recorded) | **One-time** archive unzip → `pipeline.fit_ingest --source strava_export` | Historical backfill only — **do not schedule**. Apple Health still lacks watts. |
 | 3 | **Apple Health hub** | Steps, HRV, sleep, VO2, body comp (**Renpho**), **Google/Fitbit via Health Sync**, workouts (Strava/NRC mirrors) | Health Auto Export → **HTTPS POST** → API Gateway → Lambda → S3 raw + Postgres | High — **single ingest path** for all HealthKit data; see [apple-health-export.md](./apple-health-export.md). Workouts here are **summaries without power**. |
 | 4 | **iCloud Calendar** | Busy/free blocks for coaching context | CalDAV + app-specific password | Medium — read-only polling |
