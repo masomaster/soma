@@ -3,6 +3,11 @@
 Writes a **JSON raw envelope** (base64 payload) via :func:`pipeline.raw_storage.format_raw_object_key`
 before normalizing — binary FIT is never stored as a bare ``.fit`` S3 key.
 
+Provenance:
+
+* ``wahoo_fit`` — recurring Dropbox exports from a Wahoo BOLT
+* ``strava_export`` — one-time Strava bulk-archive backfill (not scheduled)
+
 FIT parsing requires the optional ``fitdecode`` extra (``pip install -e '.[fit]'``).
 """
 
