@@ -10,6 +10,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      diagnose_alarms_only:
+        description: "Only list CloudWatch alarms + SNS subscriptions (no cdk deploy)"
+        type: boolean
+        default: false
 
 concurrency:
   group: deploy
@@ -20,10 +25,62 @@ permissions:
 
 jobs:
   ci:
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.diagnose_alarms_only != true }}
     uses: ./.github/workflows/ci.yml
+
+  diagnose:
+    name: diagnose alarms
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.diagnose_alarms_only == true }}
+    runs-on: ubuntu-latest
+    environment: deploy
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-west-2' }}
+      - name: Describe Soma alarms and SNS subscriptions
+        run: |
+          set -euo pipefail
+          echo "=== Alarms in ALARM ==="
+          aws cloudwatch describe-alarms \
+            --alarm-name-prefix soma- \
+            --state-value ALARM \
+            --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Reason:StateReason,Updated:StateUpdatedTimestamp}' \
+            --output table || true
+          echo "=== All soma-* alarm states ==="
+          aws cloudwatch describe-alarms \
+            --alarm-name-prefix soma- \
+            --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Updated:StateUpdatedTimestamp}' \
+            --output table
+          TOPIC_ARN="$(aws sns list-topics --query "Topics[?contains(TopicArn,'soma-daily-pipeline-alarms')].TopicArn | [0]" --output text)"
+          echo "=== Topic: ${TOPIC_ARN} ==="
+          if [ -n "$TOPIC_ARN" ] && [ "$TOPIC_ARN" != "None" ]; then
+            aws sns list-subscriptions-by-topic --topic-arn "$TOPIC_ARN" \
+              --query 'Subscriptions[].{Protocol:Protocol,Endpoint:Endpoint,Arn:SubscriptionArn}' \
+              --output table
+          fi
+          echo "=== Recent Lambda errors (24h) ==="
+          for fn in soma-daily-briefing soma-hevy-ingest soma-caldav-ingest soma-weekly-signal soma-strava-ingest soma-pipeline-alarm-notify; do
+            echo "--- $fn ---"
+            aws cloudwatch get-metric-statistics \
+              --namespace AWS/Lambda \
+              --metric-name Errors \
+              --dimensions Name=FunctionName,Value="$fn" \
+              --start-time "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)" \
+              --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --period 3600 \
+              --statistics Sum \
+              --query 'Datapoints[?Sum>`0`].{Time:Timestamp,Errors:Sum}' \
+              --output table || true
+          done
 
   deploy:
     name: cdk deploy
+    if: ${{ github.event_name != 'workflow_dispatch' || inputs.diagnose_alarms_only != true }}
     needs: ci
     runs-on: ubuntu-latest
     environment: deploy
@@ -51,10 +108,8 @@ jobs:
         working-directory: infrastructure
         env:
           CDK_DEFAULT_REGION: ${{ vars.AWS_REGION || 'us-west-2' }}
-          # Optional: set repo/environment Variable SOMA_ALARM_EMAIL to (re)create the
-          # pipeline-alarm SNS email subscription on every deploy. AWS emails a
-          # one-time confirmation the first time; without it the alarm topic has no
-          # subscribers and pipeline alarms notify no one.
+          # Optional: set repo/environment Variable SOMA_ALARM_EMAIL so deploy
+          # wires soma-pipeline-alarm-notify (SNS → SES). No SNS Confirm click.
           SOMA_ALARM_EMAIL: ${{ vars.SOMA_ALARM_EMAIL }}
           SOMA_DASHBOARD_URL: ${{ vars.SOMA_DASHBOARD_URL }}
         run: |

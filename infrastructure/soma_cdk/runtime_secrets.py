@@ -160,6 +160,10 @@ class RuntimeSecrets(Construct):
     def grant_briefing(self, fn: lambda_.IFunction) -> None:
         self._grant(fn, self.db_arn, self.briefing_arn)
 
+    def grant_alarm_notify(self, fn: lambda_.IFunction) -> None:
+        """SES From address only (``SES_SENDER`` in the briefing secret)."""
+        self._grant(fn, self.briefing_arn)
+
     def grant_apple_health(self, fn: lambda_.IFunction) -> None:
         self._grant(fn, self.db_arn, self.apple_webhook_arn)
 

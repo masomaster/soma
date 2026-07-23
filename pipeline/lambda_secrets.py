@@ -91,6 +91,14 @@ def resolve_db_connect_string() -> str:
     )
 
 
+def resolve_ses_sender() -> str:
+    """Verified SES From address from ``SES_SENDER`` or ``SOMA_BRIEFING_SECRET_ARN`` JSON."""
+    direct = os.environ.get("SES_SENDER", "").strip()
+    if direct and not _is_placeholder(direct):
+        return direct
+    return _json_key_from_secret(arn_env=ENV_SOMA_BRIEFING_SECRET_ARN, key="SES_SENDER")
+
+
 def resolve_lambda_secrets() -> tuple[str, str, str]:
     """Return ``(db_connect_string, anthropic_api_key, ses_sender)`` for briefing / weekly LLM."""
     db = os.environ.get("DB_CONNECT_STRING", "").strip()
@@ -103,7 +111,7 @@ def resolve_lambda_secrets() -> tuple[str, str, str]:
     anthropic = _json_key_from_secret(
         arn_env=ENV_SOMA_BRIEFING_SECRET_ARN, key="ANTHROPIC_API_KEY"
     )
-    ses_v = _json_key_from_secret(arn_env=ENV_SOMA_BRIEFING_SECRET_ARN, key="SES_SENDER")
+    ses_v = resolve_ses_sender()
     return db_v, anthropic, ses_v
 
 

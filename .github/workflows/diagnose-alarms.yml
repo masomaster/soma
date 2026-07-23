@@ -1,0 +1,64 @@
+name: Diagnose alarms
+
+# Manual: list Soma CloudWatch alarm state + SNS subscriptions (OIDC → AWS).
+# Does not mutate resources.
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: diagnose-alarms
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    name: cloudwatch + sns
+    runs-on: ubuntu-latest
+    environment: deploy
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION || 'us-west-2' }}
+      - name: Describe Soma alarms and SNS subscriptions
+        run: |
+          set -euo pipefail
+          echo "=== Alarms in ALARM ==="
+          aws cloudwatch describe-alarms \
+            --alarm-name-prefix soma- \
+            --state-value ALARM \
+            --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Reason:StateReason,Updated:StateUpdatedTimestamp}' \
+            --output table || true
+          echo "=== All soma-* alarm states ==="
+          aws cloudwatch describe-alarms \
+            --alarm-name-prefix soma- \
+            --query 'MetricAlarms[].{Name:AlarmName,State:StateValue,Updated:StateUpdatedTimestamp}' \
+            --output table
+          TOPIC_ARN="$(aws sns list-topics --query "Topics[?contains(TopicArn,'soma-daily-pipeline-alarms')].TopicArn | [0]" --output text)"
+          echo "=== Topic: ${TOPIC_ARN} ==="
+          if [ -n "$TOPIC_ARN" ] && [ "$TOPIC_ARN" != "None" ]; then
+            aws sns list-subscriptions-by-topic --topic-arn "$TOPIC_ARN" \
+              --query 'Subscriptions[].{Protocol:Protocol,Endpoint:Endpoint,Arn:SubscriptionArn}' \
+              --output table
+          fi
+          echo "=== Recent Lambda errors (24h, Errors metric) ==="
+          for fn in soma-daily-briefing soma-hevy-ingest soma-caldav-ingest soma-weekly-signal soma-pipeline-alarm-notify; do
+            echo "--- $fn ---"
+            aws cloudwatch get-metric-statistics \
+              --namespace AWS/Lambda \
+              --metric-name Errors \
+              --dimensions Name=FunctionName,Value="$fn" \
+              --start-time "$(date -u -d '24 hours ago' +%Y-%m-%dT%H:%M:%SZ)" \
+              --end-time "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+              --period 3600 \
+              --statistics Sum \
+              --query 'Datapoints[?Sum>`0`].{Time:Timestamp,Errors:Sum}' \
+              --output table || true
+          done
