@@ -6,7 +6,6 @@ import os
 
 from aws_cdk import Duration, TimeZone
 from aws_cdk import aws_cloudwatch as cloudwatch
-from aws_cdk import aws_cloudwatch_actions as cw_actions
 from aws_cdk import aws_lambda as lambda_
 from aws_cdk import aws_logs as logs
 from aws_cdk import aws_scheduler as scheduler
@@ -14,6 +13,7 @@ from aws_cdk import aws_scheduler_targets as scheduler_targets
 from aws_cdk import aws_sns as sns
 from constructs import Construct
 
+from soma_cdk.alarms import wire_pipeline_alarm
 from soma_cdk.config import DEPLOYED_ENV
 from soma_cdk.runtime_secrets import RuntimeSecrets
 
@@ -81,13 +81,18 @@ class WeeklySignalPipeline(Construct):
 
         if pipeline_alarm_topic is not None:
             topic = pipeline_alarm_topic
-            cloudwatch.Alarm(
-                self,
-                "WeeklyLambdaErrors",
-                alarm_name=f"{base_name}-lambda-errors",
-                metric=fn.metric_errors(statistic=cloudwatch.Stats.SUM, period=Duration.minutes(5)),
-                threshold=1,
-                evaluation_periods=1,
-                comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-                treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
-            ).add_alarm_action(cw_actions.SnsAction(topic))
+            wire_pipeline_alarm(
+                cloudwatch.Alarm(
+                    self,
+                    "WeeklyLambdaErrors",
+                    alarm_name=f"{base_name}-lambda-errors",
+                    metric=fn.metric_errors(
+                        statistic=cloudwatch.Stats.SUM, period=Duration.minutes(5)
+                    ),
+                    threshold=1,
+                    evaluation_periods=1,
+                    comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+                    treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+                ),
+                topic,
+            )

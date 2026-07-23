@@ -74,7 +74,10 @@ secrets with a `RETAIN` policy.
 ## Pipeline alarms (operator email)
 
 The stack creates an SNS topic `soma-daily-pipeline-alarms` and CloudWatch alarms
-that publish to it:
+that publish to it on **ALARM** and **OK** transitions. When
+`soma:pipelineAlarmEmail` is set, a small Lambda (`soma-pipeline-alarm-notify`)
+subscribes to the topic and emails you via **SES** (same verified sender as daily
+briefings). No SNS "Confirm subscription" click is required.
 
 | Alarm | What it catches |
 |-------|-----------------|
@@ -86,6 +89,10 @@ that publish to it:
 | `soma-hevy-ingest-scheduler-target-errors` | Hevy schedule: Scheduler `TargetErrorCount`. |
 | `soma-hevy-ingest-scheduler-invocations-dropped` | Hevy schedule: **InvocationDroppedCount**. |
 | `soma-hevy-ingest-lambda-errors` | Hevy ingest Lambda **Errors**. |
+| `soma-caldav-ingest-scheduler-target-errors` | CalDAV schedule: Scheduler `TargetErrorCount`. |
+| `soma-caldav-ingest-lambda-errors` | CalDAV ingest Lambda **Errors**. |
+| `soma-strava-ingest-lambda-errors` | Strava ingest Lambda **Errors** (schedule currently disabled). |
+| `soma-weekly-signal-lambda-errors` | Weekly signal Lambda **Errors**. |
 
 **Subscribe your inbox** by passing CDK context at synth/deploy:
 
@@ -93,16 +100,22 @@ that publish to it:
 cdk deploy --all -c soma:pipelineAlarmEmail=you@example.com
 ```
 
-AWS sends a **subscription confirmation** email; you must click **Confirm** before
-alarms are delivered. If you omit `soma:pipelineAlarmEmail`, the topic is still
-created so you can add subscriptions manually (SMS, Slack via Chatbot, etc.).
+`you@example.com` must be an SES-verified recipient if the account is still in the
+SES sandbox (Soma's briefing recipient already is). The From address is
+`SES_SENDER` from the `soma-briefing` secret.
 
 In CI, set the GitHub Variable **`SOMA_ALARM_EMAIL`** on the `deploy` environment and
 `deploy.yml` passes it as this context automatically.
 
-> **Note:** the alarm SNS topic is named `soma-daily-pipeline-alarms`. If you are
-> deploying over the old `soma-staging-*` stack, the topic is renamed (replaced), so
-> any previously confirmed subscription is dropped — re-subscribe/confirm once.
+> **Note:** AWS **Free Tier usage** emails (Billing console) are separate from these
+> pipeline alarms. Free Tier alerts do not mean a Soma CloudWatch alarm fired.
+
+**Inspect live alarm state** (OIDC → AWS): Actions → **Diagnose alarms** workflow, or:
+
+```bash
+aws cloudwatch describe-alarms --alarm-name-prefix soma- --state-value ALARM
+aws sns list-subscriptions-by-topic --topic-arn "$(aws sns list-topics --query "Topics[?contains(TopicArn,'soma-daily-pipeline-alarms')].TopicArn" --output text)"
+```
 
 **Log group note:** The Lambda uses `log_retention` so CDK owns the CloudWatch log
 group for metric filters. If deploy fails with "log group already exists", delete the

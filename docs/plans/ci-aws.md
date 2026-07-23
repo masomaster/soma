@@ -91,7 +91,7 @@ Repo → **Settings → Environments**, create one:
 **`deploy`**
 - Variable `AWS_DEPLOY_ROLE_ARN` = the role ARN from step 1.
 - Variable `AWS_REGION` = `us-west-2` (optional; this is the default).
-- Variable `SOMA_ALARM_EMAIL` (optional) = inbox for pipeline CloudWatch alarms. When set, each deploy (re)creates the SNS email subscription; AWS emails a one-time confirmation you must click. Leave unset to manage alarm subscriptions manually.
+- Variable `SOMA_ALARM_EMAIL` (optional) = inbox for pipeline CloudWatch alarms. When set, deploy wires an SES email Lambda on the alarm SNS topic (no SNS confirmation click). Leave unset to manage alarm subscriptions manually.
 - (Optional) Under **Deployment protection rules**, enable **Required reviewers** if you want a manual approval gate before every deploy.
 
 > These are GitHub **Variables**, not Secrets — a role ARN and region are not sensitive. Add real Secrets (e.g. `SUPABASE_SERVICE_ROLE_KEY`) only when a deploy step actually needs them.
