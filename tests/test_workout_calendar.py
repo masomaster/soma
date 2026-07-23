@@ -9,6 +9,7 @@ from pipeline.workout_calendar import (
     build_workout_calendar,
     build_workout_day_map,
     compute_streaks,
+    compute_week_streaks,
     is_fitbit_origin_activity,
     month_bounds,
     previous_month,
@@ -100,6 +101,34 @@ def test_compute_streaks_grace_when_today_empty():
     assert streaks["current_streak"] == 2
 
 
+def test_compute_week_streaks_overall_and_domains():
+    # Mon weeks: Jun 29, Jul 6, Jul 13. Workouts on those three weeks.
+    day_map = {
+        date(2026, 6, 30): {"lifting": True, "cardio": False},  # week of Jun 29
+        date(2026, 7, 7): {"lifting": True, "cardio": True},  # week of Jul 6
+        date(2026, 7, 14): {"lifting": False, "cardio": True},  # week of Jul 13
+    }
+    streaks = compute_week_streaks(day_map, as_of=date(2026, 7, 15))
+    assert streaks["current_week_streak"] == 3
+    assert streaks["longest_week_streak"] == 3
+    # Current week has cardio only → lifting grace starts at prior week → 2.
+    assert streaks["lifting_week_streak"] == 2
+    assert streaks["cardio_week_streak"] == 2
+    assert streaks["workout_weeks_count"] == 3
+
+
+def test_compute_week_streaks_grace_when_current_week_empty():
+    day_map = {
+        date(2026, 7, 6): {"lifting": True, "cardio": False},
+        date(2026, 7, 8): {"lifting": False, "cardio": True},
+    }
+    # as_of mid-week Jul 15 with no workouts this week → streak through prior week.
+    streaks = compute_week_streaks(day_map, as_of=date(2026, 7, 15))
+    assert streaks["current_week_streak"] == 1
+    assert streaks["lifting_week_streak"] == 1
+    assert streaks["cardio_week_streak"] == 1
+
+
 def test_month_bounds_and_previous_month():
     assert month_bounds(2026, 7) == (date(2026, 7, 1), date(2026, 7, 31))
     assert month_bounds(2026, 2) == (date(2026, 2, 1), date(2026, 2, 28))
@@ -144,7 +173,8 @@ def test_build_workout_calendar_payload_shape():
         include_previous_month=True,
     )
     assert payload["as_of"] == "2026-07-15"
-    assert payload["current_streak"] == 0  # gap after Jul 11
+    # Workouts on Jul 10–11 (week of Jul 6); as_of Jul 15 has empty current week → grace = 1.
+    assert payload["current_week_streak"] == 1
     assert "2026-07-10" in payload["days"]
     assert "2026-07-11" in payload["days"]
     assert payload["days"]["2026-07-11"]["fitbit"] is True
@@ -153,3 +183,5 @@ def test_build_workout_calendar_payload_shape():
     assert payload["months"][1]["label"] == "July 2026"
     july = payload["months"][1]
     assert july["workout_day_count"] == 2
+    assert "lifting_week_streak" in payload
+    assert "cardio_week_streak" in payload

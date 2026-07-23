@@ -18,6 +18,7 @@ from typing import Any, Literal
 
 from pipeline.cardio_quality import is_strength_like_cardio_activity
 from pipeline.features import as_date
+from pipeline.mileage_ramp import iso_week_start
 from pipeline.source_priority import BRIDGE_SOURCE_APPS
 
 DayKind = Literal["lifting", "cardio", "both"]
@@ -178,6 +179,104 @@ def compute_streaks(
     }
 
 
+def _week_has_flag(
+    workout_days: Mapping[date, Mapping[str, Any]],
+    week_start: date,
+    *,
+    flag: str | None,
+) -> bool:
+    """True when any day in the Mon–Sun week has activity (or a specific flag)."""
+    for offset in range(7):
+        d = week_start + timedelta(days=offset)
+        info = workout_days.get(d)
+        if info is None:
+            continue
+        if flag is None:
+            return True
+        if info.get(flag):
+            return True
+    return False
+
+
+def _consecutive_week_streak(
+    active_weeks: set[date],
+    *,
+    as_of_week: date,
+) -> tuple[int, int]:
+    """Return (current, longest) streaks over ISO week-start dates."""
+    if not active_weeks:
+        return 0, 0
+    # Grace: if the current calendar week has no workout yet, start from prior week.
+    start = as_of_week if as_of_week in active_weeks else as_of_week - timedelta(days=7)
+    current = 0
+    cursor = start
+    while cursor in active_weeks:
+        current += 1
+        cursor -= timedelta(days=7)
+
+    sorted_weeks = sorted(active_weeks)
+    longest = 1
+    run = 1
+    for prev, nxt in zip(sorted_weeks, sorted_weeks[1:]):
+        if (nxt - prev).days == 7:
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 1
+    return current, longest
+
+
+def compute_week_streaks(
+    workout_days: Mapping[date, Mapping[str, Any]],
+    *,
+    as_of: date,
+) -> dict[str, int]:
+    """Consecutive ISO weeks with workouts, plus lifting/cardio breakdowns.
+
+    A week counts when any day in Mon–Sun (≤ ``as_of``) has the relevant flag.
+    Incomplete current week does not reset the streak (same grace as day streaks).
+    """
+    as_of_week = iso_week_start(as_of)
+    # Only consider days through as_of when deciding week membership.
+    trimmed: dict[date, Mapping[str, Any]] = {
+        d: v for d, v in workout_days.items() if d <= as_of
+    }
+    if not trimmed:
+        return {
+            "current_week_streak": 0,
+            "longest_week_streak": 0,
+            "lifting_week_streak": 0,
+            "cardio_week_streak": 0,
+            "workout_weeks_count": 0,
+        }
+
+    earliest = min(trimmed)
+    earliest_week = iso_week_start(earliest)
+    any_weeks: set[date] = set()
+    lift_weeks: set[date] = set()
+    cardio_weeks: set[date] = set()
+    week = earliest_week
+    while week <= as_of_week:
+        if _week_has_flag(trimmed, week, flag=None):
+            any_weeks.add(week)
+        if _week_has_flag(trimmed, week, flag="lifting"):
+            lift_weeks.add(week)
+        if _week_has_flag(trimmed, week, flag="cardio"):
+            cardio_weeks.add(week)
+        week += timedelta(days=7)
+
+    current, longest = _consecutive_week_streak(any_weeks, as_of_week=as_of_week)
+    lift_current, _ = _consecutive_week_streak(lift_weeks, as_of_week=as_of_week)
+    cardio_current, _ = _consecutive_week_streak(cardio_weeks, as_of_week=as_of_week)
+    return {
+        "current_week_streak": current,
+        "longest_week_streak": longest,
+        "lifting_week_streak": lift_current,
+        "cardio_week_streak": cardio_current,
+        "workout_weeks_count": len(any_weeks),
+    }
+
+
 def month_bounds(year: int, month: int) -> tuple[date, date]:
     """Inclusive first/last calendar dates for ``year``-``month``."""
     start = date(year, month, 1)
@@ -254,9 +353,10 @@ def build_workout_calendar(
     as_of: date,
     include_previous_month: bool = True,
 ) -> dict[str, Any]:
-    """Full dashboard payload: day map, streaks, current (+ previous) month grids."""
+    """Full dashboard payload: day map, week streaks, current (+ previous) month grids."""
     day_map = build_workout_day_map(strength_events, cardio_events)
-    streaks = compute_streaks(day_map, as_of=as_of)
+    week_streaks = compute_week_streaks(day_map, as_of=as_of)
+    day_streaks = compute_streaks(day_map, as_of=as_of)
 
     months: list[dict[str, Any]] = []
     year, month = as_of.year, as_of.month
@@ -298,9 +398,15 @@ def build_workout_calendar(
 
     return {
         "as_of": as_of.isoformat(),
-        "current_streak": streaks["current_streak"],
-        "longest_streak": streaks["longest_streak"],
-        "workout_days_count": streaks["workout_days_count"],
+        "current_week_streak": week_streaks["current_week_streak"],
+        "longest_week_streak": week_streaks["longest_week_streak"],
+        "lifting_week_streak": week_streaks["lifting_week_streak"],
+        "cardio_week_streak": week_streaks["cardio_week_streak"],
+        "workout_weeks_count": week_streaks["workout_weeks_count"],
+        # Day streaks retained for debugging / transitional consumers.
+        "current_streak": day_streaks["current_streak"],
+        "longest_streak": day_streaks["longest_streak"],
+        "workout_days_count": day_streaks["workout_days_count"],
         "days": days_out,
         "months": months,
     }

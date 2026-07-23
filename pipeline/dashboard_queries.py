@@ -320,7 +320,9 @@ def fetch_dashboard_source_rows(
     )
     cardio_events = list(
         query_all(
-            "SELECT event_date, activity_type, duration_min, distance_miles, avg_pace_sec_mi "
+            "SELECT event_date, activity_type, duration_min, distance_miles, "
+            "avg_pace_sec_mi, source, source_id, source_app, started_at, "
+            "avg_watts, power_mmp_json "
             "FROM cardio_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
             "ORDER BY event_date ASC",
@@ -353,6 +355,21 @@ def fetch_dashboard_source_rows(
         cardio_events=cardio_events,
         as_of=as_of,
     )
+    # Live FTP overlay so soft-hour math improvements show without waiting for
+    # the next FIT ingest persist.
+    metrics_for_ctx = dict(latest_metrics) if latest_metrics else {}
+    power_rows = [r for r in cardio_events if r.get("power_mmp_json")]
+    if power_rows:
+        from pipeline.ftp_estimate import estimate_ftp_for_rides
+
+        live_ftp = estimate_ftp_for_rides(power_rows)
+        if live_ftp.get("ftp_watts") is not None:
+            metrics_for_ctx["ftp_watts"] = live_ftp["ftp_watts"]
+            metrics_for_ctx["ftp_method"] = live_ftp["ftp_method"]
+            metrics_for_ctx["ftp_confidence"] = live_ftp["ftp_confidence"]
+            if "metric_date" not in metrics_for_ctx:
+                metrics_for_ctx["metric_date"] = as_of
+
     phase_ctx = build_training_phase_context(training_phases, as_of=as_of)
     journal_ctx = format_journal_for_prompt(journal_rows, max_entries=30)
     return build_dashboard_context(
@@ -360,7 +377,7 @@ def fetch_dashboard_source_rows(
         as_of=as_of,
         latest_briefing=latest_briefing,
         latest_features=latest_features,
-        latest_metrics=latest_metrics,
+        latest_metrics=metrics_for_ctx or None,
         goal_snapshot=snapshot_row,
         weekly_summary=weekly_summary,
         recent_anomalies=recent_anomalies,

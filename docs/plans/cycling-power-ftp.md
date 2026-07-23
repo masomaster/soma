@@ -20,12 +20,7 @@ After the Strava archive is ingested once, do **not** re-export on a schedule. O
 1. **Ongoing (scheduled in AWS):** BOLT → ELEMNT companion → **Dropbox** auto-export of `.fit` → **Dropbox API** Lambda (`soma-wahoo-fit-ingest`, daily **08:30 UTC**) → raw S3 + `cardio_events` + FTP estimate. **No Mac required.**
 2. **One-time backfill:** Strava website → **Request Your Archive** (free) → unzip → **single** `python -m pipeline.fit_ingest --source strava_export` run.
 3. Adapter writes a **JSON raw envelope** (base64 payload + sha256) to S3 under the usual `raw/{user_id}/{source}/…/.json` key, then normalizes to `cardio_events` (including `avg_watts`, `power_mmp_json`, …).
-<<<<<<< HEAD
-4. Optional `--estimate-ftp` aggregates 90-day best MMP → prefers 60/30-min anchors, else scaled critical power / outdoor Coggan → `daily_health_metrics.ftp_*`.
-=======
-4. The scheduled job always runs FTP estimation after upsert (90-day best MMP → Coggan 20-min or critical-power → `daily_health_metrics.ftp_*`).
->>>>>>> origin/main
-
+4. The scheduled job always runs FTP estimation after upsert (90-day best MMP → prefers maximal 60/30-min anchors, else soft-hour-aware Coggan / scaled critical power → `daily_health_metrics.ftp_*`). Optional local `--estimate-ftp` does the same.
 Sources: `wahoo_fit` (Dropbox API, recurring), `strava_export` (archive, one-shot). Dedup priority: **wahoo_fit > strava_export > apple_health**.
 
 ---
