@@ -8,5 +8,7 @@ One-off tooling run from the **repository root** with the project venv active.
 | [`smoke_apple_health.py`](smoke_apple_health.py) | Apple Health JSON → normalize → raw disk / DB upsert |
 | [`smoke_caldav.py`](smoke_caldav.py) | CalDAV: list calendars, fetch, DB upsert (same path as Lambda) |
 | [`smoke_strava.py`](smoke_strava.py) | Strava (paused — fixtures / live when token available) |
+| [`condense_expert_principles.py`](condense_expert_principles.py) | Transcripts → draft `expert-principles.md` (workout advice corpus) |
+| [`guidelines-corpus.md`](guidelines-corpus.md) | Operator flow for guidelines S3 / local corpus |
 
 See [`.env.example`](../.env.example), [`docs/plans/local-dev-and-tooling.md`](../docs/plans/local-dev-and-tooling.md), and [`docs/plans/staging-validation-checklist.md`](../docs/plans/staging-validation-checklist.md) (operator soak + **Hevy backfill confirm/run**).

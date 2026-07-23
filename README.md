@@ -96,6 +96,12 @@ user under `guidelines/{user_id}/` in both local dev and S3 (see `pipeline/guide
 gitignored), e.g. `tmp/soma_guidelines/guidelines/<user_id>/my-goals.md`. In `ENV=local`
 the pipeline reads straight from disk, so just edit and re-run.
 
+**Workout advice (`expert-principles.md`):** paste owned/official science-based lifting
+transcripts into `tmp/guidelines-transcripts/`, then condense with
+`make guidelines-condense` (prints a prompt) or
+`scripts/condense_expert_principles.py --llm`. Human-review before sync — see
+[`scripts/guidelines-corpus.md`](scripts/guidelines-corpus.md).
+
 **Push live:** the deployed briefing Lambda reads from the S3 bucket provisioned by the
 CDK stack (`GuidelinesBucketName` output). After editing, sync the corpus up:
 

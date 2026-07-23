@@ -25,6 +25,7 @@ def test_load_guidelines_from_fixture_dir():
     ctx = load_guidelines(UID, get_object=get_object)
     assert ctx.my_goals and "strength" in ctx.my_goals.lower()
     assert ctx.injury_history and "shoulder" in ctx.injury_history.lower()
+    assert ctx.expert_principles and "volume" in ctx.expert_principles.lower()
 
 
 def test_format_guidelines_for_prompt():
@@ -33,7 +34,8 @@ def test_format_guidelines_for_prompt():
     blob = format_guidelines_for_prompt(ctx)
     assert "INJURY HISTORY" in blob
     assert "shoulder" in blob.lower()
-
+    assert "EXPERT PRINCIPLES" in blob
+    assert "Israetel" in blob or "RP" in blob
 
 def test_append_goal_note_creates_file(tmp_path: Path):
     get_object, put_object = local_guidelines_storage(tmp_path)
