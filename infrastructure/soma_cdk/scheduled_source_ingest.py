@@ -19,7 +19,7 @@ from soma_cdk.alarms import wire_pipeline_alarm
 from soma_cdk.config import DEPLOYED_ENV
 from soma_cdk.runtime_secrets import RuntimeSecrets
 
-_SecretProfile = Literal["caldav", "strava"]
+_SecretProfile = Literal["caldav", "strava", "dropbox"]
 
 
 class ScheduledSourceIngest(Construct):
@@ -56,6 +56,9 @@ class ScheduledSourceIngest(Construct):
         elif secret_profile == "strava":
             secret_env = runtime_secrets.env_strava()
             grant_fn = runtime_secrets.grant_strava
+        elif secret_profile == "dropbox":
+            secret_env = runtime_secrets.env_dropbox()
+            grant_fn = runtime_secrets.grant_dropbox
         else:
             raise ValueError(f"Unsupported secret_profile: {secret_profile!r}")
 

@@ -17,38 +17,63 @@ After the Strava archive is ingested once, do **not** re-export on a schedule. O
 
 ## Data flow
 
-1. **Ongoing (scheduled):** BOLT → ELEMNT companion → **Dropbox** auto-export of `.fit` → sync folder → recurring `python -m pipeline.fit_ingest --source wahoo_fit` (cron / EventBridge / local schedule — ops choice).
+1. **Ongoing (scheduled in AWS):** BOLT → ELEMNT companion → **Dropbox** auto-export of `.fit` → **Dropbox API** Lambda (`soma-wahoo-fit-ingest`, daily **08:30 UTC**) → raw S3 + `cardio_events` + FTP estimate. **No Mac required.**
 2. **One-time backfill:** Strava website → **Request Your Archive** (free) → unzip → **single** `python -m pipeline.fit_ingest --source strava_export` run.
 3. Adapter writes a **JSON raw envelope** (base64 payload + sha256) to S3 under the usual `raw/{user_id}/{source}/…/.json` key, then normalizes to `cardio_events` (including `avg_watts`, `power_mmp_json`, …).
-4. Optional `--estimate-ftp` aggregates 90-day best MMP → Coggan 20-min or critical-power estimate → `daily_health_metrics.ftp_*`.
+4. The scheduled job always runs FTP estimation after upsert (90-day best MMP → Coggan 20-min or critical-power → `daily_health_metrics.ftp_*`).
 
-Sources: `wahoo_fit` (Dropbox, recurring), `strava_export` (archive, one-shot). Dedup priority: **wahoo_fit > strava_export > apple_health**.
+Sources: `wahoo_fit` (Dropbox API, recurring), `strava_export` (archive, one-shot). Dedup priority: **wahoo_fit > strava_export > apple_health**.
 
 ---
 
 ## Operator setup
 
-### BOLT → Dropbox (recurring)
+### BOLT → Dropbox API (recurring — preferred)
 
-1. In the Wahoo ELEMNT app, enable **Dropbox** as an upload / auto-export target (exact menu labels vary by app version).
-2. Confirm new rides appear as `.fit` files in your Dropbox sync folder (path differs; common patterns look like `Dropbox/Apps/…` or a Wahoo-named folder).
-3. Schedule a recurring ingest against that folder (idempotent via `source_id` + optional sha256 skip):
+1. In the Wahoo ELEMNT app, enable **Dropbox** as an upload / auto-export target. Confirm new rides appear as `.fit` files in Dropbox (cloud), e.g. `/Apps/WahooFitness`.
+2. Create a Dropbox app at [dropbox.com/developers/apps](https://www.dropbox.com/developers/apps):
+   - Prefer **Full Dropbox** so the Wahoo folder is visible; or **App folder** if FITs live in that app’s root.
+   - Generate an **offline** refresh token (one-shot helper):
 
 ```bash
-pip install -e '.[fit]'   # fitdecode
-python -m pipeline.fit_ingest \
-  --user-id "$SOMA_USER_ID" \
-  --source wahoo_fit \
-  --dir ~/Dropbox/path/to/wahoo/fits \
-  --estimate-ftp
+python3.14 scripts/dropbox_oauth_refresh_token.py
 ```
 
-Set `DATABASE_URL` (or `SOMA_DATABASE_URL`) to persist. Optionally set `SOMA_RAW_BUCKET` for S3 raw envelopes; without it, envelopes are skipped/logged only.
+3. After `cdk deploy`, fill Secrets Manager **`soma-dropbox`** with the printed JSON:
 
-Dry-run (parse only):
+```json
+{
+  "DROPBOX_APP_KEY": "…",
+  "DROPBOX_APP_SECRET": "…",
+  "DROPBOX_REFRESH_TOKEN": "…",
+  "DROPBOX_FOLDER": "/Apps/WahooFitness"
+}
+```
+
+Use `""` for `DROPBOX_FOLDER` when the app has App-folder access and FITs are at that root. Redeploy once with **`SeedRuntimeSecrets=No`** so CloudFormation does not overwrite the secret.
+
+4. Confirm schedule: EventBridge Scheduler `soma-wahoo-fit-ingest` at **08:30 UTC**. The job only downloads activity files modified in the last **45 days** (`SOMA_DROPBOX_LOOKBACK_DAYS`). Manual invoke:
 
 ```bash
-python -m pipeline.fit_ingest --user-id "$SOMA_USER_ID" --source wahoo_fit --dir ./fits --dry-run -v
+aws lambda invoke --function-name soma-wahoo-fit-ingest /tmp/wahoo-out.json && cat /tmp/wahoo-out.json
+```
+
+Local smoke (same credentials via env, no Lambda):
+
+```bash
+export DROPBOX_APP_KEY=… DROPBOX_APP_SECRET=… DROPBOX_REFRESH_TOKEN=… DROPBOX_FOLDER=/Apps/WahooFitness
+# plus SOMA_USER_ID / DB — or run the Lambda path via tests’ mocks
+```
+
+### Optional: local Mac folder + launchd (fallback only)
+
+Only if you need a laptop-side path (Mac awake + Dropbox desktop sync). Prefer the API Lambda above.
+
+```bash
+SOMA_WAHOO_FIT_DIR=~/Dropbox/Apps/WahooFitness
+make wahoo-fit-ingest                 # once
+make wahoo-fit-ingest-install         # launchd — requires open/awake Mac
+make wahoo-fit-ingest-uninstall
 ```
 
 ### Strava archive (one-time legacy backfill)
@@ -68,6 +93,13 @@ python -m pipeline.fit_ingest \
 ```
 
 Titles from `activities.csv` are attached as `notes` when present. Files without a power stream still create cardio rows tagged `no_power` in `quality_flags`.
+
+Dry-run local FIT folder:
+
+```bash
+pip install -e '.[fit]'
+python -m pipeline.fit_ingest --user-id "$SOMA_USER_ID" --source wahoo_fit --dir ./fits --dry-run -v
+```
 
 ---
 
@@ -107,9 +139,12 @@ Deterministic math in [`pipeline/power_math.py`](../../pipeline/power_math.py) �
 | Module | Role |
 |--------|------|
 | [`pipeline/adapters/fit_activity.py`](../../pipeline/adapters/fit_activity.py) | FIT/TCX/GPX parse + normalize |
-| [`pipeline/fit_ingest.py`](../../pipeline/fit_ingest.py) | Directory CLI |
+| [`pipeline/dropbox_api.py`](../../pipeline/dropbox_api.py) | Dropbox OAuth refresh + list/download |
+| [`pipeline/wahoo_fit_scheduled_ingest.py`](../../pipeline/wahoo_fit_scheduled_ingest.py) | Dropbox → upsert + FTP (Lambda job) |
+| [`pipeline/fit_ingest.py`](../../pipeline/fit_ingest.py) | Directory CLI (local / Strava archive) |
 | [`pipeline/power_math.py`](../../pipeline/power_math.py) | MMP / NP / FTP |
 | [`pipeline/ftp_estimate.py`](../../pipeline/ftp_estimate.py) | Load rides + persist `ftp_*` |
 | [`pipeline/power_cardio_dedup.py`](../../pipeline/power_cardio_dedup.py) | Cross-source near-dup |
+| [`infrastructure/lambda/wahoo_fit_ingest/`](../../infrastructure/lambda/wahoo_fit_ingest/) | Scheduled Lambda handler |
 
-Dependency: optional extra **`.[fit]`** (`fitdecode`). Dev installs include it via `make install`.
+Dependency: **`fitdecode`** in the Lambda layer and optional local extra **`.[fit]`**.

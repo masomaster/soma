@@ -50,7 +50,7 @@ class _PipInstallLayer:
                 "--only-binary=:all:",
             ]
 
-        layer_packages = ["psycopg2-binary", "caldav"]
+        layer_packages = ["psycopg2-binary", "caldav", "fitdecode"]
         try:
             for pkg in layer_packages:
                 subprocess.run([*base_cmd, *cross_x86, pkg], check=True)
@@ -59,7 +59,8 @@ class _PipInstallLayer:
             raise RuntimeError(
                 "Failed to build Lambda dependency layer with local pip. "
                 "Ensure Python 3.14 matches the Lambda runtime and you can reach PyPI. "
-                "On Apple Silicon, manylinux x86_64 wheels for psycopg2-binary and caldav must exist for 3.14."
+                "On Apple Silicon, manylinux x86_64 wheels for psycopg2-binary, caldav, "
+                "and fitdecode must exist for 3.14."
             ) from exc
         return True
 
@@ -92,5 +93,5 @@ def build_pipeline_deps_layer(scope: Construct, *, construct_id: str) -> lambda_
         ),
         compatible_runtimes=[lambda_.Runtime.PYTHON_3_14],
         compatible_architectures=[lambda_.Architecture.X86_64],
-        description="Soma pipeline package + psycopg2-binary + caldav",
+        description="Soma pipeline package + psycopg2-binary + caldav + fitdecode",
     )

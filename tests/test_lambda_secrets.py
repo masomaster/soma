@@ -106,3 +106,19 @@ def test_resolve_caldav_credentials_from_env() -> None:
             "user",
             "app-pass",
         )
+
+
+def test_resolve_dropbox_credentials_from_env() -> None:
+    from pipeline.lambda_secrets import resolve_dropbox_credentials
+
+    with mock.patch.dict(
+        os.environ,
+        {
+            "DROPBOX_APP_KEY": "key",
+            "DROPBOX_APP_SECRET": "secret",
+            "DROPBOX_REFRESH_TOKEN": "rt",
+            "DROPBOX_FOLDER": "/Apps/Wahoo",
+        },
+        clear=False,
+    ):
+        assert resolve_dropbox_credentials() == ("key", "secret", "rt", "/Apps/Wahoo")
