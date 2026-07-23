@@ -342,7 +342,7 @@ def estimate_ftp_from_best_mmp(
        30-min window also looks soft vs 20-min (FTP-test shape with cooldown),
        else ``mmp_30`` × 0.95 (caps incidental outdoor 20-min spikes)
     3. ``critical_power`` — 0.95 × CP from mid-duration MMP
-    4. Remaining ``mmp_30`` / Coggan fallback
+    4. Remaining Coggan 20-min fallback
 
     Soft hours (FTP-test days with hard 20-min + easy filler) skip ``mmp_60``.
     """
@@ -390,21 +390,21 @@ def estimate_ftp_from_best_mmp(
             curve=curve,
         )
 
-    if coggan is not None:
-        ftp, conf = coggan
-        return _estimate_result(
-            ftp_watts=ftp,
-            ftp_method="coggan_20min",
-            ftp_confidence=conf,
-            curve=curve,
-        )
-
     cp = critical_power_ftp(curve)
     if cp is not None:
         cp_watts, _w, conf = cp
         return _estimate_result(
             ftp_watts=cp_watts * CP_TO_FTP_FACTOR,
             ftp_method="critical_power",
+            ftp_confidence=conf,
+            curve=curve,
+        )
+
+    if coggan is not None:
+        ftp, conf = coggan
+        return _estimate_result(
+            ftp_watts=ftp,
+            ftp_method="coggan_20min",
             ftp_confidence=conf,
             curve=curve,
         )

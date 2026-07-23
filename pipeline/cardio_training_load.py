@@ -8,6 +8,7 @@ safe to call at query time over already-loaded ``cardio_events``.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Any
 
 from pipeline.apple_health_cardio_dedup import (
@@ -15,9 +16,11 @@ from pipeline.apple_health_cardio_dedup import (
     apple_cardio_rows_to_drop,
 )
 from pipeline.cardio_quality import is_strength_like_cardio_activity
-from pipeline.power_cardio_dedup import near_duplicate_power_cardio
-from pipeline.power_source_priority import power_cardio_source_rank
+from pipeline.power_cardio_dedup import filter_power_cardio_duplicates
+from pipeline.timeparse import ensure_utc, parse_iso_datetime_utc
 from pipeline.workout_calendar import is_fitbit_origin_activity
+
+_POWER_DEDUP_SOURCES = frozenset({"wahoo_fit", "strava_export", "apple_health", "strava"})
 
 
 def is_bridge_neat_walk(row: Mapping[str, Any]) -> bool:
@@ -36,37 +39,28 @@ def counts_toward_cardio_training_load(row: Mapping[str, Any]) -> bool:
     return True
 
 
-def _power_richness(row: Mapping[str, Any]) -> int:
-    score = 0
-    if row.get("avg_watts") is not None or row.get("power_mmp_json"):
-        score += 5
-    if row.get("distance_miles") is not None:
-        score += 2
-    if row.get("avg_hr") is not None:
-        score += 1
-    if row.get("duration_min") is not None:
-        score += 1
-    return score
-
-
-def _power_resolution_key(row: Mapping[str, Any]) -> tuple[int, int, str]:
-    return (
-        power_cardio_source_rank(row.get("source")),
-        _power_richness(row),
-        str(row.get("source_id") or ""),
-    )
+def _start_dt(row: Mapping[str, Any]) -> datetime | None:
+    v = row.get("started_at")
+    if isinstance(v, datetime):
+        return ensure_utc(v)
+    return parse_iso_datetime_utc(v)
 
 
 def _dedupe_cross_source_power(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Keep highest-priority row per near-duplicate power/cardio cluster."""
-    if len(rows) < 2:
+    """Collapse Wahoo/Strava/Apple mirrors that share a start time.
+
+    Rows without ``started_at`` are left alone: the ingest helper's duration-only
+    fallback is too aggressive for query-time load and can drop two real same-day
+    sessions. Apple hub dups are already handled separately.
+    """
+    power_rows = [r for r in rows if str(r.get("source") or "") in _POWER_DEDUP_SOURCES]
+    other = [r for r in rows if str(r.get("source") or "") not in _POWER_DEDUP_SOURCES]
+    with_start = [r for r in power_rows if _start_dt(r) is not None]
+    without_start = [r for r in power_rows if _start_dt(r) is None]
+    if len(with_start) < 2:
         return rows
-    kept: list[dict[str, Any]] = []
-    for row in sorted(rows, key=_power_resolution_key, reverse=True):
-        if any(near_duplicate_power_cardio(row, k) for k in kept):
-            continue
-        kept.append(row)
-    return kept
+    kept, _ = filter_power_cardio_duplicates(with_start, [])
+    return kept + without_start + other
 
 
 def filter_cardio_for_training_load(
@@ -74,10 +68,8 @@ def filter_cardio_for_training_load(
 ) -> list[dict[str, Any]]:
     """Drop NEAT walks + strength mirrors, then collapse near-duplicate sessions.
 
-    Apple Health hub dups (NRC/Strava/Fitbit mirrors) are resolved with the same
-    rules as ingest cleanup. Cross-source power dups (Wahoo FIT vs Apple/Strava)
-    are collapsed so minutes are not double-counted at query time even when the
-    DB still holds historical duplicates.
+    Apple Health hub dups (NRC/Strava/Fitbit mirrors) use ingest cleanup rules.
+    Cross-source power dups collapse only when start times are present.
     """
     eligible = [
         dict(row)
@@ -92,5 +84,4 @@ def filter_cardio_for_training_load(
     if len(apple) >= 2:
         drop_ids = {id(r) for r in apple_cardio_rows_to_drop(apple)}
         apple = [r for r in apple if id(r) not in drop_ids]
-    merged = apple + other
-    return _dedupe_cross_source_power(merged)
+    return _dedupe_cross_source_power(apple + other)

@@ -1762,6 +1762,7 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
 
 def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
     """Calendar-week (Mon–as_of) running vs cycling totals for the Training tab."""
+    from pipeline.cardio_training_load import filter_cardio_for_training_load
     from pipeline.mileage_ramp import iso_week_start
 
     as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
@@ -1775,13 +1776,13 @@ def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
             <= date.fromisoformat(str(r["event_date"])[:10])
             <= as_of
         ]
-        return summarize_cardio_by_mode(rows)
+        return summarize_cardio_by_mode(filter_cardio_for_training_load(rows))
     try:
         with _scoped_conn(ctx["user_id"]) as conn:
             rows = fetch_cardio_events_window(
                 conn, user_id=ctx["user_id"], as_of=as_of, days=days
             )
-        return summarize_cardio_by_mode(rows)
+        return summarize_cardio_by_mode(filter_cardio_for_training_load(rows))
     except Exception:
         return summarize_cardio_by_mode([])
 

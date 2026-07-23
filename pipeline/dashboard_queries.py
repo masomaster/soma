@@ -522,7 +522,8 @@ def fetch_cardio_events_window(
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             "SELECT event_date, activity_type, distance_miles, duration_min, "
-            "source, source_app, avg_watts, normalized_power, max_watts "
+            "source, source_id, source_app, started_at, "
+            "avg_watts, normalized_power, max_watts "
             "FROM cardio_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
             "ORDER BY event_date DESC",
@@ -568,14 +569,16 @@ def fetch_workout_calendar(
 ) -> dict[str, Any]:
     """Month grids + streaks from ``strength_events`` and ``cardio_events``.
 
-    Window covers the first day of the previous month through ``as_of`` so both
-    calendar months render fully. See :mod:`pipeline.workout_calendar`.
+    Month grids cover the previous calendar month through ``as_of``. Streak
+    history looks back ~400 days so week streaks are not capped at two months.
     """
     from pipeline.workout_calendar import build_workout_calendar, month_bounds, previous_month
 
     effective = as_of or _utc_today()
     prev_y, prev_m = previous_month(effective.year, effective.month)
-    window_start, _ = month_bounds(prev_y, prev_m)
+    month_start, _ = month_bounds(prev_y, prev_m)
+    streak_start = effective - timedelta(days=399)
+    window_start = min(month_start, streak_start)
     days = (effective - window_start).days + 1
     strength = fetch_strength_events_window(
         conn, user_id=user_id, as_of=effective, days=days

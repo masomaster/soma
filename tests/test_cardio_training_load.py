@@ -38,7 +38,27 @@ def test_fitbit_walk_excluded_from_training_load():
     assert kept[0]["duration_min"] == 40.0
 
 
-def test_near_duplicate_runs_collapsed_for_load():
+def test_same_day_sessions_without_start_not_collapsed():
+    """Duration-only fallback must not drop two real same-day rides."""
+    a = {
+        "event_date": "2026-07-18",
+        "activity_type": "Ride",
+        "source": "wahoo_fit",
+        "duration_min": 45.0,
+        "source_id": "ride-am",
+    }
+    b = {
+        "event_date": "2026-07-18",
+        "activity_type": "Ride",
+        "source": "wahoo_fit",
+        "duration_min": 48.0,
+        "source_id": "ride-pm",
+    }
+    kept = filter_cardio_for_training_load([a, b])
+    assert len(kept) == 2
+
+
+def test_apple_hub_near_duplicate_runs_collapsed():
     nrc = {
         "event_date": "2026-07-18",
         "activity_type": "Outdoor Run",
@@ -62,6 +82,30 @@ def test_near_duplicate_runs_collapsed_for_load():
     kept = filter_cardio_for_training_load([nrc, fitbit])
     assert len(kept) == 1
     assert kept[0]["source_id"] == "nrc-a"
+
+
+def test_cross_source_start_aligned_dupes_collapsed():
+    wahoo = {
+        "event_date": "2026-07-18",
+        "activity_type": "Ride",
+        "source": "wahoo_fit",
+        "duration_min": 60.0,
+        "started_at": "2026-07-18T08:00:00Z",
+        "source_id": "wahoo-1",
+        "avg_watts": 200.0,
+    }
+    apple = {
+        "event_date": "2026-07-18",
+        "activity_type": "Outdoor Cycle",
+        "source": "apple_health",
+        "source_app": "Strava",
+        "duration_min": 62.0,
+        "started_at": "2026-07-18T08:05:00Z",
+        "source_id": "apple-1",
+    }
+    kept = filter_cardio_for_training_load([wahoo, apple])
+    assert len(kept) == 1
+    assert kept[0]["source_id"] == "wahoo-1"
 
 
 def test_workload_pace_ignores_fitbit_walk_inflation():

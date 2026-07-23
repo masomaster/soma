@@ -140,6 +140,34 @@ def build_workout_day_map(
     return result
 
 
+def _consecutive_step_streak(
+    active: set[date],
+    *,
+    as_of: date,
+    step_days: int,
+) -> tuple[int, int]:
+    """Return (current, longest) streaks over dates spaced by ``step_days``."""
+    if not active:
+        return 0, 0
+    start = as_of if as_of in active else as_of - timedelta(days=step_days)
+    current = 0
+    cursor = start
+    while cursor in active:
+        current += 1
+        cursor -= timedelta(days=step_days)
+
+    sorted_pts = sorted(active)
+    longest = 1
+    run = 1
+    for prev, nxt in zip(sorted_pts, sorted_pts[1:]):
+        if (nxt - prev).days == step_days:
+            run += 1
+            longest = max(longest, run)
+        else:
+            run = 1
+    return current, longest
+
+
 def compute_streaks(
     workout_days: Mapping[date, Any],
     *,
@@ -154,76 +182,12 @@ def compute_streaks(
     active = {d for d in workout_days if d <= as_of}
     if not active:
         return {"current_streak": 0, "longest_streak": 0, "workout_days_count": 0}
-
-    start = as_of if as_of in active else as_of - timedelta(days=1)
-    current = 0
-    cursor = start
-    while cursor in active:
-        current += 1
-        cursor -= timedelta(days=1)
-
-    sorted_days = sorted(active)
-    longest = 1
-    run = 1
-    for prev, nxt in zip(sorted_days, sorted_days[1:]):
-        if (nxt - prev).days == 1:
-            run += 1
-            longest = max(longest, run)
-        else:
-            run = 1
-
+    current, longest = _consecutive_step_streak(active, as_of=as_of, step_days=1)
     return {
         "current_streak": current,
         "longest_streak": longest,
         "workout_days_count": len(active),
     }
-
-
-def _week_has_flag(
-    workout_days: Mapping[date, Mapping[str, Any]],
-    week_start: date,
-    *,
-    flag: str | None,
-) -> bool:
-    """True when any day in the Mon–Sun week has activity (or a specific flag)."""
-    for offset in range(7):
-        d = week_start + timedelta(days=offset)
-        info = workout_days.get(d)
-        if info is None:
-            continue
-        if flag is None:
-            return True
-        if info.get(flag):
-            return True
-    return False
-
-
-def _consecutive_week_streak(
-    active_weeks: set[date],
-    *,
-    as_of_week: date,
-) -> tuple[int, int]:
-    """Return (current, longest) streaks over ISO week-start dates."""
-    if not active_weeks:
-        return 0, 0
-    # Grace: if the current calendar week has no workout yet, start from prior week.
-    start = as_of_week if as_of_week in active_weeks else as_of_week - timedelta(days=7)
-    current = 0
-    cursor = start
-    while cursor in active_weeks:
-        current += 1
-        cursor -= timedelta(days=7)
-
-    sorted_weeks = sorted(active_weeks)
-    longest = 1
-    run = 1
-    for prev, nxt in zip(sorted_weeks, sorted_weeks[1:]):
-        if (nxt - prev).days == 7:
-            run += 1
-            longest = max(longest, run)
-        else:
-            run = 1
-    return current, longest
 
 
 def compute_week_streaks(
@@ -237,11 +201,20 @@ def compute_week_streaks(
     Incomplete current week does not reset the streak (same grace as day streaks).
     """
     as_of_week = iso_week_start(as_of)
-    # Only consider days through as_of when deciding week membership.
-    trimmed: dict[date, Mapping[str, Any]] = {
-        d: v for d, v in workout_days.items() if d <= as_of
-    }
-    if not trimmed:
+    any_weeks: set[date] = set()
+    lift_weeks: set[date] = set()
+    cardio_weeks: set[date] = set()
+    for d, info in workout_days.items():
+        if d > as_of:
+            continue
+        week = iso_week_start(d)
+        any_weeks.add(week)
+        if info.get("lifting"):
+            lift_weeks.add(week)
+        if info.get("cardio"):
+            cardio_weeks.add(week)
+
+    if not any_weeks:
         return {
             "current_week_streak": 0,
             "longest_week_streak": 0,
@@ -250,24 +223,15 @@ def compute_week_streaks(
             "workout_weeks_count": 0,
         }
 
-    earliest = min(trimmed)
-    earliest_week = iso_week_start(earliest)
-    any_weeks: set[date] = set()
-    lift_weeks: set[date] = set()
-    cardio_weeks: set[date] = set()
-    week = earliest_week
-    while week <= as_of_week:
-        if _week_has_flag(trimmed, week, flag=None):
-            any_weeks.add(week)
-        if _week_has_flag(trimmed, week, flag="lifting"):
-            lift_weeks.add(week)
-        if _week_has_flag(trimmed, week, flag="cardio"):
-            cardio_weeks.add(week)
-        week += timedelta(days=7)
-
-    current, longest = _consecutive_week_streak(any_weeks, as_of_week=as_of_week)
-    lift_current, _ = _consecutive_week_streak(lift_weeks, as_of_week=as_of_week)
-    cardio_current, _ = _consecutive_week_streak(cardio_weeks, as_of_week=as_of_week)
+    current, longest = _consecutive_step_streak(
+        any_weeks, as_of=as_of_week, step_days=7
+    )
+    lift_current, _ = _consecutive_step_streak(
+        lift_weeks, as_of=as_of_week, step_days=7
+    )
+    cardio_current, _ = _consecutive_step_streak(
+        cardio_weeks, as_of=as_of_week, step_days=7
+    )
     return {
         "current_week_streak": current,
         "longest_week_streak": longest,
