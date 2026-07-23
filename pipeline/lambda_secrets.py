@@ -21,6 +21,7 @@ ENV_SOMA_HEVY_SECRET_ARN = "SOMA_HEVY_SECRET_ARN"
 ENV_SOMA_CALDAV_SECRET_ARN = "SOMA_CALDAV_SECRET_ARN"
 ENV_SOMA_APPLE_WEBHOOK_SECRET_ARN = "SOMA_APPLE_WEBHOOK_SECRET_ARN"
 ENV_SOMA_STRAVA_SECRET_ARN = "SOMA_STRAVA_SECRET_ARN"
+ENV_SOMA_DROPBOX_SECRET_ARN = "SOMA_DROPBOX_SECRET_ARN"
 
 
 def clear_runtime_secret_json_cache() -> None:
@@ -175,3 +176,36 @@ def resolve_caldav_credentials() -> tuple[str, str, str]:
     if not pass_v or _is_placeholder(pass_v):
         raise OSError(f"Secret {arn!r} must include non-empty CALDAV_PASSWORD.")
     return url_v, user_v, pass_v
+
+
+def resolve_dropbox_credentials() -> tuple[str, str, str, str]:
+    """Dropbox app key/secret/refresh token + folder from env or JSON ``soma-dropbox``.
+
+    Returns ``(app_key, app_secret, refresh_token, folder_path)``. ``folder_path`` may
+    be empty (Dropbox app-folder root or full-account root).
+    """
+    app_key = os.environ.get("DROPBOX_APP_KEY", "").strip()
+    app_secret = os.environ.get("DROPBOX_APP_SECRET", "").strip()
+    refresh = os.environ.get("DROPBOX_REFRESH_TOKEN", "").strip()
+    folder = os.environ.get("DROPBOX_FOLDER", "").strip()
+    if (
+        app_key
+        and app_secret
+        and refresh
+        and not any(_is_placeholder(v) for v in (app_key, app_secret, refresh))
+    ):
+        return app_key, app_secret, refresh, folder
+
+    arn = _require_arn(ENV_SOMA_DROPBOX_SECRET_ARN)
+    data = _secret_json(arn)
+    key_v = str(data.get("DROPBOX_APP_KEY", "")).strip()
+    secret_v = str(data.get("DROPBOX_APP_SECRET", "")).strip()
+    refresh_v = str(data.get("DROPBOX_REFRESH_TOKEN", "")).strip()
+    folder_v = str(data.get("DROPBOX_FOLDER", "")).strip()
+    if not key_v or _is_placeholder(key_v):
+        raise OSError(f"Secret {arn!r} must include non-empty DROPBOX_APP_KEY.")
+    if not secret_v or _is_placeholder(secret_v):
+        raise OSError(f"Secret {arn!r} must include non-empty DROPBOX_APP_SECRET.")
+    if not refresh_v or _is_placeholder(refresh_v):
+        raise OSError(f"Secret {arn!r} must include non-empty DROPBOX_REFRESH_TOKEN.")
+    return key_v, secret_v, refresh_v, folder_v

@@ -72,7 +72,7 @@ guidelines-sync:
 	echo "Syncing $(SOMA_GUIDELINES_LOCAL_DIR)/guidelines/ -> s3://$$bucket/guidelines/"; \
 	aws s3 sync "$(SOMA_GUIDELINES_LOCAL_DIR)" "s3://$$bucket" --exclude "*" --include "guidelines/*" $(SYNC_FLAGS)
 
-# --- Wahoo Dropbox FIT ingest (local recurring schedule) ---
+# --- Wahoo Dropbox FIT ingest (optional Mac fallback; prefer Dropbox API Lambda) ---
 # Requires .env: SOMA_USER_ID, SOMA_DATABASE_URL, SOMA_WAHOO_FIT_DIR
 # Optional: SOMA_WAHOO_FIT_HOUR (default 21), SOMA_WAHOO_FIT_MINUTE (default 0)
 SOMA_WAHOO_FIT_HOUR ?= 21

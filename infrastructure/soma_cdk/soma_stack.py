@@ -87,6 +87,26 @@ class SomaStack(Stack):
             schedule_minute_utc=0,
             pipeline_alarm_topic=briefing.alarm_topic,
         )
+        # BOLT → Dropbox cloud folder → FIT/TCX via Dropbox API (no Mac required).
+        ScheduledSourceIngest(
+            self,
+            "WahooFitScheduledIngest",
+            source_slug="wahoo-fit",
+            handler_asset_subdir="wahoo_fit_ingest",
+            deps_layer=pipeline_layer,
+            runtime_secrets=runtime_secrets,
+            secret_profile="dropbox",
+            raw_bucket=apple.raw_bucket,
+            schedule_hour_utc=8,
+            schedule_minute_utc=30,
+            timeout_minutes=15,
+            memory_mb=1024,
+            pipeline_alarm_topic=briefing.alarm_topic,
+            extra_env={
+                "SOMA_DROPBOX_LOOKBACK_DAYS": "45",
+                "SOMA_DROPBOX_MAX_FILES": "80",
+            },
+        )
         WeeklySignalPipeline(
             self,
             "WeeklySignal",
