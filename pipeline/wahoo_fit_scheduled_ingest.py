@@ -18,9 +18,9 @@ from pipeline.adapters.fit_activity import (
 from pipeline.cardio_upsert import delete_cardio_events_by_source_id, upsert_cardio_events
 from pipeline.dropbox_api import (
     DropboxApiError,
+    DropboxFileEntry,
     download_file,
-    is_activity_filename,
-    iter_folder_files,
+    iter_activity_files_newest_first,
     refresh_access_token,
 )
 from pipeline.ftp_estimate import estimate_and_persist_ftp
@@ -58,6 +58,35 @@ def _nudge_utc(now: datetime) -> datetime:
     return nxt
 
 
+def _select_recent_activity_files(
+    *,
+    access_token: str,
+    folder_path: str,
+    cutoff: datetime,
+    max_files: int,
+) -> tuple[list[DropboxFileEntry], int]:
+    """Pick up to ``max_files`` newest activity files within ``cutoff``.
+
+    Relies on :func:`iter_activity_files_newest_first` (newest → oldest). Once a
+    dated file is older than ``cutoff``, remaining results are older too — stop
+    listing. Undated entries are kept and do not trigger the early stop.
+    """
+    entries: list[DropboxFileEntry] = []
+    skipped_old = 0
+    for e in iter_activity_files_newest_first(
+        access_token=access_token, folder_path=folder_path
+    ):
+        modified = _parse_dropbox_modified(e.client_modified)
+        if modified is not None and modified < cutoff:
+            skipped_old += 1
+            # Newest-first: everything after this is also outside the lookback.
+            break
+        entries.append(e)
+        if len(entries) >= max_files:
+            break
+    return entries, skipped_old
+
+
 def run_wahoo_fit_dropbox_ingest(
     *,
     user_id: str,
@@ -75,10 +104,12 @@ def run_wahoo_fit_dropbox_ingest(
 ) -> dict[str, Any]:
     """List Dropbox activity files, normalize each, upsert, optionally estimate FTP.
 
-    Only files with ``client_modified`` within ``lookback_days`` are downloaded
-    (default 45). Entries with missing timestamps are kept. Listing is
-    non-recursive (Wahoo FITs sit in the folder root). At most ``max_files``
-    (default 80) are processed per invocation to stay under Lambda timeout.
+    Uses Dropbox ``search_v2`` ordered by last modified (newest first). Only
+    files with ``client_modified`` within ``lookback_days`` are downloaded
+    (default 45); listing stops once results age past the cutoff so large
+    archives of old FITs are not walked. Entries with missing timestamps are
+    kept. At most ``max_files`` (default 80) newest files are processed per
+    invocation to stay under Lambda timeout.
 
     Dropbox / storage / missing-``fitdecode`` errors fail the job. Per-file
     parse failures are skipped and counted in ``errors``.
@@ -95,20 +126,12 @@ def run_wahoo_fit_dropbox_ingest(
     access = refresh_access_token(
         app_key=app_key, app_secret=app_secret, refresh_token=refresh_token
     )
-    entries = []
-    skipped_old = 0
-    for e in iter_folder_files(
-        access_token=access, folder_path=folder_path, recursive=False
-    ):
-        if not is_activity_filename(e.name):
-            continue
-        modified = _parse_dropbox_modified(e.client_modified)
-        if modified is not None and modified < cutoff:
-            skipped_old += 1
-            continue
-        entries.append(e)
-        if len(entries) >= max_files:
-            break
+    entries, skipped_old = _select_recent_activity_files(
+        access_token=access,
+        folder_path=folder_path,
+        cutoff=cutoff,
+        max_files=max_files,
+    )
     logger.info(
         "Dropbox listed %d recent activity file(s) under %r (skipped_old=%d lookback=%d max=%d) for user %s",
         len(entries),

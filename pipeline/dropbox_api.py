@@ -20,7 +20,13 @@ logger = logging.getLogger(__name__)
 DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
 DROPBOX_LIST_URL = "https://api.dropboxapi.com/2/files/list_folder"
 DROPBOX_LIST_CONTINUE_URL = "https://api.dropboxapi.com/2/files/list_folder/continue"
+DROPBOX_SEARCH_URL = "https://api.dropboxapi.com/2/files/search_v2"
+DROPBOX_SEARCH_CONTINUE_URL = "https://api.dropboxapi.com/2/files/search/continue_v2"
 DROPBOX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download"
+
+# Extensions for search_v2; ``.fit.gz`` etc. match as ``gz`` then pass ``is_activity_filename``.
+_ACTIVITY_SEARCH_EXTENSIONS = ("fit", "tcx", "gpx", "gz")
+_SEARCH_PAGE_SIZE = 100
 
 
 class DropboxApiError(Exception):
@@ -145,32 +151,112 @@ def iter_folder_files(
         urlopen=urlopen,
     )
     while True:
-        for entry in result.get("entries") or []:
-            if not isinstance(entry, dict):
+        for raw_entry in result.get("entries") or []:
+            if not isinstance(raw_entry, dict):
                 continue
-            if entry.get(".tag") != "file":
-                continue
-            name = str(entry.get("name") or "")
-            path_display = str(entry.get("path_display") or entry.get("path_lower") or "")
-            path_lower = str(entry.get("path_lower") or path_display.lower())
-            if not name or not path_lower:
-                continue
-            ch = entry.get("content_hash")
-            modified = entry.get("client_modified") or entry.get("server_modified")
-            yield DropboxFileEntry(
-                name=name,
-                path_display=path_display,
-                path_lower=path_lower,
-                content_hash=str(ch) if isinstance(ch, str) else None,
-                client_modified=str(modified) if isinstance(modified, str) else None,
-            )
+            entry = _file_entry_from_metadata(raw_entry)
+            if entry is not None:
+                yield entry
         if not result.get("has_more"):
             break
         cursor = result.get("cursor")
         if not isinstance(cursor, str) or not cursor:
-            break
+            raise DropboxApiError(
+                "Dropbox list_folder has_more=true but cursor is missing or invalid"
+            )
         result = _post_json(
             DROPBOX_LIST_CONTINUE_URL,
+            access_token=access_token,
+            payload={"cursor": cursor},
+            urlopen=urlopen,
+        )
+
+
+def _file_entry_from_metadata(entry: dict[str, Any]) -> DropboxFileEntry | None:
+    """Build a :class:`DropboxFileEntry` from Dropbox file metadata, or ``None``."""
+    if entry.get(".tag") != "file":
+        return None
+    name = str(entry.get("name") or "")
+    path_display = str(entry.get("path_display") or entry.get("path_lower") or "")
+    path_lower = str(entry.get("path_lower") or path_display.lower())
+    if not name or not path_lower:
+        return None
+    ch = entry.get("content_hash")
+    modified = entry.get("client_modified") or entry.get("server_modified")
+    return DropboxFileEntry(
+        name=name,
+        path_display=path_display,
+        path_lower=path_lower,
+        content_hash=str(ch) if isinstance(ch, str) else None,
+        client_modified=str(modified) if isinstance(modified, str) else None,
+    )
+
+
+def _file_entry_from_search_match(match: dict[str, Any]) -> DropboxFileEntry | None:
+    """Extract a file entry from a ``search_v2`` match object."""
+    meta_wrap = match.get("metadata")
+    if not isinstance(meta_wrap, dict):
+        return None
+    # MetadataV2: {".tag": "metadata", "metadata": {FileMetadata...}}
+    if meta_wrap.get(".tag") == "metadata":
+        inner = meta_wrap.get("metadata")
+        if not isinstance(inner, dict):
+            return None
+        return _file_entry_from_metadata(inner)
+    return _file_entry_from_metadata(meta_wrap)
+
+
+def iter_activity_files_newest_first(
+    *,
+    access_token: str,
+    folder_path: str = "",
+    urlopen: Any = urllib.request.urlopen,
+) -> Iterator[DropboxFileEntry]:
+    """Yield activity files under ``folder_path``, newest modified first.
+
+    Uses ``search_v2`` with ``order_by=last_modified_time`` so callers can stop
+    once entries fall outside a lookback window — avoiding a full folder walk
+    when many old FIT files accumulate.
+    """
+    path = folder_path.strip()
+    if path == "/":
+        path = ""
+    result = _post_json(
+        DROPBOX_SEARCH_URL,
+        access_token=access_token,
+        payload={
+            # Empty query + extensions lists all matching files in ``path``.
+            "query": "",
+            "options": {
+                "path": path,
+                "max_results": _SEARCH_PAGE_SIZE,
+                "order_by": "last_modified_time",
+                "filename_only": True,
+                "file_status": "active",
+                "file_extensions": list(_ACTIVITY_SEARCH_EXTENSIONS),
+            },
+        },
+        urlopen=urlopen,
+    )
+    while True:
+        for match in result.get("matches") or []:
+            if not isinstance(match, dict):
+                continue
+            entry = _file_entry_from_search_match(match)
+            if entry is None:
+                continue
+            if not is_activity_filename(entry.name):
+                continue
+            yield entry
+        if not result.get("has_more"):
+            break
+        cursor = result.get("cursor")
+        if not isinstance(cursor, str) or not cursor:
+            raise DropboxApiError(
+                "Dropbox search_v2 has_more=true but cursor is missing or invalid"
+            )
+        result = _post_json(
+            DROPBOX_SEARCH_CONTINUE_URL,
             access_token=access_token,
             payload={"cursor": cursor},
             urlopen=urlopen,

@@ -9,7 +9,10 @@ import pytest
 
 from pipeline.dropbox_api import DropboxApiError, DropboxFileEntry
 from pipeline.raw_storage import format_raw_object_key
-from pipeline.wahoo_fit_scheduled_ingest import run_wahoo_fit_dropbox_ingest
+from pipeline.wahoo_fit_scheduled_ingest import (
+    _select_recent_activity_files,
+    run_wahoo_fit_dropbox_ingest,
+)
 
 
 def _conn_with_cursor() -> mock.MagicMock:
@@ -47,7 +50,7 @@ def test_run_wahoo_fit_dropbox_ingest_happy_path() -> None:
             return_value="access",
         ),
         mock.patch(
-            "pipeline.wahoo_fit_scheduled_ingest.iter_folder_files",
+            "pipeline.wahoo_fit_scheduled_ingest.iter_activity_files_newest_first",
             return_value=[entry],
         ),
         mock.patch(
@@ -139,7 +142,7 @@ def test_multi_file_uses_distinct_utc_now_for_raw_keys() -> None:
             return_value="access",
         ),
         mock.patch(
-            "pipeline.wahoo_fit_scheduled_ingest.iter_folder_files",
+            "pipeline.wahoo_fit_scheduled_ingest.iter_activity_files_newest_first",
             return_value=entries,
         ),
         mock.patch(
@@ -204,7 +207,7 @@ def test_dropbox_download_error_fails_job() -> None:
             return_value="access",
         ),
         mock.patch(
-            "pipeline.wahoo_fit_scheduled_ingest.iter_folder_files",
+            "pipeline.wahoo_fit_scheduled_ingest.iter_activity_files_newest_first",
             return_value=[entry],
         ),
         mock.patch(
@@ -229,19 +232,20 @@ def test_dropbox_download_error_fails_job() -> None:
 
 
 def test_lookback_skips_old_files() -> None:
-    old = DropboxFileEntry(
-        name="old.fit",
-        path_display="/Apps/WahooFitness/old.fit",
-        path_lower="/apps/wahoofitness/old.fit",
-        content_hash="o",
-        client_modified="2026-01-01T12:00:00Z",
-    )
+    # Newest-first listing: recent then old — stop at first old, never download it.
     recent = DropboxFileEntry(
         name="new.fit",
         path_display="/Apps/WahooFitness/new.fit",
         path_lower="/apps/wahoofitness/new.fit",
         content_hash="n",
         client_modified="2026-07-20T12:00:00Z",
+    )
+    old = DropboxFileEntry(
+        name="old.fit",
+        path_display="/Apps/WahooFitness/old.fit",
+        path_lower="/apps/wahoofitness/old.fit",
+        content_hash="o",
+        client_modified="2026-01-01T12:00:00Z",
     )
     live_conn = _conn_with_cursor()
     with (
@@ -250,8 +254,8 @@ def test_lookback_skips_old_files() -> None:
             return_value="access",
         ),
         mock.patch(
-            "pipeline.wahoo_fit_scheduled_ingest.iter_folder_files",
-            return_value=[old, recent],
+            "pipeline.wahoo_fit_scheduled_ingest.iter_activity_files_newest_first",
+            return_value=[recent, old],
         ),
         mock.patch(
             "pipeline.wahoo_fit_scheduled_ingest.download_file",
@@ -287,3 +291,102 @@ def test_lookback_skips_old_files() -> None:
     download.assert_called_once_with(
         access_token="access", path="/apps/wahoofitness/new.fit"
     )
+
+
+def test_select_recent_prefers_newest_and_stops_at_cutoff() -> None:
+    """max_files applies to newest-first order; listing stops past lookback."""
+    newest = DropboxFileEntry(
+        name="newest.fit",
+        path_display="/Apps/WahooFitness/newest.fit",
+        path_lower="/apps/wahoofitness/newest.fit",
+        content_hash="1",
+        client_modified="2026-07-22T12:00:00Z",
+    )
+    mid = DropboxFileEntry(
+        name="mid.fit",
+        path_display="/Apps/WahooFitness/mid.fit",
+        path_lower="/apps/wahoofitness/mid.fit",
+        content_hash="2",
+        client_modified="2026-07-10T12:00:00Z",
+    )
+    older_in_window = DropboxFileEntry(
+        name="older.fit",
+        path_display="/Apps/WahooFitness/older.fit",
+        path_lower="/apps/wahoofitness/older.fit",
+        content_hash="3",
+        client_modified="2026-07-01T12:00:00Z",
+    )
+    too_old = DropboxFileEntry(
+        name="ancient.fit",
+        path_display="/Apps/WahooFitness/ancient.fit",
+        path_lower="/apps/wahoofitness/ancient.fit",
+        content_hash="4",
+        client_modified="2026-01-01T12:00:00Z",
+    )
+    seen: list[str] = []
+
+    def fake_iter(**_kwargs):  # type: ignore[no-untyped-def]
+        for e in (newest, mid, older_in_window, too_old):
+            seen.append(e.name)
+            yield e
+
+    with mock.patch(
+        "pipeline.wahoo_fit_scheduled_ingest.iter_activity_files_newest_first",
+        side_effect=fake_iter,
+    ):
+        entries, skipped = _select_recent_activity_files(
+            access_token="at",
+            folder_path="/Apps/WahooFitness",
+            cutoff=datetime(2026, 6, 8, tzinfo=timezone.utc),
+            max_files=2,
+        )
+
+    assert [e.name for e in entries] == ["newest.fit", "mid.fit"]
+    assert skipped == 0
+    # Stopped at max_files — never pulled older_in_window / too_old from iterator
+    assert seen == ["newest.fit", "mid.fit"]
+
+
+def test_select_recent_stops_listing_after_first_old() -> None:
+    recent = DropboxFileEntry(
+        name="new.fit",
+        path_display="/Apps/WahooFitness/new.fit",
+        path_lower="/apps/wahoofitness/new.fit",
+        content_hash="n",
+        client_modified="2026-07-20T12:00:00Z",
+    )
+    old_a = DropboxFileEntry(
+        name="old_a.fit",
+        path_display="/Apps/WahooFitness/old_a.fit",
+        path_lower="/apps/wahoofitness/old_a.fit",
+        content_hash="a",
+        client_modified="2026-01-02T12:00:00Z",
+    )
+    old_b = DropboxFileEntry(
+        name="old_b.fit",
+        path_display="/Apps/WahooFitness/old_b.fit",
+        path_lower="/apps/wahoofitness/old_b.fit",
+        content_hash="b",
+        client_modified="2026-01-01T12:00:00Z",
+    )
+    seen: list[str] = []
+
+    def fake_iter(**_kwargs):  # type: ignore[no-untyped-def]
+        for e in (recent, old_a, old_b):
+            seen.append(e.name)
+            yield e
+
+    with mock.patch(
+        "pipeline.wahoo_fit_scheduled_ingest.iter_activity_files_newest_first",
+        side_effect=fake_iter,
+    ):
+        entries, skipped = _select_recent_activity_files(
+            access_token="at",
+            folder_path="/Apps/WahooFitness",
+            cutoff=datetime(2026, 6, 8, tzinfo=timezone.utc),
+            max_files=80,
+        )
+
+    assert [e.name for e in entries] == ["new.fit"]
+    assert skipped == 1
+    assert seen == ["new.fit", "old_a.fit"]
