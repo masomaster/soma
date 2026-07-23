@@ -26,6 +26,7 @@ from pipeline.dashboard_queries import (
     fetch_cardio_events_window,
     fetch_features_history,
     fetch_metrics_history,
+    fetch_recent_power_rides,
     fetch_strength_events_window,
     fetch_weekly_summaries,
     fetch_workout_calendar,
@@ -320,6 +321,9 @@ def _fixture_context() -> dict:
             "hrv_rmssd": 48,
             "sleep_hours": 5.8,
             "resting_hr": 58,
+            "ftp_watts": 245.0,
+            "ftp_method": "coggan_20min",
+            "ftp_confidence": 0.72,
         },
         goal_snapshot={
             "goals_status": {
@@ -395,12 +399,27 @@ def _fixture_metrics_history(as_of: date, days: int) -> list[dict[str, Any]]:
                 "active_cal": int(max(120, 470 + 150 * math.sin(wave) + rng.uniform(-80, 80))),
                 "body_weight_lbs": round(179.5 - offset * 0.03 + rng.uniform(-0.4, 0.4), 1),
                 "body_fat_pct": round(18.6 - offset * 0.004 + rng.uniform(-0.2, 0.2), 1),
+                "ftp_watts": None,
+                "ftp_method": None,
+                "ftp_confidence": None,
             }
         )
     _attach_trailing_avg(rows, "sleep_hours", "sleep_7d_avg")
     _attach_trailing_avg(rows, "hrv_rmssd", "hrv_7d_avg")
     if rows:  # pin the latest day to the snapshot in _fixture_context()
-        rows[-1].update(hrv_rmssd=48, sleep_hours=5.8, resting_hr=58)
+        rows[-1].update(
+            hrv_rmssd=48,
+            sleep_hours=5.8,
+            resting_hr=58,
+            ftp_watts=245.0,
+            ftp_method="coggan_20min",
+            ftp_confidence=0.72,
+        )
+        # Sparse prior FTP points so the Training chart has a short series.
+        if len(rows) > 14:
+            rows[-15].update(ftp_watts=240.0, ftp_method="coggan_20min", ftp_confidence=0.65)
+        if len(rows) > 7:
+            rows[-8].update(ftp_watts=242.0, ftp_method="critical_power", ftp_confidence=0.7)
     return rows
 
 
@@ -484,8 +503,24 @@ def _fixture_cardio_events(as_of: date) -> list[dict[str, Any]]:
             "activity_type": "Outdoor Cycling",
             "distance_miles": 12.4,
             "duration_min": 48.0,
-            "source": "apple_health",
-            "source_app": "Mason's Apple Watch",
+            "source": "wahoo_fit",
+            "source_app": None,
+            "avg_watts": 210.0,
+            "normalized_power": 225.0,
+            "max_watts": 480.0,
+            "notes": "Demo ride with power",
+        },
+        {
+            "event_date": (as_of - timedelta(days=9)).isoformat(),
+            "activity_type": "Ride",
+            "distance_miles": 18.2,
+            "duration_min": 72.0,
+            "source": "wahoo_fit",
+            "source_app": None,
+            "avg_watts": 198.0,
+            "normalized_power": 215.0,
+            "max_watts": 520.0,
+            "notes": "Longer demo ride",
         },
         {
             "event_date": (as_of - timedelta(days=5)).isoformat(),
@@ -1760,6 +1795,114 @@ def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
         return summarize_cardio_by_mode([])
 
 
+def _recent_power_rides(ctx: dict, mode: str, *, days: int = 28) -> list[dict[str, Any]]:
+    """Recent rides with avg watts for the Training power section."""
+    as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
+    if mode == "fixture":
+        rows = [
+            r
+            for r in _fixture_cardio_events(as_of)
+            if r.get("avg_watts") is not None
+            and as_of - timedelta(days=days - 1)
+            <= date.fromisoformat(str(r["event_date"])[:10])
+            <= as_of
+        ]
+        rows.sort(key=lambda r: str(r.get("event_date") or ""), reverse=True)
+        return rows[:12]
+    try:
+        with _scoped_conn(ctx["user_id"]) as conn:
+            return fetch_recent_power_rides(
+                conn, user_id=ctx["user_id"], as_of=as_of, days=days, limit=12
+            )
+    except Exception:
+        return []
+
+
+def _ftp_method_label(method: Any) -> str:
+    raw = str(method or "").strip()
+    if raw == "coggan_20min":
+        return "Coggan 20-min"
+    if raw == "critical_power":
+        return "Critical power"
+    if raw == "insufficient_data":
+        return "Insufficient data"
+    return raw.replace("_", " ") if raw else ""
+
+
+def _render_cycling_power_section(ctx: dict, mdf, mode: str) -> None:
+    """FTP estimate + recent ride power on the Training tab."""
+    metrics = ctx.get("today_metrics") or {}
+    rides = _recent_power_rides(ctx, mode)
+    last = rides[0] if rides else {}
+    has_ftp = metrics.get("ftp_watts") is not None
+    has_rides = bool(rides)
+    if not has_ftp and not has_rides and not _series_has_data(mdf, "ftp_watts"):
+        return
+
+    st.markdown("###### Cycling power")
+    pc = st.columns(3)
+    pc[0].metric(
+        "Estimated FTP",
+        _fmt(metrics.get("ftp_watts"), suffix=" W"),
+        help="Outdoor estimate from recent mean-maximal power (not a lab test).",
+    )
+    method = _ftp_method_label(metrics.get("ftp_method"))
+    conf = metrics.get("ftp_confidence")
+    if method or isinstance(conf, (int, float)):
+        bits = [method] if method else []
+        if isinstance(conf, (int, float)):
+            bits.append(f"conf {conf:.2f}")
+        pc[0].caption(" · ".join(bits))
+
+    last_date = last.get("event_date")
+    last_delta = str(last_date)[:10] if last_date else None
+    pc[1].metric(
+        "Last ride avg",
+        _fmt(last.get("avg_watts"), suffix=" W"),
+        delta=last_delta,
+        delta_color="off",
+    )
+    pc[2].metric(
+        "Last ride NP",
+        _fmt(last.get("normalized_power"), suffix=" W"),
+        help="Normalized Power from the power stream when available.",
+    )
+
+    chart_cols = st.columns(2)
+    with chart_cols[0]:
+        with st.container(border=True):
+            st.markdown("**FTP estimate · by day**")
+            if _series_has_data(mdf, "ftp_watts"):
+                _padded_chart(
+                    mdf,
+                    {"ftp_watts": "FTP (W)"},
+                    pad=10,
+                    grain="day",
+                    y_title="W",
+                    empty="No FTP estimates in this range.",
+                )
+            else:
+                st.caption(
+                    "No FTP series yet — run FIT ingest with --estimate-ftp after power rides land."
+                )
+    with chart_cols[1]:
+        with st.container(border=True):
+            st.markdown("**Recent rides with power**")
+            if not rides:
+                st.caption("No rides with avg watts in the last 28 days.")
+            else:
+                for ride in rides[:8]:
+                    day = str(ride.get("event_date") or "")[:10]
+                    title = ride.get("notes") or ride.get("activity_type") or "Ride"
+                    avg = _fmt(ride.get("avg_watts"), suffix=" W")
+                    np_val = ride.get("normalized_power")
+                    np_txt = f" · NP {_fmt(np_val, suffix=' W')}" if np_val is not None else ""
+                    src = ride.get("source") or ""
+                    st.markdown(f"**{day}** · {title} — avg {avg}{np_txt}")
+                    if src:
+                        st.caption(src)
+
+
 def _format_phase_type(phase_type: Any) -> str:
     text = str(phase_type or "").strip()
     return text.replace("_", " ").title() if text else ""
@@ -2017,7 +2160,7 @@ def _render_workout_calendar(ctx: dict, mode: str) -> None:
     )
 
 
-def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
+def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
     strength_progress = ctx.get("strength_progress") or {}
     workload_pace = ctx.get("workload_pace") or {}
     phase_ctx = ctx.get("training_phase")
@@ -2076,6 +2219,8 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
         delta=f"{_fmt(bike_t['minutes'])} min · {int(bike_t['sessions'])} sessions",
         delta_color="off",
     )
+
+    _render_cycling_power_section(ctx, mdf, mode)
 
     left, right = st.columns(2)
     with left:
@@ -2604,7 +2749,7 @@ def main() -> None:
     with recovery:
         _tab_recovery(ctx, mdf, fdf)
     with training:
-        _tab_training(ctx, fdf, wdf, mode)
+        _tab_training(ctx, mdf, fdf, wdf, mode)
     with sleep:
         _tab_sleep(ctx, mdf, fdf)
     with coaching:

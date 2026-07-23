@@ -96,6 +96,12 @@ Deterministic math in [`pipeline/power_math.py`](../../pipeline/power_math.py) â
 
 ---
 
+## Dashboard
+
+**Training** tab â†’ **Cycling power**: estimated FTP (method + confidence), last-ride avg/NP, FTP-by-day chart, and a short list of recent power rides. Data from `daily_health_metrics.ftp_*` and `cardio_events` watts columns.
+
+---
+
 ## Code map
 
 | Module | Role |

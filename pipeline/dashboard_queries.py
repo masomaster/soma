@@ -94,12 +94,12 @@ def _coerce_json_mapping(value: Any) -> dict[str, Any]:
 BOUNDED_SCHEMA_HINT = f"""
 Tables (all have user_id; always filter by user_id):
 - daily_features(feature_date, strength_sessions_7d, cardio_minutes_7d, training_load_*)
-- daily_health_metrics(metric_date, hrv_rmssd, sleep_hours, resting_hr, ...)
+- daily_health_metrics(metric_date, hrv_rmssd, sleep_hours, resting_hr, ftp_watts, ftp_method, ftp_confidence, ...)
 - daily_briefings(briefing_date, coaching_note, flags, features_json)
 - daily_goal_snapshot(snapshot_date, goals_status, mileage_check, todays_focus)
 - weekly_activity_summary(week_start, strength_sessions, running_km, cardio_minutes)
 - strength_events(event_date, exercise_name, reps, weight_lbs)
-- cardio_events(event_date, activity_type, duration_min, distance_miles)
+- cardio_events(event_date, activity_type, duration_min, distance_miles, avg_watts, normalized_power)
 - metric_patterns(metric_a, metric_b, lag_days, correlation, sample_n, status, description)
 - running_sessions(session_date, distance_km)  -- run_type column exists but is unused; track total mileage only
 - goals(goal_type, target_min, target_max, is_active)  -- prefer strength; typed running_* goals are legacy/ignored
@@ -195,6 +195,9 @@ def build_dashboard_context(
             "hrv_rmssd": latest_metrics.get("hrv_rmssd"),
             "sleep_hours": latest_metrics.get("sleep_hours"),
             "resting_hr": latest_metrics.get("resting_hr"),
+            "ftp_watts": latest_metrics.get("ftp_watts"),
+            "ftp_method": latest_metrics.get("ftp_method"),
+            "ftp_confidence": latest_metrics.get("ftp_confidence"),
         }
     if goal_snapshot:
         ctx["goals_status"] = _coerce_json_mapping(goal_snapshot.get("goals_status")) or None
@@ -263,7 +266,8 @@ def fetch_dashboard_source_rows(
         (user_id, as_of),
     )
     latest_metrics = query_one(
-        "SELECT metric_date, hrv_rmssd, sleep_hours, resting_hr "
+        "SELECT metric_date, hrv_rmssd, sleep_hours, resting_hr, "
+        "ftp_watts, ftp_method, ftp_confidence "
         "FROM daily_health_metrics "
         "WHERE user_id = %s AND metric_date <= %s "
         "ORDER BY metric_date DESC LIMIT 1",
@@ -501,10 +505,38 @@ def fetch_cardio_events_window(
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             "SELECT event_date, activity_type, distance_miles, duration_min, "
-            "source, source_app "
+            "source, source_app, avg_watts, normalized_power, max_watts "
             "FROM cardio_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
             "ORDER BY event_date DESC",
+            (user_id, window_start, effective),
+        )
+        return [dict(r) for r in cur.fetchall()]
+
+
+def fetch_recent_power_rides(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+    days: int = 28,
+    limit: int = 12,
+) -> list[dict[str, Any]]:
+    """Recent cardio rows that have usable power (for Training tab)."""
+    from psycopg2.extras import RealDictCursor
+
+    effective = as_of or _utc_today()
+    window_start = effective - timedelta(days=max(1, days) - 1)
+    lim = max(1, min(int(limit), MAX_QUERY_ROWS))
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            "SELECT event_date, activity_type, duration_min, distance_miles, "
+            "avg_watts, normalized_power, max_watts, source, notes "
+            "FROM cardio_events "
+            "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
+            "AND avg_watts IS NOT NULL "
+            "ORDER BY event_date DESC, started_at DESC NULLS LAST "
+            f"LIMIT {lim}",
             (user_id, window_start, effective),
         )
         return [dict(r) for r in cur.fetchall()]
@@ -568,6 +600,9 @@ _METRICS_HISTORY_COLUMNS = (
     "body_fat_pct",
     "hrv_7d_avg",
     "sleep_7d_avg",
+    "ftp_watts",
+    "ftp_method",
+    "ftp_confidence",
 )
 
 _FEATURES_HISTORY_COLUMNS = (
