@@ -73,10 +73,9 @@ guidelines-sync:
 	aws s3 sync "$(SOMA_GUIDELINES_LOCAL_DIR)" "s3://$$bucket" --exclude "*" --include "guidelines/*" $(SYNC_FLAGS)
 
 # --- Wahoo Dropbox FIT ingest (optional Mac fallback; prefer Dropbox API Lambda) ---
-# Requires .env: SOMA_USER_ID, SOMA_DATABASE_URL, SOMA_WAHOO_FIT_DIR
-# Optional: SOMA_WAHOO_FIT_HOUR (default 21), SOMA_WAHOO_FIT_MINUTE (default 0)
-SOMA_WAHOO_FIT_HOUR ?= 21
-SOMA_WAHOO_FIT_MINUTE ?= 0
+# Requires .env: SOMA_USER_ID, SOMA_WAHOO_FIT_DIR, and SOMA_DATABASE_URL or DATABASE_URL
+# Optional schedule in .env (or make/env override): SOMA_WAHOO_FIT_HOUR / SOMA_WAHOO_FIT_MINUTE
+# Priority for install schedule: make/env override > repo .env > defaults 21:00
 LAUNCH_AGENTS := $(HOME)/Library/LaunchAgents
 WAHOO_PLIST_LABEL := com.soma.wahoo-fit-ingest
 WAHOO_PLIST := $(LAUNCH_AGENTS)/$(WAHOO_PLIST_LABEL).plist
@@ -88,17 +87,24 @@ wahoo-fit-ingest:
 wahoo-fit-ingest-install:
 	@test -x $(CURDIR)/scripts/run_wahoo_fit_ingest.sh || chmod +x $(CURDIR)/scripts/run_wahoo_fit_ingest.sh
 	@mkdir -p "$(LAUNCH_AGENTS)" "$(CURDIR)/tmp/logs"
-	@sed \
+	@HOUR_OVERRIDE="$(SOMA_WAHOO_FIT_HOUR)"; \
+	MINUTE_OVERRIDE="$(SOMA_WAHOO_FIT_MINUTE)"; \
+	if [ -f "$(CURDIR)/.env" ]; then set -a; . "$(CURDIR)/.env"; set +a; fi; \
+	if [ -n "$$HOUR_OVERRIDE" ]; then SOMA_WAHOO_FIT_HOUR="$$HOUR_OVERRIDE"; fi; \
+	if [ -n "$$MINUTE_OVERRIDE" ]; then SOMA_WAHOO_FIT_MINUTE="$$MINUTE_OVERRIDE"; fi; \
+	HOUR="$${SOMA_WAHOO_FIT_HOUR:-21}"; \
+	MINUTE="$${SOMA_WAHOO_FIT_MINUTE:-0}"; \
+	sed \
 		-e 's|__SOMA_REPO__|$(CURDIR)|g' \
-		-e 's|__SOMA_HOUR__|$(SOMA_WAHOO_FIT_HOUR)|g' \
-		-e 's|__SOMA_MINUTE__|$(SOMA_WAHOO_FIT_MINUTE)|g' \
-		"$(CURDIR)/ops/macos/com.soma.wahoo-fit-ingest.plist.in" > "$(WAHOO_PLIST)"
-	@launchctl bootout "gui/$$(id -u)/$(WAHOO_PLIST_LABEL)" 2>/dev/null || true
-	@launchctl bootstrap "gui/$$(id -u)" "$(WAHOO_PLIST)"
-	@launchctl enable "gui/$$(id -u)/$(WAHOO_PLIST_LABEL)" 2>/dev/null || true
-	@echo "Installed $(WAHOO_PLIST) — daily at $(SOMA_WAHOO_FIT_HOUR):$$(printf '%02d' $(SOMA_WAHOO_FIT_MINUTE)) local"
-	@echo "Requires SOMA_WAHOO_FIT_DIR in .env. Test now: make wahoo-fit-ingest"
-	@echo "Logs: $(CURDIR)/tmp/logs/wahoo-fit-ingest.log"
+		-e "s|__SOMA_HOUR__|$$HOUR|g" \
+		-e "s|__SOMA_MINUTE__|$$MINUTE|g" \
+		"$(CURDIR)/ops/macos/com.soma.wahoo-fit-ingest.plist.in" > "$(WAHOO_PLIST)"; \
+	launchctl bootout "gui/$$(id -u)/$(WAHOO_PLIST_LABEL)" 2>/dev/null || true; \
+	launchctl bootstrap "gui/$$(id -u)" "$(WAHOO_PLIST)"; \
+	launchctl enable "gui/$$(id -u)/$(WAHOO_PLIST_LABEL)" 2>/dev/null || true; \
+	echo "Installed $(WAHOO_PLIST) — daily at $$HOUR:$$(printf '%02d' $$MINUTE) local"; \
+	echo "Requires SOMA_WAHOO_FIT_DIR in .env. Test now: make wahoo-fit-ingest"; \
+	echo "Logs: $(CURDIR)/tmp/logs/wahoo-fit-ingest.log"
 
 wahoo-fit-ingest-uninstall:
 	@launchctl bootout "gui/$$(id -u)/$(WAHOO_PLIST_LABEL)" 2>/dev/null || true

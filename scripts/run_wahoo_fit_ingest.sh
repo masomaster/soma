@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Recurring Wahoo BOLT → Dropbox FIT ingest for Soma.
-# Loads repo .env; requires SOMA_USER_ID, SOMA_DATABASE_URL, SOMA_WAHOO_FIT_DIR.
+# Loads repo .env; requires SOMA_USER_ID, SOMA_WAHOO_FIT_DIR, and
+# SOMA_DATABASE_URL or DATABASE_URL (same as pipeline.fit_ingest).
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -14,7 +15,10 @@ if [[ -f "$REPO_ROOT/.env" ]]; then
 fi
 
 : "${SOMA_USER_ID:?Set SOMA_USER_ID in .env}"
-: "${SOMA_DATABASE_URL:?Set SOMA_DATABASE_URL in .env}"
+if [[ -z "${SOMA_DATABASE_URL:-}" && -z "${DATABASE_URL:-}" ]]; then
+  echo "Set SOMA_DATABASE_URL or DATABASE_URL in .env" >&2
+  exit 1
+fi
 : "${SOMA_WAHOO_FIT_DIR:?Set SOMA_WAHOO_FIT_DIR to the Dropbox folder with Wahoo .fit files}"
 
 FIT_DIR="$(eval echo "$SOMA_WAHOO_FIT_DIR")"

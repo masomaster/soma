@@ -10,7 +10,8 @@
     make wahoo-fit-ingest-uninstall
 
   Default schedule: every day at 21:00 local time (after typical evening rides).
-  Override hour/minute with SOMA_WAHOO_FIT_HOUR / SOMA_WAHOO_FIT_MINUTE when installing.
+  Hour/minute come from repo .env (SOMA_WAHOO_FIT_HOUR / SOMA_WAHOO_FIT_MINUTE),
+  or make/env overrides at install time (e.g. make SOMA_WAHOO_FIT_HOUR=18 ...).
 -->
 <plist version="1.0">
 <dict>
