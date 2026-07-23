@@ -5,6 +5,7 @@ from __future__ import annotations
 from pipeline.power_math import (
     COGGAN_20MIN_FACTOR,
     CP_TO_FTP_FACTOR,
+    MMP_30_TO_FTP_FACTOR,
     aggregate_best_mmp,
     avg_and_max_watts,
     coggan_ftp_from_mmp,
@@ -59,8 +60,8 @@ def test_coggan_rejects_spike_only_curve() -> None:
     assert coggan_ftp_from_mmp({"300": 400.0, "1200": 200.0}) is None
 
 
-def test_estimate_prefers_60min_over_coggan() -> None:
-    # Classic overestimate trap: strong 20-min peak but lower true hour power.
+def test_estimate_prefers_60min_when_hour_looks_maximal() -> None:
+    # Strong 20-min peak but hour still near 30-min → trust hour.
     best = {
         "300": 300.0,
         "720": 270.0,
@@ -73,33 +74,59 @@ def test_estimate_prefers_60min_over_coggan() -> None:
     assert est["ftp_watts"] == 190.0
 
 
+def test_estimate_skips_soft_hour_on_ftp_test_day() -> None:
+    # 2019-shaped FTP test: hard 20-min, soft hour from warmup/cooldown.
+    best = {
+        "300": 269.0,
+        "720": 257.0,
+        "1200": 251.8,
+        "1800": 217.8,
+        "3600": 140.6,
+    }
+    est = estimate_ftp_from_best_mmp(best)
+    assert est["ftp_method"] == "mmp_30"
+    assert est["ftp_watts"] == round(217.8 * MMP_30_TO_FTP_FACTOR, 1)
+    assert est["ftp_watts"] > 200.0
+
+
+def test_estimate_prefers_30min_over_inflated_coggan() -> None:
+    # Strong 20-min above 30-min; m30 priority wins over outdoor Coggan.
+    best = {
+        "300": 300.0,
+        "720": 270.0,
+        "1200": 260.0,
+        "1800": 200.0,
+    }
+    est = estimate_ftp_from_best_mmp(best)
+    assert est["ftp_method"] == "mmp_30"
+    assert est["ftp_watts"] == round(200.0 * MMP_30_TO_FTP_FACTOR, 1)
+
+
 def test_estimate_uses_30min_when_no_hour() -> None:
     best = {"300": 280.0, "720": 250.0, "1200": 230.0, "1800": 210.0}
     est = estimate_ftp_from_best_mmp(best)
     assert est["ftp_method"] == "mmp_30"
-    assert est["ftp_watts"] == round(210.0 * 0.95, 1)
+    assert est["ftp_watts"] == round(210.0 * MMP_30_TO_FTP_FACTOR, 1)
 
 
-def test_critical_power_scaled_and_clamped() -> None:
+def test_critical_power_scaled_to_ftp() -> None:
     # Synthetic CP=250, W'=15000 → P(t)=250+15000/t (no 30/60 anchors).
     best = {
         "300": 250 + 15000 / 300,
         "720": 250 + 15000 / 720,
         "1200": 250 + 15000 / 1200,
     }
-    # Force CP path: make 20-min fail Coggan gate vs 5-min and omit long anchors.
+    # Force CP path: Coggan gate fails (20-min << 5-min).
     best_spike = {
         "300": 500.0,
         "720": best["720"],
         "1200": 200.0,
     }
     est = estimate_ftp_from_best_mmp(best_spike)
-    assert est["ftp_method"] in {"critical_power", "insufficient_data"}
-    if est["ftp_method"] == "critical_power":
-        # Must be discounted CP, not raw asymptote.
-        cp = critical_power_ftp(monotone_mmp(best_spike))
-        assert cp is not None
-        assert est["ftp_watts"] == round(cp[0] * CP_TO_FTP_FACTOR, 1)
+    assert est["ftp_method"] == "critical_power"
+    cp = critical_power_ftp(monotone_mmp(best_spike))
+    assert cp is not None
+    assert est["ftp_watts"] == round(cp[0] * CP_TO_FTP_FACTOR, 1)
 
     cp = critical_power_ftp(best)
     assert cp is not None
@@ -109,25 +136,19 @@ def test_critical_power_scaled_and_clamped() -> None:
     assert conf > 0
 
 
-def test_cp_clamped_by_30min_when_model_runs_hot() -> None:
-    # High short MMP pulls CP above observed 30-min; clamp wins.
-    best = {
-        "300": 320.0,
-        "720": 280.0,
-        "1200": 240.0,
-        "1800": 200.0,
-    }
-    est = estimate_ftp_from_best_mmp(best)
-    assert est["ftp_method"] == "mmp_30"
-    assert est["ftp_watts"] <= 200.0
-
-
 def test_monotone_mmp_clamps_longer_windows() -> None:
     raw = {"180": 200.0, "300": 220.0, "1200": 180.0}
     mono = monotone_mmp(raw)
     assert mono["180"] == 200.0
-    assert mono["300"] == 200.0  # clamped to shorter-duration floor
+    assert mono["300"] == 200.0  # clamped to shorter-duration ceiling
     assert mono["1200"] == 180.0
+
+
+def test_monotone_mmp_skips_non_numeric_keys() -> None:
+    mono = monotone_mmp({"300": 250.0, "metadata": 1.0, "1200": 200.0})
+    assert "300" in mono
+    assert "1200" in mono
+    assert "metadata" not in mono
 
 
 def test_insufficient_data() -> None:
@@ -140,3 +161,8 @@ def test_aggregate_best_mmp() -> None:
     best = aggregate_best_mmp([{"1200": 250}, {"1200": 260, "300": 300}])
     assert best["1200"] == 260.0
     assert best["300"] == 300.0
+
+
+def test_aggregate_best_mmp_normalizes_duration_keys() -> None:
+    best = aggregate_best_mmp([{"1200": 250}, {1200: 260}, {"1200.0": 255}])
+    assert best == {"1200": 260.0}

@@ -146,11 +146,16 @@ def aggregate_best_mmp(
         if not isinstance(mmp, Mapping):
             continue
         for key, raw in mmp.items():
+            dur = _parse_duration_key(key)
+            if dur is None:
+                continue
             try:
                 watts = float(raw)
             except (TypeError, ValueError):
                 continue
-            sk = str(key)
+            if not math.isfinite(watts):
+                continue
+            sk = str(dur)
             prev = best.get(sk)
             if prev is None or watts > prev:
                 best[sk] = round(watts, 2)
@@ -167,6 +172,15 @@ def _mmp_get(mmp: Mapping[str, float], duration_sec: int) -> float | None:
         return None
 
 
+def _parse_duration_key(key: Any) -> int | None:
+    """Parse an MMP duration key to int seconds; return None if invalid."""
+    try:
+        dur = int(float(str(key)))
+    except (TypeError, ValueError):
+        return None
+    return dur if dur > 0 else None
+
+
 def monotone_mmp(best_mmp: Mapping[str, float]) -> dict[str, float]:
     """Enforce non-increasing power as duration increases.
 
@@ -174,17 +188,20 @@ def monotone_mmp(best_mmp: Mapping[str, float]) -> dict[str, float]:
     one ride above best 5-min from another). Clamping longer windows down keeps
     CP / Coggan gates from chasing impossible envelopes.
     """
-    items = sorted(
-        ((int(k), float(v)) for k, v in best_mmp.items() if _finite_positive(v)),
-        key=lambda kv: kv[0],
-    )
+    parsed: list[tuple[int, float]] = []
+    for key, raw in best_mmp.items():
+        dur = _parse_duration_key(key)
+        if dur is None or not _finite_positive(raw):
+            continue
+        parsed.append((dur, float(raw)))
+    parsed.sort(key=lambda kv: kv[0])
     out: dict[str, float] = {}
-    floor: float | None = None
-    for dur, watts in items:
-        if floor is not None:
-            watts = min(watts, floor)
+    ceiling: float | None = None
+    for dur, watts in parsed:
+        if ceiling is not None:
+            watts = min(watts, ceiling)
         out[str(dur)] = round(watts, 2)
-        floor = watts
+        ceiling = watts
     return out
 
 
@@ -255,9 +272,7 @@ def critical_power_ftp(
     a = (sum_y - b * sum_x) / n
     if a <= 0 or not math.isfinite(a):
         return None
-    # W' can be slightly negative on noisy curves; still use CP if positive.
     w_prime = b  # joules when t in seconds and P in watts
-    # Residual relative RMSE → confidence.
     ss_res = 0.0
     ss_tot = 0.0
     mean_y = sum_y / n
@@ -273,74 +288,90 @@ def critical_power_ftp(
     return round(a, 1), float(w_prime), min(0.85, conf)
 
 
-def _clamp_ftp_to_long_mmp(ftp: float, best_mmp: Mapping[str, float]) -> float:
-    """Keep modeled FTP from exceeding observed long sustained power."""
-    capped = ftp
-    m30 = _mmp_get(best_mmp, MMP_30MIN_SEC)
+# Hour MMP is trusted only when it is close to best 30-min (not a soft hour on
+# an FTP-test day with a hard 20-min and easy warmup/cooldown).
+_HOUR_PLAUSIBLE_VS_30_RATIO = 0.88
+
+
+def _hour_looks_maximal(m60: float, *, m30: float | None) -> bool:
+    """True when best 60-min power is consistent with best 30-min.
+
+    Without a 30-min anchor, trust the hour over short-peak models (avoids
+    letting outdoor Coggan re-inflate past a solid hour effort).
+    """
     if m30 is not None and m30 > 0:
-        capped = min(capped, m30)
-    m60 = _mmp_get(best_mmp, MMP_60MIN_SEC)
-    if m60 is not None and m60 > 0:
-        # Hour power is the FTP definition; allow 2% headroom for rounding/noise.
-        capped = min(capped, m60 * 1.02)
-    return round(capped, 1)
+        return m60 >= m30 * _HOUR_PLAUSIBLE_VS_30_RATIO
+    return True
+
+
+def _estimate_result(
+    *,
+    ftp_watts: float,
+    ftp_method: str,
+    ftp_confidence: float,
+    curve: Mapping[str, float],
+) -> dict[str, Any]:
+    return {
+        "ftp_watts": round(ftp_watts, 1),
+        "ftp_method": ftp_method,
+        "ftp_confidence": ftp_confidence,
+        "supporting_mmp": dict(curve),
+    }
 
 
 def estimate_ftp_from_best_mmp(
     best_mmp: Mapping[str, float],
 ) -> dict[str, Any]:
-    """Estimate FTP, preferring longer sustained anchors over short peaks.
+    """Estimate FTP from sustained anchors, with soft-hour and spike guards.
 
     Priority:
-    1. ``mmp_60`` — best 60-min mean ≈ FTP by definition
-    2. ``mmp_30`` — 0.95 × best 30-min mean
+    1. ``mmp_60`` — best 60-min mean when the hour looks maximal vs 30-min
+    2. ``mmp_30`` — 0.95 × best 30-min mean (also caps short-peak models)
     3. ``critical_power`` — 0.95 × CP from mid-duration MMP
     4. ``coggan_20min`` — 0.90 × best 20-min (outdoor-conservative)
 
-    Modeled estimates are clamped so they cannot exceed observed 30/60-min MMP.
+    Soft hours (FTP-test days with hard 20-min + easy warmup/cooldown) skip
+    ``mmp_60`` so a solid 30-min estimate can win.
     """
     curve = monotone_mmp(best_mmp)
-
     m60 = _mmp_get(curve, MMP_60MIN_SEC)
-    if m60 is not None and m60 > 0:
-        return {
-            "ftp_watts": round(m60, 1),
-            "ftp_method": "mmp_60",
-            "ftp_confidence": 0.92,
-            "supporting_mmp": dict(curve),
-        }
-
     m30 = _mmp_get(curve, MMP_30MIN_SEC)
+
+    if m60 is not None and m60 > 0 and _hour_looks_maximal(m60, m30=m30):
+        return _estimate_result(
+            ftp_watts=m60,
+            ftp_method="mmp_60",
+            ftp_confidence=0.92,
+            curve=curve,
+        )
+
     if m30 is not None and m30 > 0:
-        ftp = _clamp_ftp_to_long_mmp(m30 * MMP_30_TO_FTP_FACTOR, curve)
-        return {
-            "ftp_watts": ftp,
-            "ftp_method": "mmp_30",
-            "ftp_confidence": 0.80,
-            "supporting_mmp": dict(curve),
-        }
+        return _estimate_result(
+            ftp_watts=m30 * MMP_30_TO_FTP_FACTOR,
+            ftp_method="mmp_30",
+            ftp_confidence=0.80,
+            curve=curve,
+        )
 
     cp = critical_power_ftp(curve)
     if cp is not None:
         cp_watts, _w, conf = cp
-        ftp = _clamp_ftp_to_long_mmp(cp_watts * CP_TO_FTP_FACTOR, curve)
-        return {
-            "ftp_watts": ftp,
-            "ftp_method": "critical_power",
-            "ftp_confidence": conf,
-            "supporting_mmp": dict(curve),
-        }
+        return _estimate_result(
+            ftp_watts=cp_watts * CP_TO_FTP_FACTOR,
+            ftp_method="critical_power",
+            ftp_confidence=conf,
+            curve=curve,
+        )
 
     coggan = coggan_ftp_from_mmp(curve)
     if coggan is not None:
         ftp, conf = coggan
-        ftp = _clamp_ftp_to_long_mmp(ftp, curve)
-        return {
-            "ftp_watts": ftp,
-            "ftp_method": "coggan_20min",
-            "ftp_confidence": conf,
-            "supporting_mmp": dict(curve),
-        }
+        return _estimate_result(
+            ftp_watts=ftp,
+            ftp_method="coggan_20min",
+            ftp_confidence=conf,
+            curve=curve,
+        )
 
     return {
         "ftp_watts": None,
