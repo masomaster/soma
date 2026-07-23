@@ -321,9 +321,9 @@ def _fixture_context() -> dict:
             "hrv_rmssd": 48,
             "sleep_hours": 5.8,
             "resting_hr": 58,
-            "ftp_watts": 245.0,
-            "ftp_method": "coggan_20min",
-            "ftp_confidence": 0.72,
+            "ftp_watts": 190.0,
+            "ftp_method": "mmp_60",
+            "ftp_confidence": 0.92,
         },
         goal_snapshot={
             "goals_status": {
@@ -411,15 +411,15 @@ def _fixture_metrics_history(as_of: date, days: int) -> list[dict[str, Any]]:
             hrv_rmssd=48,
             sleep_hours=5.8,
             resting_hr=58,
-            ftp_watts=245.0,
-            ftp_method="coggan_20min",
-            ftp_confidence=0.72,
+            ftp_watts=190.0,
+            ftp_method="mmp_60",
+            ftp_confidence=0.92,
         )
         # Sparse prior FTP points so the Training chart has a short series.
         if len(rows) > 14:
-            rows[-15].update(ftp_watts=240.0, ftp_method="coggan_20min", ftp_confidence=0.65)
+            rows[-15].update(ftp_watts=185.0, ftp_method="mmp_60", ftp_confidence=0.9)
         if len(rows) > 7:
-            rows[-8].update(ftp_watts=242.0, ftp_method="critical_power", ftp_confidence=0.7)
+            rows[-8].update(ftp_watts=188.0, ftp_method="mmp_30", ftp_confidence=0.8)
     return rows
 
 
@@ -1820,6 +1820,10 @@ def _recent_power_rides(ctx: dict, mode: str, *, days: int = 28) -> list[dict[st
 
 def _ftp_method_label(method: Any) -> str:
     raw = str(method or "").strip()
+    if raw == "mmp_60":
+        return "Best 60-min"
+    if raw == "mmp_30":
+        return "Best 30-min"
     if raw == "coggan_20min":
         return "Coggan 20-min"
     if raw == "critical_power":
@@ -1844,7 +1848,10 @@ def _render_cycling_power_section(ctx: dict, mdf, mode: str) -> None:
     pc[0].metric(
         "Estimated FTP",
         _fmt(metrics.get("ftp_watts"), suffix=" W"),
-        help="Outdoor estimate from recent mean-maximal power (not a lab test).",
+        help=(
+            "Outdoor estimate from recent mean-maximal power (not a lab test). "
+            "Prefers best 60/30-min power over short-peak models."
+        ),
     )
     method = _ftp_method_label(metrics.get("ftp_method"))
     conf = metrics.get("ftp_confidence")
