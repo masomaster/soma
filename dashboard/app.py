@@ -28,10 +28,12 @@ from pipeline.dashboard_queries import (
     fetch_metrics_history,
     fetch_strength_events_window,
     fetch_weekly_summaries,
+    fetch_workout_calendar,
     load_dashboard_context_from_db,
     summarize_cardio_by_mode,
 )
 from pipeline.strength_analytics import build_strength_progress_summary
+from pipeline.workout_calendar import build_workout_calendar
 from pipeline.workload_pace import build_workload_pace_summary, pace_status_message
 from pipeline.db_session import apply_rls_scope
 from pipeline.goal_tools import apply_coaching_writes
@@ -455,10 +457,10 @@ def _fixture_weekly_summaries(as_of: date, weeks: int) -> list[dict[str, Any]]:
 
 
 def _fixture_cardio_events(as_of: date) -> list[dict[str, Any]]:
-    """A small, deterministic rolling-7d cardio set: runs + a bike ride.
+    """A deterministic cardio set for Training charts + the workout calendar.
 
-    Distances are in miles (canonical for ``cardio_events``) so the per-mode
-    summary shows both running and cycling with sensible non-zero values offline.
+    Distances are in miles (canonical for ``cardio_events``). Includes a
+    Fitbit/Health Sync walk so the calendar demo shows bridged activity.
     """
     return [
         {
@@ -466,18 +468,48 @@ def _fixture_cardio_events(as_of: date) -> list[dict[str, Any]]:
             "activity_type": "Outdoor Run",
             "distance_miles": 3.1,
             "duration_min": 27.0,
+            "source": "apple_health",
+            "source_app": "Nike Run Club",
         },
         {
             "event_date": (as_of - timedelta(days=3)).isoformat(),
             "activity_type": "Outdoor Run",
             "distance_miles": 4.2,
             "duration_min": 38.0,
+            "source": "apple_health",
+            "source_app": "Nike Run Club",
         },
         {
             "event_date": (as_of - timedelta(days=2)).isoformat(),
             "activity_type": "Outdoor Cycling",
             "distance_miles": 12.4,
             "duration_min": 48.0,
+            "source": "apple_health",
+            "source_app": "Mason's Apple Watch",
+        },
+        {
+            "event_date": (as_of - timedelta(days=5)).isoformat(),
+            "activity_type": "Walking",
+            "distance_miles": 2.4,
+            "duration_min": 42.0,
+            "source": "apple_health",
+            "source_app": "Health Sync",
+        },
+        {
+            "event_date": (as_of - timedelta(days=12)).isoformat(),
+            "activity_type": "Walking",
+            "distance_miles": 1.8,
+            "duration_min": 35.0,
+            "source": "apple_health",
+            "source_app": "Fitbit",
+        },
+        {
+            "event_date": (as_of - timedelta(days=18)).isoformat(),
+            "activity_type": "Outdoor Run",
+            "distance_miles": 5.0,
+            "duration_min": 46.0,
+            "source": "apple_health",
+            "source_app": "Nike Run Club",
         },
     ]
 
@@ -1618,6 +1650,15 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                 st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" mi"), delta=delta)
         _render_training_phases(ctx.get("training_phase"), compact=False)
         _render_workload_pace_lights(ctx.get("workload_pace"))
+        # Compact streak glance — full month grids live on the Training tab.
+        mode = "fixture" if _fixture_mode_enabled() else "live"
+        cal = _load_workout_calendar(ctx, mode)
+        with st.container(border=True):
+            st.markdown("**🔥 Workout streak**")
+            sc = st.columns(2)
+            sc[0].metric("Current", f"{cal.get('current_streak', 0)} days")
+            sc[1].metric("Longest", f"{cal.get('longest_streak', 0)} days")
+            st.caption("Lifting + cardio + Fitbit · see Training for the month calendar.")
     with right:
         with st.container(border=True):
             st.markdown("**Readiness · by day**")
@@ -1829,6 +1870,153 @@ def _render_exercise_progress(strength_progress: dict[str, Any] | None) -> None:
         st.caption("Latest session: " + " · ".join(bits))
 
 
+@st.cache_data(ttl=60)
+def _load_workout_calendar_live(user_id: str, as_of_iso: str) -> dict[str, Any]:
+    as_of = date.fromisoformat(as_of_iso)
+    with _scoped_conn(user_id) as conn:
+        return fetch_workout_calendar(
+            conn,
+            user_id=user_id,
+            as_of=as_of,
+            include_previous_month=True,
+        )
+
+
+def _load_workout_calendar(ctx: dict, mode: str) -> dict[str, Any]:
+    """Current + previous month workout calendar (fixture or live DB)."""
+    as_of = date.fromisoformat(str(ctx.get("as_of", date.today().isoformat()))[:10])
+    if mode == "fixture":
+        return build_workout_calendar(
+            _fixture_strength_events(as_of),
+            _fixture_cardio_events(as_of),
+            as_of=as_of,
+            include_previous_month=True,
+        )
+    try:
+        return _load_workout_calendar_live(ctx["user_id"], as_of.isoformat())
+    except Exception:
+        return build_workout_calendar([], [], as_of=as_of, include_previous_month=True)
+
+
+def _calendar_status(cell: Mapping[str, Any]) -> str:
+    """Bucket a grid cell into a legend / color category."""
+    if cell.get("future") or not cell.get("in_month"):
+        return "Out of range"
+    if not cell.get("worked_out"):
+        return "Rest"
+    kind = str(cell.get("kind") or "")
+    if kind == "both":
+        return "Lift + cardio"
+    if kind == "lifting":
+        return "Lifting"
+    if cell.get("fitbit") and not cell.get("lifting"):
+        return "Fitbit / walk"
+    return "Cardio"
+
+
+def _render_month_calendar_chart(month: Mapping[str, Any]) -> None:
+    """Altair month grid: Mon–Sun columns, one row per week."""
+    import altair as alt
+    import pandas as pd
+
+    grid = list(month.get("grid") or [])
+    if not grid:
+        st.caption("No calendar days.")
+        return
+
+    rows: list[dict[str, Any]] = []
+    for cell in grid:
+        status = _calendar_status(cell)
+        rows.append(
+            {
+                "weekday": int(cell["weekday"]),
+                "weekday_name": cell["weekday_name"],
+                "week_index": int(cell["week_index"]),
+                "day_label": str(cell["day"]) if cell.get("in_month") else "",
+                "status": status,
+                "tooltip_date": cell.get("date_iso"),
+                "tooltip_detail": cell.get("label") or status,
+                "in_month": bool(cell.get("in_month")),
+            }
+        )
+    df = pd.DataFrame(rows)
+    color_scale = alt.Scale(
+        domain=["Rest", "Lifting", "Cardio", "Lift + cardio", "Fitbit / walk", "Out of range"],
+        range=["#e8e8e8", "#3b82f6", "#10b981", "#8b5cf6", "#f59e0b", "#f3f4f6"],
+    )
+    chart = (
+        alt.Chart(df)
+        .mark_rect(stroke="#ffffff", strokeWidth=2, cornerRadius=3)
+        .encode(
+            x=alt.X(
+                "weekday:O",
+                title=None,
+                axis=alt.Axis(
+                    labelExpr="['Mon','Tue','Wed','Thu','Fri','Sat','Sun'][datum.value]",
+                    labelAngle=0,
+                    ticks=False,
+                    domain=False,
+                ),
+            ),
+            y=alt.Y("week_index:O", title=None, axis=None),
+            color=alt.Color(
+                "status:N",
+                scale=color_scale,
+                legend=alt.Legend(title=None, orient="bottom", columns=3),
+            ),
+            tooltip=[
+                alt.Tooltip("tooltip_date:N", title="Date"),
+                alt.Tooltip("status:N", title="Status"),
+                alt.Tooltip("tooltip_detail:N", title="Activities"),
+            ],
+        )
+        .properties(height=max(140, 28 * (df["week_index"].nunique() + 1)))
+    )
+    labels = (
+        alt.Chart(df[df["in_month"]])
+        .mark_text(fontSize=11, fontWeight=500)
+        .encode(
+            x="weekday:O",
+            y="week_index:O",
+            text="day_label:N",
+            color=alt.value("#111827"),
+        )
+    )
+    st.altair_chart(chart + labels, use_container_width=True)
+
+
+def _render_workout_calendar(ctx: dict, mode: str) -> None:
+    """Training-tab section: streak metrics + current/previous month grids."""
+    calendar = _load_workout_calendar(ctx, mode)
+    st.markdown("###### Workout calendar · lifting + cardio + Fitbit")
+    streak_cols = st.columns(3)
+    streak_cols[0].metric("🔥 Current streak", f"{calendar.get('current_streak', 0)} days")
+    streak_cols[1].metric("🏅 Longest streak", f"{calendar.get('longest_streak', 0)} days")
+    streak_cols[2].metric(
+        "📅 Active days (window)",
+        f"{calendar.get('workout_days_count', 0)}",
+        help="Distinct days with lifting, cardio, or Fitbit/Health Sync activity "
+        "from the start of last month through today.",
+    )
+    months = list(calendar.get("months") or [])
+    if not months:
+        st.caption("No workout days in this window yet.")
+        return
+    # Render previous month then current month left→right when both present.
+    cols = st.columns(len(months))
+    for col, month in zip(cols, months):
+        with col:
+            with st.container(border=True):
+                st.markdown(
+                    f"**{month.get('label')}** · {month.get('workout_day_count', 0)} workout days"
+                )
+                _render_month_calendar_chart(month)
+    st.caption(
+        "One calendar for Hevy lifts, Apple Health / Strava cardio, and Fitbit "
+        "(Health Sync) activities. Apple strength mirrors are ignored on Hevy days."
+    )
+
+
 def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
     strength_progress = ctx.get("strength_progress") or {}
     workload_pace = ctx.get("workload_pace") or {}
@@ -1838,6 +2026,7 @@ def _tab_training(ctx: dict, fdf, wdf, mode: str) -> None:
 
     _render_training_phases(phase_ctx, compact=False)
     _render_workload_pace_lights(workload_pace)
+    _render_workout_calendar(ctx, mode)
 
     c = st.columns(4)
     c[0].metric("Lifting · last 7d", _fmt(lifting.get("acute_load"), suffix=" lb"))

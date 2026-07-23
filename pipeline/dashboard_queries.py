@@ -489,8 +489,10 @@ def fetch_cardio_events_window(
 ) -> list[dict[str, Any]]:
     """Raw cardio rows for a user over a bounded window (for per-mode summaries).
 
-    RLS-scoped by the caller (see :func:`pipeline.db_session.apply_rls_scope`);
-    the ``user_id`` predicate is defense in depth.
+    Includes ``source`` / ``source_app`` so the workout calendar can attribute
+    Fitbit (Health Sync) and other Apple Health hub writers. RLS-scoped by the
+    caller (see :func:`pipeline.db_session.apply_rls_scope`); the ``user_id``
+    predicate is defense in depth.
     """
     from psycopg2.extras import RealDictCursor
 
@@ -498,13 +500,46 @@ def fetch_cardio_events_window(
     window_start = effective - timedelta(days=max(1, days) - 1)
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            "SELECT event_date, activity_type, distance_miles, duration_min "
+            "SELECT event_date, activity_type, distance_miles, duration_min, "
+            "source, source_app "
             "FROM cardio_events "
             "WHERE user_id = %s AND event_date BETWEEN %s AND %s "
             "ORDER BY event_date DESC",
             (user_id, window_start, effective),
         )
         return [dict(r) for r in cur.fetchall()]
+
+
+def fetch_workout_calendar(
+    conn: Any,
+    *,
+    user_id: str,
+    as_of: date | None = None,
+    include_previous_month: bool = True,
+) -> dict[str, Any]:
+    """Month grids + streaks from ``strength_events`` and ``cardio_events``.
+
+    Window covers the first day of the previous month through ``as_of`` so both
+    calendar months render fully. See :mod:`pipeline.workout_calendar`.
+    """
+    from pipeline.workout_calendar import build_workout_calendar, month_bounds, previous_month
+
+    effective = as_of or _utc_today()
+    prev_y, prev_m = previous_month(effective.year, effective.month)
+    window_start, _ = month_bounds(prev_y, prev_m)
+    days = (effective - window_start).days + 1
+    strength = fetch_strength_events_window(
+        conn, user_id=user_id, as_of=effective, days=days
+    )
+    cardio = fetch_cardio_events_window(
+        conn, user_id=user_id, as_of=effective, days=days
+    )
+    return build_workout_calendar(
+        strength,
+        cardio,
+        as_of=effective,
+        include_previous_month=include_previous_month,
+    )
 
 
 def _clamp_days(days: int) -> int:
