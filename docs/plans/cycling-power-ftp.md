@@ -89,11 +89,13 @@ Migration [`0011_cardio_power_and_ftp.sql`](../../schema/migrations/0011_cardio_
 Deterministic math in [`pipeline/power_math.py`](../../pipeline/power_math.py) — **not** the LLM.
 Estimates prefer **longer sustained efforts** so short anaerobic peaks cannot inflate FTP:
 
-1. **Best 60-min MMP** when present → `ftp ≈ MMP_60` (closest to the definition of FTP).
-2. Else **best 30-min** → `ftp = 0.95 × MMP_30`.
-3. Else **critical power** (2-parameter fit on 5–30 min MMP) → `ftp = 0.95 × CP`, then clamp so the result cannot exceed observed 30/60-min MMP.
+1. **Best 60-min MMP** when the hour looks maximal vs 30-min → `ftp ≈ MMP_60`.
+2. Else **best 30-min** → `ftp = 0.95 × MMP_30` (also prevents short-peak models from winning when 30-min exists).
+3. Else **critical power** (2-parameter fit on 5–30 min MMP) → `ftp = 0.95 × CP`.
 4. Else **Coggan 20-min** when the effort gate passes → `ftp = 0.90 × MMP_20` (outdoor-conservative; classic lab protocol uses 0.95 on a paced test).
 5. Else `insufficient_data`.
+
+A soft hour on an FTP-test day (hard 20-min + easy warmup/cooldown) does **not** force a low `mmp_60` over a solid 30-min estimate.
 
 MMP curves are **monotone-clamped** (longer windows cannot exceed shorter) before fitting, because pointwise-max across rides can create non-physiological envelopes.
 
