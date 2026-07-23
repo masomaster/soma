@@ -1,29 +1,38 @@
 # Cycling power ingest + FTP estimation
 
-**Goal:** Land **power-meter watts** from a Wahoo ELEMNT BOLT (and historical Strava archives) into Soma, then estimate **FTP** from mean-maximal power — without a 20-minute ramp test and without a paid Strava API subscription.
+**Goal:** Land **power-meter watts** from a Wahoo ELEMNT BOLT (and a one-time Strava archive for legacy rides) into Soma, then estimate **FTP** from mean-maximal power — without a 20-minute ramp test and without a paid Strava API subscription.
 
 Apple Health / Health Auto Export **does not** carry usable power into Soma. The live Strava REST API remains **paused** (Standard Tier needs a Strava subscription). This path uses **FIT files** instead.
+
+## Ingest modes (do not conflate)
+
+| Mode | Source flag | Cadence | Role |
+|------|-------------|---------|------|
+| **Dropbox FIT** | `wahoo_fit` | **Recurring / scheduled** (new BOLT rides keep landing in Dropbox) | Canonical ongoing power path |
+| **Strava bulk export** | `strava_export` | **One-time** historical backfill | Legacy rides already on Strava before Dropbox ingest existed — **not** a recurring sync |
+
+After the Strava archive is ingested once, do **not** re-export on a schedule. Ongoing watts come only from Dropbox → `wahoo_fit`. Cross-source dedup already prefers `wahoo_fit` over `strava_export` if both exist for the same session.
 
 ---
 
 ## Data flow
 
-1. **Ongoing:** BOLT → ELEMNT companion app → **Dropbox** auto-export of `.fit` → local folder → `python -m pipeline.fit_ingest`.
-2. **Historical:** Strava website → **Request Your Archive** (free) → unzip → same CLI with `--source strava_export`.
+1. **Ongoing (scheduled):** BOLT → ELEMNT companion → **Dropbox** auto-export of `.fit` → sync folder → recurring `python -m pipeline.fit_ingest --source wahoo_fit` (cron / EventBridge / local schedule — ops choice).
+2. **One-time backfill:** Strava website → **Request Your Archive** (free) → unzip → **single** `python -m pipeline.fit_ingest --source strava_export` run.
 3. Adapter writes a **JSON raw envelope** (base64 payload + sha256) to S3 under the usual `raw/{user_id}/{source}/…/.json` key, then normalizes to `cardio_events` (including `avg_watts`, `power_mmp_json`, …).
 4. Optional `--estimate-ftp` aggregates 90-day best MMP → Coggan 20-min or critical-power estimate → `daily_health_metrics.ftp_*`.
 
-Sources: `wahoo_fit` (Dropbox), `strava_export` (archive). Cross-source dedup prefers **wahoo_fit > strava_export > apple_health** so mirrored Apple rides do not double-count minutes when a FIT lands.
+Sources: `wahoo_fit` (Dropbox, recurring), `strava_export` (archive, one-shot). Dedup priority: **wahoo_fit > strava_export > apple_health**.
 
 ---
 
 ## Operator setup
 
-### BOLT → Dropbox
+### BOLT → Dropbox (recurring)
 
 1. In the Wahoo ELEMNT app, enable **Dropbox** as an upload / auto-export target (exact menu labels vary by app version).
 2. Confirm new rides appear as `.fit` files in your Dropbox sync folder (path differs; common patterns look like `Dropbox/Apps/…` or a Wahoo-named folder).
-3. Point Soma at that folder:
+3. Schedule a recurring ingest against that folder (idempotent via `source_id` + optional sha256 skip):
 
 ```bash
 pip install -e '.[fit]'   # fitdecode
@@ -42,11 +51,13 @@ Dry-run (parse only):
 python -m pipeline.fit_ingest --user-id "$SOMA_USER_ID" --source wahoo_fit --dir ./fits --dry-run -v
 ```
 
-### Strava historical export
+### Strava archive (one-time legacy backfill)
+
+Run **once** to pull historical power that predates Dropbox ingest. Do not schedule this.
 
 1. On **strava.com** → Settings → **My Account** → Download your account → **Request Your Archive** (email link; can take hours).
 2. Unzip the archive. Activity files live under `activities/` as `.fit` / `.fit.gz` / `.tcx` / `.gpx` (format depends on original upload). BOLT→Strava rides are usually FIT and retain power.
-3. Ingest:
+3. Ingest once:
 
 ```bash
 python -m pipeline.fit_ingest \

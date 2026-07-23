@@ -1,6 +1,12 @@
-"""CLI / library entry: ingest Dropbox FIT or Strava export activity files.
+"""CLI / library entry: ingest Dropbox FIT (recurring) or Strava export (one-shot).
 
-Example::
+**``wahoo_fit``** — scheduled/recurring ingest of new BOLT rides from a Dropbox
+sync folder.
+
+**``strava_export``** — **one-time** historical backfill from a Strava bulk
+archive. Do not cron this source.
+
+Example (ongoing)::
 
     python -m pipeline.fit_ingest --user-id UUID --source wahoo_fit \\
         --dir ~/Dropbox/Apps/Wahoo --estimate-ftp
@@ -140,14 +146,28 @@ def _s3_raw_put_from_env() -> Callable[[str, bytes], None] | None:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Ingest Wahoo Dropbox FIT or Strava export files")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Ingest cycling activity files: wahoo_fit=recurring Dropbox FIT; "
+            "strava_export=one-time Strava archive backfill"
+        )
+    )
     parser.add_argument("--user-id", required=True, help="Soma user UUID")
     parser.add_argument(
         "--source",
         required=True,
         choices=[SOURCE_WAHOO_FIT, SOURCE_STRAVA_EXPORT],
+        help=(
+            "wahoo_fit: recurring Dropbox/BOLT FITs; "
+            "strava_export: one-time historical Strava archive (not scheduled)"
+        ),
     )
-    parser.add_argument("--dir", required=True, type=Path, help="Dropbox folder or export root")
+    parser.add_argument(
+        "--dir",
+        required=True,
+        type=Path,
+        help="Dropbox sync folder (wahoo_fit) or unzipped Strava export root (strava_export)",
+    )
     parser.add_argument(
         "--dry-run",
         action="store_true",
