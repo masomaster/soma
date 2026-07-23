@@ -108,6 +108,47 @@ def test_tcx_with_watts() -> None:
     assert row["avg_watts"] is not None
 
 
+def test_tcx_leading_whitespace_like_strava_export() -> None:
+    """Strava ``.tcx.gz`` often decompresses to spaces before ``<?xml``."""
+    inner = (
+        b"          <?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n"
+        b"<TrainingCenterDatabase>"
+        b"<Activities><Activity Sport=\"Biking\">"
+        b"<Lap><Track>"
+        b"<Trackpoint><Time>2024-06-02T10:00:00Z</Time>"
+        b"<Extensions><TPX><Watts>190</Watts></TPX></Extensions>"
+        b"</Trackpoint>"
+        b"<Trackpoint><Time>2024-06-02T10:00:01Z</Time>"
+        b"<Extensions><TPX><Watts>200</Watts></TPX></Extensions>"
+        b"</Trackpoint>"
+        b"</Track></Lap></Activity></Activities>"
+        b"</TrainingCenterDatabase>"
+    )
+    session = parse_tcx(inner)
+    assert session["started_at"] is not None
+    assert any(w == 200.0 for w in session["watts"] if w is not None)
+
+
+def test_all_zero_watts_flagged_no_power() -> None:
+    start = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+    session = {
+        "started_at": start,
+        "activity_type": "Ride",
+        "duration_sec": 60.0,
+        "distance_m": 1000.0,
+        "elevation_m": None,
+        "avg_hr": None,
+        "max_hr": None,
+        "watts": [0.0] * 60,
+        "device_watts": True,
+        "name": "Zero",
+    }
+    row = session_to_cardio_row(session, user_id=_USER, source=SOURCE_WAHOO_FIT)
+    assert row is not None
+    assert row["avg_watts"] is None
+    assert "no_power" in (row.get("quality_flags") or [])
+
+
 def test_source_id_stable() -> None:
     start = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
     a = fit_activity.activity_source_id(
