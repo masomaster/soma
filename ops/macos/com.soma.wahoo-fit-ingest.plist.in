@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Soma: daily Wahoo Dropbox FIT ingest (macOS launchd).
+
+  Install (from repo root, after setting SOMA_WAHOO_FIT_DIR in .env):
+    make wahoo-fit-ingest-install
+
+  Uninstall:
+    make wahoo-fit-ingest-uninstall
+
+  Default schedule: every day at 21:00 local time (after typical evening rides).
+  Override hour/minute with SOMA_WAHOO_FIT_HOUR / SOMA_WAHOO_FIT_MINUTE when installing.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.soma.wahoo-fit-ingest</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__SOMA_REPO__/scripts/run_wahoo_fit_ingest.sh</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__SOMA_REPO__</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>__SOMA_HOUR__</integer>
+    <key>Minute</key>
+    <integer>__SOMA_MINUTE__</integer>
+  </dict>
+  <key>RunAtLoad</key>
+  <false/>
+  <key>StandardOutPath</key>
+  <string>__SOMA_REPO__/tmp/logs/wahoo-fit-ingest.launchd.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__SOMA_REPO__/tmp/logs/wahoo-fit-ingest.launchd.err.log</string>
+</dict>
+</plist>

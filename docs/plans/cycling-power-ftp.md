@@ -32,18 +32,37 @@ Sources: `wahoo_fit` (Dropbox, recurring), `strava_export` (archive, one-shot). 
 
 1. In the Wahoo ELEMNT app, enable **Dropbox** as an upload / auto-export target (exact menu labels vary by app version).
 2. Confirm new rides appear as `.fit` files in your Dropbox sync folder (path differs; common patterns look like `Dropbox/Apps/…` or a Wahoo-named folder).
-3. Schedule a recurring ingest against that folder (idempotent via `source_id` + optional sha256 skip):
+3. Set that path in `.env`:
+
+```bash
+SOMA_WAHOO_FIT_DIR=~/Dropbox/Apps/Wahoo   # your real folder
+```
+
+4. One-shot test, then install the macOS **launchd** schedule (daily **21:00** local by default):
+
+```bash
+make wahoo-fit-ingest                 # runs once now (needs .venv + .env)
+make wahoo-fit-ingest-install         # launchd: com.soma.wahoo-fit-ingest
+# optional: SOMA_WAHOO_FIT_HOUR=5 SOMA_WAHOO_FIT_MINUTE=30 make wahoo-fit-ingest-install
+make wahoo-fit-ingest-uninstall       # remove schedule
+```
+
+Logs append to `tmp/logs/wahoo-fit-ingest.log`. The job runs `pipeline.fit_ingest --source wahoo_fit --estimate-ftp`.
+
+Manual CLI (same as the scheduled script):
 
 ```bash
 pip install -e '.[fit]'   # fitdecode
 python -m pipeline.fit_ingest \
   --user-id "$SOMA_USER_ID" \
   --source wahoo_fit \
-  --dir ~/Dropbox/path/to/wahoo/fits \
+  --dir "$SOMA_WAHOO_FIT_DIR" \
   --estimate-ftp
 ```
 
 Set `DATABASE_URL` (or `SOMA_DATABASE_URL`) to persist. Optionally set `SOMA_RAW_BUCKET` for S3 raw envelopes; without it, envelopes are skipped/logged only.
+
+**Mac must be awake** (or wake for the schedule) with Dropbox synced — this is a **local** schedule, not an AWS Lambda.
 
 Dry-run (parse only):
 
