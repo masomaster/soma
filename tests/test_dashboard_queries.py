@@ -247,11 +247,49 @@ def test_fetch_metrics_history_is_bounded_and_user_scoped():
     assert out == rows
     sql, params = conn.cur.executed[0]
     assert "FROM daily_health_metrics" in sql
+    assert "ftp_watts" in sql
     assert "user_id = %s" in sql
     assert "ORDER BY metric_date ASC" in sql
     assert f"LIMIT {MAX_QUERY_ROWS}" in sql
     # window: [as_of - (days-1), as_of]; user_id is the first bound parameter.
     assert params == ("u1", date(2024, 5, 10), date(2024, 6, 8))
+
+
+def test_fetch_recent_power_rides_filters_and_limits():
+    from pipeline.dashboard_queries import fetch_recent_power_rides
+
+    conn = _FakeConn([])
+    fetch_recent_power_rides(
+        conn, user_id="u1", as_of=date(2024, 6, 8), days=28, limit=5
+    )
+    sql, params = conn.cur.executed[0]
+    assert "FROM cardio_events" in sql
+    assert "avg_watts IS NOT NULL" in sql
+    assert "LIMIT 5" in sql
+    assert params[0] == "u1"
+
+
+def test_build_dashboard_context_includes_ftp_metrics():
+    ctx = build_dashboard_context(
+        user_id="u1",
+        as_of=date(2024, 6, 8),
+        latest_briefing=None,
+        latest_features=None,
+        latest_metrics={
+            "metric_date": date(2024, 6, 8),
+            "hrv_rmssd": 50,
+            "sleep_hours": 7.0,
+            "resting_hr": 55,
+            "ftp_watts": 250.0,
+            "ftp_method": "coggan_20min",
+            "ftp_confidence": 0.8,
+        },
+        goal_snapshot=None,
+        weekly_summary=None,
+    )
+    assert ctx["today_metrics"]["ftp_watts"] == 250.0
+    assert ctx["today_metrics"]["ftp_method"] == "coggan_20min"
+    assert ctx["today_metrics"]["ftp_confidence"] == 0.8
 
 
 def test_fetch_metrics_history_clamps_excessive_range():
