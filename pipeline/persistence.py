@@ -56,6 +56,9 @@ _TABLES: dict[str, dict[str, Any]] = {
                 "hrv_baseline_ratio",
                 "sleep_7d_avg",
                 "weight_30d_trend",
+                "ftp_watts",
+                "ftp_method",
+                "ftp_confidence",
             }
         ),
     },
@@ -168,6 +171,7 @@ _JSONB_COLUMNS = frozenset(
         "goals_status",
         "mileage_check",
         "summary_json",
+        "power_mmp_json",
     }
 )
 
