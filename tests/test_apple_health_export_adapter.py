@@ -229,6 +229,33 @@ def test_unaggregated_in_bed_only_does_not_invent_sleep_hours() -> None:
     assert rows == []
 
 
+def test_unaggregated_mixed_offset_and_date_only_end_does_not_crash() -> None:
+    """HAE sometimes mixes offset timestamps with date-only endDate."""
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "units": "hr",
+                    "data": [
+                        {
+                            "startDate": "2024-06-01 23:00:00 -0700",
+                            "endDate": "2024-06-02",
+                            "qty": 6.0,
+                            "value": "Asleep",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    sleep = [r for r in rows if r["metric"] == "sleep_hours"]
+    assert len(sleep) == 1
+    assert sleep[0]["value"] == pytest.approx(6.0)
+    assert sleep[0]["event_date"].isoformat() == "2024-06-02"
+
+
 def test_event_date_camel_case_envelope() -> None:
     body = {"eventDate": "2024-06-03", "metrics": [{"metric": "steps", "value": 1200, "unit": "count"}]}
     rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
