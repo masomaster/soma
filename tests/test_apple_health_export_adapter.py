@@ -162,6 +162,73 @@ def test_sleep_stages_via_soma_envelope() -> None:
     assert by_metric["sleep_rem_hrs"] == pytest.approx(1.9)
 
 
+def test_unaggregated_sleep_analysis_rolls_up_to_wake_morning() -> None:
+    """HAE unaggregated sleep (qty + value) — Health Sync / Fitbit / Google Fit.
+
+    Before this path existed, those payloads normalized to zero biometrics rows,
+    so the dashboard and briefing showed empty sleep despite a successful export.
+    """
+    payload = _load("health_auto_export_sleep_unaggregated_redacted.json")
+    rows = apple_health_export.normalize_apple_health_export_payload(payload, user_id=_USER)
+    assert rows, "unaggregated sleep_analysis must produce biometrics rows"
+    # Core 1.5 + Deep 1.5 + REM 1.5 + Core 3.75 = 8.25 (Awake / In Bed excluded)
+    by_metric = {r["metric"]: r for r in rows}
+    assert by_metric["sleep_hours"]["event_date"].isoformat() == "2024-06-01"
+    assert by_metric["sleep_hours"]["value"] == pytest.approx(8.25)
+    assert by_metric["sleep_deep_hrs"]["value"] == pytest.approx(1.5)
+    assert by_metric["sleep_rem_hrs"]["value"] == pytest.approx(1.5)
+
+
+def test_unaggregated_asleep_phase_counts_toward_sleep_hours() -> None:
+    """HealthKit 'Asleep' is an uncategorized phase, not a night total."""
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "units": "hr",
+                    "data": [
+                        {
+                            "startDate": "2024-06-01 23:00:00 -0700",
+                            "endDate": "2024-06-02 06:00:00 -0700",
+                            "qty": 7.0,
+                            "value": "Asleep",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    sleep = [r for r in rows if r["metric"] == "sleep_hours"]
+    assert len(sleep) == 1
+    assert sleep[0]["event_date"].isoformat() == "2024-06-02"
+    assert sleep[0]["value"] == pytest.approx(7.0)
+
+
+def test_unaggregated_in_bed_only_does_not_invent_sleep_hours() -> None:
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "units": "hr",
+                    "data": [
+                        {
+                            "startDate": "2024-06-01 22:00:00 -0700",
+                            "endDate": "2024-06-02 06:00:00 -0700",
+                            "qty": 8.0,
+                            "value": "In Bed",
+                        }
+                    ],
+                }
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    assert rows == []
+
+
 def test_event_date_camel_case_envelope() -> None:
     body = {"eventDate": "2024-06-03", "metrics": [{"metric": "steps", "value": 1200, "unit": "count"}]}
     rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)

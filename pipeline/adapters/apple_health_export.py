@@ -24,10 +24,16 @@ v0 proxy until a dedicated RMSSD export exists.
 **Sleep stages:** when a ``sleep_analysis`` row carries per-stage durations
 (``deep`` / ``rem``), they are additionally emitted as ``sleep_deep_hrs`` /
 ``sleep_rem_hrs`` (unit-aware hours). Some exporters instead send standalone
-stage metrics (``sleep_deep`` / ``sleep_rem``); those map too. Fitbit's proprietary
-0–100 *sleep score* is **not** available through Apple Health (HealthKit has no
-sleep-score type), so Soma computes its own — see :mod:`pipeline.sleep_score` and
-``docs/plans/fitbit-sleep-score.md``.
+stage metrics (``sleep_deep`` / ``sleep_rem``); those map too.
+
+**Aggregated vs unaggregated sleep:** Health Auto Export toggles aggregation.
+Aggregated rows use ``totalSleep`` / ``asleep`` (hours or seconds). Unaggregated
+rows — common when Google Fit / Fitbit sleep arrives via Health Sync — use
+``qty`` + categorical ``value`` (``Core`` / ``Deep`` / ``REM`` / ``Asleep`` / …).
+Soma session-rolls those intervals onto the wake morning (same semantics as HAE
+aggregation). Fitbit's proprietary 0–100 *sleep score* is **not** available
+through Apple Health (HealthKit has no sleep-score type), so Soma computes its
+own — see :mod:`pipeline.sleep_score` and ``docs/plans/fitbit-sleep-score.md``.
 """
 
 from __future__ import annotations
@@ -94,6 +100,17 @@ _SLEEP_STAGE_HOUR_METRICS: frozenset[str] = frozenset({"sleep_deep_hrs", "sleep_
 
 # Keys HAE uses for per-stage duration inside an aggregated ``sleep_analysis`` row.
 _SLEEP_STAGE_ROW_KEYS: dict[str, str] = {"deep": "sleep_deep_hrs", "rem": "sleep_rem_hrs"}
+
+# Unaggregated HAE ``value`` strings that count toward ``sleep_hours``.
+# ``Asleep`` here is HealthKit's *uncategorized* phase (not a night total).
+_SLEEP_ASLEEP_VALUES: frozenset[str] = frozenset(
+    {"asleep", "core", "deep", "rem", "unspecified"}
+)
+_SLEEP_DEEP_VALUES: frozenset[str] = frozenset({"deep"})
+_SLEEP_REM_VALUES: frozenset[str] = frozenset({"rem"})
+
+# Gap longer than this (hours) between consecutive intervals starts a new night.
+_SLEEP_SESSION_GAP_HOURS = 4.0
 
 
 def _normalize_vendor_metric_name(raw: str) -> str:
@@ -188,6 +205,234 @@ def _sleep_stage_hours(value: float | None, *, units: str | None) -> float | Non
     return round(value, 4)
 
 
+def _parse_sample_datetime(raw: str) -> datetime | None:
+    """Parse HAE timestamps to aware/naive datetime (date-only → midnight)."""
+    if not isinstance(raw, str):
+        return None
+    text = raw.strip()
+    if not text:
+        return None
+    if len(text) == 10 and text[4] == "-" and text[7] == "-":
+        try:
+            return datetime.fromisoformat(text)
+        except ValueError:
+            return None
+    for candidate in (text, text.replace(" ", "T", 1)):
+        try:
+            return datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S %z")
+    except ValueError:
+        return None
+
+
+def _normalize_sleep_value_label(raw: object) -> str:
+    if not isinstance(raw, str):
+        return ""
+    return " ".join(raw.strip().lower().replace("_", " ").replace("-", " ").split())
+
+
+def _sleep_entry_is_aggregated(entry: Mapping[str, Any]) -> bool:
+    """True when the row carries HAE aggregated totals (``totalSleep`` / ``asleep``)."""
+    for key in ("totalSleep", "asleep"):
+        v = _num(entry.get(key))
+        if v is not None and v > 0:
+            return True
+    return False
+
+
+def _unaggregated_sleep_interval(
+    entry: Mapping[str, Any],
+    *,
+    units: str | None,
+) -> tuple[datetime, datetime, float, str] | None:
+    """Parse one unaggregated HAE sleep sample → (start, end, hours, stage label)."""
+    label = _normalize_sleep_value_label(entry.get("value"))
+    if not label:
+        return None
+    hrs = _sleep_stage_hours(_qty_from_entry(entry), units=units)
+    if hrs is None:
+        return None
+
+    start_raw = entry.get("startDate") or entry.get("date") or entry.get("sleepStart")
+    end_raw = entry.get("endDate") or entry.get("sleepEnd")
+    if not isinstance(start_raw, str):
+        return None
+    start_dt = _parse_sample_datetime(start_raw)
+    if start_dt is None:
+        return None
+    end_dt: datetime | None = None
+    if isinstance(end_raw, str):
+        end_dt = _parse_sample_datetime(end_raw)
+    if end_dt is None:
+        # Date-only / missing end: treat qty as a point sample ending at start.
+        end_dt = start_dt
+    if end_dt < start_dt:
+        start_dt, end_dt = end_dt, start_dt
+    return start_dt, end_dt, hrs, label
+
+
+def _emit_sleep_session_samples(
+    sleep_hours: float,
+    deep_hrs: float,
+    rem_hrs: float,
+    session_date: date,
+) -> list[tuple[date, str, float, str | None]]:
+    """Emit canonical sleep metrics for one rolled-up night."""
+    out: list[tuple[date, str, float, str | None]] = []
+    if sleep_hours > 0:
+        out.append((session_date, "sleep_hours", round(sleep_hours, 4), "h"))
+    if deep_hrs > 0 and "sleep_deep_hrs" in DAILY_HEALTH_METRIC_COLUMNS:
+        out.append((session_date, "sleep_deep_hrs", round(deep_hrs, 4), "h"))
+    if rem_hrs > 0 and "sleep_rem_hrs" in DAILY_HEALTH_METRIC_COLUMNS:
+        out.append((session_date, "sleep_rem_hrs", round(rem_hrs, 4), "h"))
+    return out
+
+
+def _rollup_unaggregated_sleep_sessions(
+    intervals: list[tuple[datetime, datetime, float, str]],
+) -> list[tuple[date, str, float, str | None]]:
+    """Cluster unaggregated stage intervals into nights; attribute to wake morning.
+
+    Health Sync / Fitbit / Google Fit often land in HealthKit as many short
+    category samples. HAE's *unaggregated* export mirrors that (``qty`` +
+    ``value``). Soma matches aggregated HAE semantics by summing asleep stages
+    per contiguous session and dating the night by the last asleep interval's
+    end calendar date (wake morning).
+    """
+    if not intervals:
+        return []
+
+    ordered = sorted(intervals, key=lambda item: (item[0], item[1]))
+    sessions: list[list[tuple[datetime, datetime, float, str]]] = []
+    current: list[tuple[datetime, datetime, float, str]] = []
+    prev_end: datetime | None = None
+
+    for start_dt, end_dt, hrs, label in ordered:
+        if current and prev_end is not None:
+            gap_hours = (start_dt - prev_end).total_seconds() / 3600.0
+            if gap_hours > _SLEEP_SESSION_GAP_HOURS:
+                sessions.append(current)
+                current = []
+        current.append((start_dt, end_dt, hrs, label))
+        if prev_end is None or end_dt > prev_end:
+            prev_end = end_dt
+    if current:
+        sessions.append(current)
+
+    out: list[tuple[date, str, float, str | None]] = []
+    for session in sessions:
+        sleep_hours = 0.0
+        deep_hrs = 0.0
+        rem_hrs = 0.0
+        wake_end: datetime | None = None
+        for _start, end_dt, hrs, label in session:
+            if label in _SLEEP_ASLEEP_VALUES:
+                sleep_hours += hrs
+                if wake_end is None or end_dt > wake_end:
+                    wake_end = end_dt
+            if label in _SLEEP_DEEP_VALUES:
+                deep_hrs += hrs
+            if label in _SLEEP_REM_VALUES:
+                rem_hrs += hrs
+        if sleep_hours <= 0 or wake_end is None:
+            continue
+        out.extend(
+            _emit_sleep_session_samples(sleep_hours, deep_hrs, rem_hrs, wake_end.date())
+        )
+    return out
+
+
+def _iter_sleep_analysis_samples(
+    data: list[Any],
+    *,
+    units: str | None,
+) -> list[tuple[date, str, float, str | None]]:
+    """Expand HAE ``sleep_analysis`` data[] (aggregated and/or unaggregated)."""
+    out: list[tuple[date, str, float, str | None]] = []
+    unagg: list[tuple[datetime, datetime, float, str]] = []
+    skipped = 0
+
+    for entry in data:
+        if not isinstance(entry, dict):
+            skipped += 1
+            continue
+
+        if _sleep_entry_is_aggregated(entry):
+            d_raw = entry.get("date") or entry.get("startDate") or entry.get("sleepStart")
+            if not isinstance(d_raw, str):
+                skipped += 1
+                continue
+            d = _parse_sample_date(d_raw)
+            if d is None:
+                skipped += 1
+                continue
+            hrs = _sleep_hours_from_aggregated_row(entry)
+            if hrs is not None:
+                out.append((d, "sleep_hours", hrs, "h"))
+            for stage_key, stage_metric in _SLEEP_STAGE_ROW_KEYS.items():
+                if stage_metric not in DAILY_HEALTH_METRIC_COLUMNS:
+                    continue
+                stage_hrs = _sleep_stage_hours(_num(entry.get(stage_key)), units=units)
+                if stage_hrs is not None:
+                    out.append((d, stage_metric, stage_hrs, "h"))
+            continue
+
+        # Aggregated-shaped row that only carries nested deep/rem (no total).
+        has_stage_keys = any(_num(entry.get(k)) is not None for k in _SLEEP_STAGE_ROW_KEYS)
+        label = _normalize_sleep_value_label(entry.get("value"))
+        if has_stage_keys and not label:
+            d_raw = entry.get("date") or entry.get("startDate") or entry.get("sleepStart")
+            if not isinstance(d_raw, str):
+                skipped += 1
+                continue
+            d = _parse_sample_date(d_raw)
+            if d is None:
+                skipped += 1
+                continue
+            for stage_key, stage_metric in _SLEEP_STAGE_ROW_KEYS.items():
+                if stage_metric not in DAILY_HEALTH_METRIC_COLUMNS:
+                    continue
+                stage_hrs = _sleep_stage_hours(_num(entry.get(stage_key)), units=units)
+                if stage_hrs is not None:
+                    out.append((d, stage_metric, stage_hrs, "h"))
+            continue
+
+        interval = _unaggregated_sleep_interval(entry, units=units)
+        if interval is not None:
+            unagg.append(interval)
+            continue
+
+        # Last-resort: qty-only sample with a parseable date (no categorical value).
+        qty_hrs = _sleep_stage_hours(_qty_from_entry(entry), units=units)
+        if qty_hrs is None:
+            skipped += 1
+            continue
+        d_raw = entry.get("date") or entry.get("startDate") or entry.get("sleepStart")
+        if not isinstance(d_raw, str):
+            skipped += 1
+            continue
+        d = _parse_sample_date(d_raw)
+        if d is None:
+            skipped += 1
+            continue
+        out.append((d, "sleep_hours", qty_hrs, "h"))
+
+    out.extend(_rollup_unaggregated_sleep_sessions(unagg))
+    if data and not out:
+        logger.warning(
+            "HAE sleep_analysis produced no biometrics rows "
+            "(entries=%s skipped=%s unaggregated_intervals=%s) — "
+            "check aggregation toggle or sample shape (totalSleep vs qty+value)",
+            len(data),
+            skipped,
+            len(unagg),
+        )
+    return out
+
+
 def _canonical_for_hae_name(name: str) -> str | None:
     key = _normalize_vendor_metric_name(name)
     return _HAE_NAME_TO_CANONICAL.get(key)
@@ -239,27 +484,7 @@ def _iter_hae_metric_samples(
     out: list[tuple[date, str, float, str | None]] = []
 
     if canonical == "sleep_hours":
-        for entry in data:
-            if not isinstance(entry, dict):
-                continue
-            d_raw = entry.get("date") or entry.get("startDate") or entry.get("sleepStart")
-            if not isinstance(d_raw, str):
-                continue
-            d = _parse_sample_date(d_raw)
-            if d is None:
-                continue
-            hrs = _sleep_hours_from_aggregated_row(entry)
-            if hrs is not None:
-                out.append((d, canonical, hrs, "h"))
-            # A sleep_analysis row may also carry per-stage durations; surface the
-            # ones Soma tracks (deep / rem) as their own canonical hour metrics.
-            for stage_key, stage_metric in _SLEEP_STAGE_ROW_KEYS.items():
-                if stage_metric not in DAILY_HEALTH_METRIC_COLUMNS:
-                    continue
-                stage_hrs = _sleep_stage_hours(_num(entry.get(stage_key)), units=units_s)
-                if stage_hrs is not None:
-                    out.append((d, stage_metric, stage_hrs, "h"))
-        return out
+        return _iter_sleep_analysis_samples(data, units=units_s)
 
     for entry in data:
         if not isinstance(entry, dict):
