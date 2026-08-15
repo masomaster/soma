@@ -52,6 +52,8 @@ There is **no** separate Renpho API ingest and **no** separate Google Health / F
 
 **Sleep stages & sleep score:** when a `sleep_analysis` row carries per-stage durations (`deep`/`rem`), Soma maps them to **`sleep_deep_hrs`** / **`sleep_rem_hrs`** (unit-aware hours). Fitbit's proprietary 0–100 *sleep score* **cannot** flow through Apple Health — HealthKit has no sleep-score type — so Soma **computes its own** `sleep_score` from the stages + recovery signals during the daily rollup. To capture Fitbit stages you need a Fitbit→Apple Health bridge app (SyncFit / myFitnessSync / Sync Solver). See **[fitbit-sleep-score.md](./fitbit-sleep-score.md)**.
 
+**HAE sleep aggregation:** Health Auto Export can export sleep **aggregated** (`totalSleep` / `asleep` on one row per night) or **unaggregated** (many short samples with `qty` + categorical `value`: Core / Deep / REM / Asleep / Awake / In Bed). Google Fit / Fitbit via Health Sync often lands as the unaggregated shape. Soma supports both: unaggregated intervals are session-rolled onto the **wake morning** (same dating as HAE aggregation). If the dashboard/email show empty sleep while Apple Health has nights, confirm the HAE metrics automation includes **Sleep Analysis**, then re-POST (or wait for the next automation). Prefer aggregated export when available; unaggregated still works after the adapter fix.
+
 ---
 
 ## Deduplication (Health Sync + multi-writer HealthKit)
