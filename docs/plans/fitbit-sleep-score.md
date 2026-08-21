@@ -14,12 +14,9 @@
   score has **no public read/write API** either — confirmed via Apple Developer
   Technical Support.) Fitbit's score also is **not** in the Fitbit Web API; it
   exists only inside Fitbit's manual *Export Your Account Archive* download.
-- Historically the adapter produced **only** `sleep_hours` from HAE
-  **aggregated** `sleep_analysis` rows (`totalSleep` / `asleep`). Unaggregated
-  HAE sleep (`qty` + stage `value`) — common for Health Sync — was ignored and
-  yielded empty sleep on the dashboard/email until the adapter learned that
-  shape. The canonical columns `sleep_score`, `sleep_deep_hrs`, `sleep_rem_hrs`
-  already existed in
+- Historically the adapter produced **only** `sleep_hours` (from HAE
+  `sleep_analysis`/`sleepanalysis` → `totalSleep`). The canonical columns
+  `sleep_score`, `sleep_deep_hrs`, `sleep_rem_hrs` already existed in
   `daily_health_metrics` and in every allow-list, but **nothing ever wrote them**.
 
 ### Conclusion / decision
@@ -43,7 +40,7 @@ reproducible metric rather than a black box.
 
 | Area | Change |
 |------|--------|
-| `pipeline/adapters/apple_health_export.py` | `_HAE_NAME_TO_CANONICAL` + `sleep_analysis` handling now emit `sleep_deep_hrs` / `sleep_rem_hrs` from per-stage durations (`deep`/`rem` inside a sleep row, or standalone `sleep_deep`/`sleep_rem` metrics), unit-aware (hours/minutes/seconds → hours). Handles HAE **aggregated** rows, **unaggregated** `qty`+`value` intervals (Health Sync), and the Soma daily-envelope shape. |
+| `pipeline/adapters/apple_health_export.py` | `_HAE_NAME_TO_CANONICAL` + `sleep_analysis` handling now emit `sleep_deep_hrs` / `sleep_rem_hrs` from per-stage durations (`deep`/`rem` inside a sleep row, or standalone `sleep_deep`/`sleep_rem` metrics), unit-aware (hours/minutes/seconds → hours). Handles the HAE aggregated-row shape and the Soma daily-envelope shape. |
 | `pipeline/sleep_score.py` (new) | `compute_sleep_score(...)` — the native 0–100 formula; `trailing_baseline(...)` for personal HRV / resting-HR baselines. Stdlib-only, deterministic. |
 | `pipeline/features.py` | `rollup_daily_health_metrics(...)` computes `sleep_score` from the day's signals when a source didn't supply one. New optional `sleep_need_hours` / `hrv_baseline` / `resting_hr_baseline` kwargs. |
 | `pipeline/orchestration.py` | The daily pipeline derives trailing HRV / resting-HR baselines from the metrics window (loaded once, shared with feature computation) and passes them into the rollup. |
