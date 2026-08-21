@@ -24,8 +24,13 @@ CHAT_SYSTEM = (
     "DASHBOARD_CONTEXT.athlete_journal lists the athlete's saved notes (workout feel, "
     "supplements, recovery) — cite them when relevant; do not invent journal entries. "
     "DASHBOARD_CONTEXT.training_phase lists scheduled blocks (active, upcoming, all_phases "
-    "with ids) — use set_training_phase, update_training_phase, or deactivate_training_phase "
-    "when the athlete asks to schedule, change, or cancel a training block. "
+    "with ids). When the athlete asks to schedule, change, pause, table, cancel, or replace "
+    "a training block, you MUST emit tool_calls — never claim you updated a phase in prose "
+    "alone. Prefer deactivate_training_phase (or update_training_phase end_date) on the "
+    "current overlapping phase id from all_phases, then set_training_phase for the new "
+    "block(s). Bulk/hypertrophy maps to phase_type building; cardio/run focus maps to "
+    "running. When switching plans, deactivate or end the old block so phases do not "
+    "overlap. "
     "When the athlete shares something you should remember later (e.g. a hard chest day, "
     "starting creatine, feeling run-down), call log_journal_entry with an appropriate "
     "category instead of only replying in prose — the entry is persisted and appears in "
@@ -50,9 +55,10 @@ CHAT_SYSTEM = (
     "metric at a time'. "
     "All distances are in statute MILES (mi) — report running and cycling distance in "
     "miles, never km, and when logging a run pass distance_miles. "
-    "For goal or run changes, respond with a JSON block on its own line: "
-    '{"tool_calls": [{"name": "...", "arguments": {...}}]}. '
-    "Use tools from the fixed list only. Confirm material changes briefly."
+    "For goal, run, journal, or training-phase changes, include a JSON object that "
+    'contains "tool_calls": [{"name": "...", "arguments": {...}}] (own line preferred; '
+    "markdown fences OK). Use tools from the fixed list only. Confirm material changes "
+    "briefly after the tools."
 )
 
 
@@ -83,19 +89,155 @@ def format_chat_prompt(
     )
 
 
+def _tool_calls_from_payload(payload: Any) -> list[dict[str, Any]] | None:
+    if isinstance(payload, dict) and isinstance(payload.get("tool_calls"), list):
+        return [tc for tc in payload["tool_calls"] if isinstance(tc, dict)]
+    return None
+
+
+def _extract_balanced_json_object(text: str, start: int) -> str | None:
+    """Return the substring of the first balanced ``{...}`` starting at ``start``."""
+    if start < 0 or start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : idx + 1]
+    return None
+
+
 def extract_tool_calls(text: str) -> list[dict[str, Any]]:
-    """Parse optional tool_calls JSON from assistant text."""
+    """Parse optional tool_calls JSON from assistant text.
+
+    Accepts a bare JSON line, a fenced markdown ``json`` code block, or a
+    ``tool_calls`` object embedded in surrounding prose — models often wrap or
+    nest the block.
+    """
+    # 1) Whole-line JSON (historical path).
     for line in text.splitlines():
         line = line.strip()
+        if line.startswith("```"):
+            continue
         if not line.startswith("{"):
             continue
         try:
-            payload = json.loads(line)
+            found = _tool_calls_from_payload(json.loads(line))
         except json.JSONDecodeError:
             continue
-        if isinstance(payload, dict) and isinstance(payload.get("tool_calls"), list):
-            return [tc for tc in payload["tool_calls"] if isinstance(tc, dict)]
+        if found is not None:
+            return found
+
+    # 2) Fenced code blocks.
+    fence = "```"
+    parts = text.split(fence)
+    # Odd indices are fenced bodies when the reply opens outside a fence.
+    for i in range(1, len(parts), 2):
+        body = parts[i]
+        if body.startswith("json"):
+            body = body[4:]
+        body = body.strip()
+        if not body.startswith("{"):
+            continue
+        try:
+            found = _tool_calls_from_payload(json.loads(body))
+        except json.JSONDecodeError:
+            continue
+        if found is not None:
+            return found
+
+    # 3) First balanced object that contains "tool_calls".
+    needle = '"tool_calls"'
+    search_from = 0
+    while True:
+        hit = text.find(needle, search_from)
+        if hit < 0:
+            break
+        brace = text.rfind("{", 0, hit)
+        while brace >= 0:
+            blob = _extract_balanced_json_object(text, brace)
+            if blob is not None:
+                try:
+                    found = _tool_calls_from_payload(json.loads(blob))
+                except json.JSONDecodeError:
+                    found = None
+                if found is not None:
+                    return found
+            brace = text.rfind("{", 0, brace)
+        search_from = hit + len(needle)
     return []
+
+
+def _strip_tool_calls_from_reply(reply: str) -> str:
+    """Remove tool_calls JSON (and wrapping fences) from the assistant reply."""
+    fence = "```"
+    parts = reply.split(fence)
+    rebuilt: list[str] = []
+    for i, part in enumerate(parts):
+        if i % 2 == 0:
+            rebuilt.append(part)
+            continue
+        content = part[4:] if part.startswith("json") else part
+        content_stripped = content.strip()
+        is_tool_block = False
+        if content_stripped.startswith("{"):
+            try:
+                is_tool_block = (
+                    _tool_calls_from_payload(json.loads(content_stripped)) is not None
+                )
+            except json.JSONDecodeError:
+                is_tool_block = False
+        if is_tool_block:
+            continue
+        rebuilt.append(fence)
+        rebuilt.append(part)
+        rebuilt.append(fence)
+    text = "".join(rebuilt)
+
+    lines_out: list[str] = []
+    for ln in text.splitlines():
+        stripped = ln.strip()
+        if stripped.startswith("{") and '"tool_calls"' in stripped:
+            try:
+                if _tool_calls_from_payload(json.loads(stripped)) is not None:
+                    continue
+            except json.JSONDecodeError:
+                pass
+        lines_out.append(ln)
+    text = "\n".join(lines_out)
+
+    needle = '"tool_calls"'
+    hit = text.find(needle)
+    if hit >= 0:
+        brace = text.rfind("{", 0, hit)
+        while brace >= 0:
+            blob = _extract_balanced_json_object(text, brace)
+            if blob is not None:
+                try:
+                    if _tool_calls_from_payload(json.loads(blob)) is not None:
+                        text = (text[:brace] + text[brace + len(blob) :]).strip()
+                        break
+                except json.JSONDecodeError:
+                    pass
+            brace = text.rfind("{", 0, brace)
+
+    return text.strip()
 
 
 def run_coaching_turn(
@@ -158,11 +300,8 @@ def run_coaching_turn(
         except (ValueError, TypeError) as exc:
             tool_results.append({"tool": name, "ok": False, "error": str(exc)})
 
-    # Strip the JSON tool block from any prose the model returned, then append the
-    # row-grounded history answer (if any) rather than discarding a write confirmation.
-    visible = "\n".join(
-        ln for ln in reply.splitlines() if not ln.strip().startswith('{"tool_calls"')
-    ).strip()
+    # Strip tool JSON from visible prose, then append history answers.
+    visible = _strip_tool_calls_from_reply(reply)
     answer = "\n\n".join(a for a in history_answers if a.strip())
     if answer:
         visible = f"{visible}\n\n{answer}".strip() if visible else answer

@@ -1698,10 +1698,15 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                 if isinstance(this_wk, (int, float)) and isinstance(last_wk, (int, float)):
                     delta = f"{this_wk - last_wk:+.1f} mi vs last week"
                 st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" mi"), delta=delta)
-        _render_training_phases(ctx.get("training_phase"), compact=False)
+        mode = "fixture" if _fixture_mode_enabled() else "live"
+        _render_training_phases(
+            ctx.get("training_phase"),
+            compact=False,
+            user_id=str(ctx.get("user_id") or ""),
+            mode=mode,
+        )
         # Compact week-streak glance — full month grids live on the Training tab.
         # Pace lights stay in the hero only (avoid repeating lift/cardio colors).
-        mode = "fixture" if _fixture_mode_enabled() else "live"
         cal = _load_workout_calendar(ctx, mode)
         with st.container(border=True):
             st.markdown("**🔥 Workout week streak**")
@@ -1907,7 +1912,13 @@ def _format_phase_type(phase_type: Any) -> str:
     return text.replace("_", " ").title() if text else ""
 
 
-def _render_training_phases(phase_ctx: dict[str, Any] | None, *, compact: bool = False) -> None:
+def _render_training_phases(
+    phase_ctx: dict[str, Any] | None,
+    *,
+    compact: bool = False,
+    user_id: str | None = None,
+    mode: str = "fixture",
+) -> None:
     """Show active and upcoming training blocks from dashboard context."""
     if not phase_ctx:
         if not compact:
@@ -1916,6 +1927,7 @@ def _render_training_phases(phase_ctx: dict[str, Any] | None, *, compact: bool =
 
     active = phase_ctx.get("active")
     upcoming = phase_ctx.get("upcoming") or []
+    all_phases = phase_ctx.get("all_phases") or []
 
     if compact:
         if isinstance(active, dict):
@@ -1971,6 +1983,76 @@ def _render_training_phases(phase_ctx: dict[str, Any] | None, *, compact: bool =
                 st.markdown(f"- **{label}** ({ptype}){dates}")
                 if phase.get("notes"):
                     st.caption(phase["notes"])
+
+        if mode == "live" and user_id and all_phases:
+            st.markdown("**Manage phases**")
+            st.caption(
+                "End today closes a block without deleting it. Cancel hides it from "
+                "the schedule. Prefer ending/canceling before overlapping a new block."
+            )
+            for phase in all_phases:
+                if not isinstance(phase, dict) or not phase.get("id"):
+                    continue
+                phase_id = str(phase["id"])
+                label = phase.get("name") or "Phase"
+                ptype = _format_phase_type(phase.get("phase_type"))
+                dates = ""
+                if phase.get("start_date") and phase.get("end_date"):
+                    dates = f"{phase['start_date']} → {phase['end_date']}"
+                row_cols = st.columns([3, 1, 1])
+                row_cols[0].markdown(f"**{label}** ({ptype}) · {dates}")
+                if row_cols[1].button(
+                    "End today",
+                    key=f"phase_end:{phase_id}",
+                    use_container_width=True,
+                ):
+                    try:
+                        from pipeline import persistence
+
+                        start_raw = phase.get("start_date")
+                        start_d = (
+                            date.fromisoformat(str(start_raw)[:10])
+                            if start_raw
+                            else date.today()
+                        )
+                        # Keep CHECK (end_date >= start_date) if the block has not started.
+                        end_d = max(date.today(), start_d)
+                        with _scoped_conn(user_id, read_only=False) as conn:
+                            with conn.cursor() as cur:
+                                persistence.update_training_phase(
+                                    cur,
+                                    user_id=user_id,
+                                    phase_id=phase_id,
+                                    updates={"end_date": end_d},
+                                )
+                            conn.commit()
+                        _load_live_context.clear()
+                        st.success(f"Ended {label} as of {end_d.isoformat()}")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
+                if row_cols[2].button(
+                    "Cancel",
+                    key=f"phase_cancel:{phase_id}",
+                    use_container_width=True,
+                ):
+                    try:
+                        from pipeline import persistence
+
+                        with _scoped_conn(user_id, read_only=False) as conn:
+                            with conn.cursor() as cur:
+                                persistence.update_training_phase(
+                                    cur,
+                                    user_id=user_id,
+                                    phase_id=phase_id,
+                                    updates={"is_active": False},
+                                )
+                            conn.commit()
+                        _load_live_context.clear()
+                        st.success(f"Cancelled {label}")
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(str(exc))
 
 
 def _render_exercise_progress(strength_progress: dict[str, Any] | None) -> None:
@@ -2174,7 +2256,12 @@ def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
     lifting = workload_pace.get("lifting") if isinstance(workload_pace.get("lifting"), dict) else {}
     cardio = workload_pace.get("cardio") if isinstance(workload_pace.get("cardio"), dict) else {}
 
-    _render_training_phases(phase_ctx, compact=False)
+    _render_training_phases(
+        phase_ctx,
+        compact=False,
+        user_id=str(ctx.get("user_id") or ""),
+        mode=mode,
+    )
     _render_workload_pace_lights(workload_pace)
     _render_workout_calendar(ctx, mode)
 
@@ -2339,8 +2426,9 @@ def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
     if mode == "live":
         with st.expander("Schedule a training phase"):
             st.caption(
-                "Multi-week blocks (building, deload, fat loss, running focus). "
-                "You can also ask Coaching chat to set one."
+                "Multi-week blocks (building = bulk/hypertrophy, deload, fat loss, "
+                "running = cardio focus). End or cancel existing blocks under Manage "
+                "phases above before overlapping a new one. Coaching chat can also set these."
             )
             with st.form("training_phase_form"):
                 name = st.text_input("Name", placeholder="6-week hypertrophy block")
