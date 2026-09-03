@@ -30,9 +30,11 @@ There is **no** separate Renpho API ingest and **no** separate Google Health / F
 
 2. **Health Auto Export** (third-party iOS app) reads HealthKit and can send a **JSON POST** to a URL you configure — **when you use a tier that supports automated / REST API exports**. The **free tier often does not** include hands-off scheduling; that’s commonly a **paid upgrade** (verify current pricing in the App Store / the developer’s site — amounts change). If you only have manual export, you can still **verify Soma** by saving JSON and running the smoke script or `curl` against your ingest URL (see below).
 
-3. **AWS** runs a small **Lambda** for each POST: saves the **raw JSON** to **S3**, parses the JSON, writes **`biometrics`** (daily metrics like steps, sleep, HRV) and **`cardio_events`** (each workout/run/ride when HAE includes `data.workouts`).
+3. **AWS** runs a small **Lambda** for each POST: saves the **raw JSON** to **S3**, parses the JSON, writes **`biometrics`** (daily metrics like steps, sleep, HRV), immediately **rolls those days up into `daily_health_metrics`** and recomputes **`daily_features`** (readiness, sleep debt, ACWR — what the dashboard reads), and writes **`cardio_events`** (each workout/run/ride when HAE includes `data.workouts`).
 
-4. Your **daily briefing pipeline** (later that day) already reads `biometrics` / `cardio_events` from Postgres — so new data shows up on the next rollup without you doing anything else.
+4. The **dashboard / app** reads **`daily_health_metrics`** and **`daily_features`** — it does **not** wait on the morning briefing Lambda. Re-export or webhook POST → wide tables update in the same request. The daily briefing still computes features/flags for email, but charts are ingest-driven.
+
+**Operator: include Sleep in HAE.** Automations that omit `sleep_analysis` will never populate sleep (Soma cannot invent nights that were not POSTed). In Health Auto Export, enable **Sleep Analysis** (and stage fields if available) on the same metrics automation that posts steps/weight.
 
 ---
 

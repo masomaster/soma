@@ -53,7 +53,10 @@ You can also set `BRIEFING_EMAIL_DASHBOARD_URL` manually on the `soma-daily-brie
 
 ## 4. Optional: guidelines S3 from the cloud app
 
-Coaching chat can append to `my-goals.md` in the guidelines bucket. On Streamlit Cloud there is no AWS instance role — add **read-only or read-write IAM user keys** to Streamlit secrets (minimal policy on `guidelines/{user_id}/*` only):
+Coaching chat can append to `my-goals.md` in the guidelines bucket (including
+automatic notes when **training phases** are created/updated/cancelled). On
+Streamlit Cloud there is no AWS instance role — add **read/write IAM user keys**
+to Streamlit secrets (minimal policy on `guidelines/{user_id}/*` only):
 
 ```toml
 SOMA_GUIDELINES_BUCKET = "your-guidelines-bucket"

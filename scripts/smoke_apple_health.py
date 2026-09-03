@@ -89,10 +89,20 @@ def cmd_db_upsert(path: Path) -> None:
     from pipeline.adapters import apple_health_workouts
     from pipeline.apple_health_cardio_dedup import filter_near_duplicate_apple_cardio
     from pipeline.apple_hevy_cardio_dedup import filter_apple_strength_cardio_when_hevy_present
+    from pipeline.biometrics_daily_rollup import (
+        event_dates_from_biometrics_rows,
+        rollup_biometrics_dates,
+    )
     from pipeline.biometrics_upsert import upsert_biometrics
     from pipeline.cardio_upsert import (
         delete_cardio_events_by_source_id,
         upsert_cardio_events,
+    )
+    from pipeline.daily_features_recompute import (
+        event_dates_from_rows,
+        feature_dates_affected_by_activity_days,
+        feature_dates_affected_by_metric_days,
+        recompute_daily_features,
     )
 
     user_id = _require_env("SOMA_USER_ID")
@@ -127,12 +137,22 @@ def cmd_db_upsert(path: Path) -> None:
     hevy_dropped = 0
     hub_dropped = 0
     superseded = 0
+    days_rolled = 0
+    features_days = 0
+    rows_for_db: list = []
     try:
         with conn:
             with conn.cursor() as cur:
                 try:
+                    rolled: list = []
                     if rows_bio:
                         upsert_biometrics(cur, rows_bio)
+                        rolled = rollup_biometrics_dates(
+                            cur,
+                            user_id=user_id,
+                            dates=event_dates_from_biometrics_rows(rows_bio),
+                        )
+                        days_rolled = len(rolled)
                     if rows_cardio_in:
                         rows_for_db, hevy_dropped = filter_apple_strength_cardio_when_hevy_present(
                             cur, user_id=user_id, cardio_rows=rows_cardio_in
@@ -146,6 +166,22 @@ def cmd_db_upsert(path: Path) -> None:
                             cur, user_id=user_id, source_ids=superseded_ids
                         )
                         upsert_cardio_events(cur, rows_for_db)
+                    from datetime import date as date_cls
+
+                    as_of = date_cls.today()
+                    metric_days = [r["metric_date"] for r in rolled]
+                    activity_days = event_dates_from_rows(rows_for_db)
+                    feature_days = sorted(
+                        set(feature_dates_affected_by_metric_days(metric_days, through=as_of))
+                        | set(
+                            feature_dates_affected_by_activity_days(
+                                activity_days, through=as_of
+                            )
+                        )
+                    )
+                    features_days = len(
+                        recompute_daily_features(cur, user_id=user_id, dates=feature_days)
+                    )
                 except pg_errors.UndefinedTable as exc:
                     if "biometrics" in str(exc):
                         _die(
@@ -161,13 +197,22 @@ def cmd_db_upsert(path: Path) -> None:
                             f"  (Underlying error: {exc})",
                             code=3,
                         )
+                    if "daily_health_metrics" in str(exc):
+                        _die(
+                            "Table public.daily_health_metrics does not exist in this database.\n"
+                            "  Apply schema/migrations/0001_initial.sql in Supabase SQL Editor.\n"
+                            f"  (Underlying error: {exc})",
+                            code=3,
+                        )
                     raise
     finally:
         conn.close()
 
     print("db-upsert: OK")
     print(f"  biometrics rows: {len(rows_bio)}")
-    print(f"  cardio_events rows (upserted): {len(rows_cardio_in) - hevy_dropped - hub_dropped}")
+    print(f"  daily_health_metrics days: {days_rolled}")
+    print(f"  daily_features days: {features_days}")
+    print(f"  cardio_events rows (upserted): {len(rows_for_db)}")
     print(f"  cardio_events dropped (Hevy same-day strength dup): {hevy_dropped}")
     print(f"  cardio_events dropped (hub near-dup): {hub_dropped}")
     print(f"  cardio_events superseded (lower-priority stored dup deleted): {superseded}")
@@ -175,6 +220,15 @@ def cmd_db_upsert(path: Path) -> None:
     print(
         "    SELECT event_date, metric, value, source FROM biometrics "
         f"WHERE user_id = '{user_id}' ORDER BY event_date DESC, metric LIMIT 20;"
+    )
+    print(
+        "    SELECT metric_date, sleep_hours, steps, hrv_rmssd FROM daily_health_metrics "
+        f"WHERE user_id = '{user_id}' ORDER BY metric_date DESC LIMIT 20;"
+    )
+    print(
+        "    SELECT feature_date, overall_readiness_score, sleep_debt_7d "
+        "FROM daily_features "
+        f"WHERE user_id = '{user_id}' ORDER BY feature_date DESC LIMIT 20;"
     )
     print(
         "    SELECT event_date, activity_type, duration_min, source FROM cardio_events "
@@ -199,7 +253,10 @@ def main() -> None:
     p_raw = sub.add_parser("raw-disk", help="Normalize + write raw JSON under SOMA_RAW_LOCAL_DIR")
     p_raw.add_argument("path", nargs="?", type=Path, default=None)
 
-    p_db = sub.add_parser("db-upsert", help="Normalize + upsert biometrics + cardio_events to Postgres")
+    p_db = sub.add_parser(
+        "db-upsert",
+        help="Normalize + upsert biometrics, roll up daily_health_metrics, upsert cardio_events",
+    )
     p_db.add_argument("path", nargs="?", type=Path, default=None)
 
     args = parser.parse_args()

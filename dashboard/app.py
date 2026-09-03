@@ -997,6 +997,37 @@ _GRAIN_X_TITLE: dict[str, str] = {
 }
 
 
+def _time_x_encoding(date_col: str, grain: Grain, dates):
+    """Altair X encoding with ticks that match the series grain.
+
+    Week charts use only the Monday week-start values present in the data (true
+    7-day steps aligned to points). Day charts keep a normal temporal axis.
+    """
+    import altair as alt
+    import pandas as pd
+
+    x_title = _GRAIN_X_TITLE[grain]
+    if grain != "week":
+        return alt.X(
+            f"{date_col}:T",
+            title=x_title,
+            axis=alt.Axis(format="%b %d", labelAngle=-30),
+        )
+
+    values = sorted({ts for ts in pd.to_datetime(dates, errors="coerce") if pd.notna(ts)})
+    return alt.X(
+        f"{date_col}:T",
+        title=x_title,
+        scale=alt.Scale(domain=values, nice=False) if values else alt.Scale(nice=False),
+        axis=alt.Axis(
+            values=values,
+            format="%b %d",
+            labelAngle=-30,
+            tickCount=len(values) if values else None,
+        ),
+    )
+
+
 def _sleep_stages_chart(mdf, *, empty: str = "No deep/REM stage hours in this range yet.") -> None:
     """Stacked deep / REM / light hours for nights that have stage data.
 
@@ -1122,11 +1153,7 @@ def _time_chart(
         return
 
     x_title = _GRAIN_X_TITLE[grain]
-    x_enc = alt.X(
-        f"{date_col}:T",
-        title=x_title,
-        axis=alt.Axis(format="%b %d", labelAngle=-30),
-    )
+    x_enc = _time_x_encoding(date_col, grain, long_df[date_col])
     y_enc = alt.Y("value:Q", title=y_title or "")
     color = alt.Color("series:N", title=None, legend=alt.Legend(orient="top"))
     tooltips = [
@@ -1202,11 +1229,7 @@ def _padded_chart(
         alt.Chart(long_df)
         .mark_line(point=True)
         .encode(
-            x=alt.X(
-                f"{date_col}:T",
-                title=x_title,
-                axis=alt.Axis(format="%b %d", labelAngle=-30),
-            ),
+            x=_time_x_encoding(date_col, grain, long_df[date_col]),
             y=alt.Y(
                 "value:Q",
                 scale=alt.Scale(domain=[lo, hi], zero=False),
@@ -1246,11 +1269,7 @@ def _acwr_band_chart(df, *, empty: str = "No ACWR history yet.") -> None:
         {date_col: [plot[date_col].min(), plot[date_col].max()], "y": [0.8, 0.8], "y2": [1.3, 1.3]}
     )
     x_title = _GRAIN_X_TITLE["week"]
-    x_enc = alt.X(
-        f"{date_col}:T",
-        title=x_title,
-        axis=alt.Axis(format="%b %d", labelAngle=-30),
-    )
+    x_enc = _time_x_encoding(date_col, "week", plot[date_col])
     band_layer = (
         alt.Chart(band)
         .mark_area(opacity=0.18, color="#2ecc71")
@@ -2266,7 +2285,6 @@ def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
         mode=mode,
         manage=True,
     )
-    _render_workload_pace_lights(workload_pace)
     _render_workout_calendar(ctx, mode)
 
     c = st.columns(4)

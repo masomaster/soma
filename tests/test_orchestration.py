@@ -108,6 +108,30 @@ def test_pipeline_stops_cleanly_when_llm_fails():
     assert "stat_persist" in persisted
 
 
+def test_pipeline_skips_persisting_empty_daily_metrics_shell():
+    """Briefing must not stamp blank daily_health_metrics when biometrics are empty."""
+    import io as _io_mod
+
+    persisted: dict = {"out": _io_mod.StringIO()}
+    io = _io(persisted)
+    io = DailyPipelineIO(
+        llm=io.llm,
+        load_biometrics_today=lambda u, d: [],
+        load_daily_metrics_window=io.load_daily_metrics_window,
+        load_strength_events=io.load_strength_events,
+        load_cardio_events=io.load_cardio_events,
+        persist_daily_metrics=lambda row: persisted.setdefault("metrics", []).append(row),
+        persist_features=io.persist_features,
+        persist_briefing=io.persist_briefing,
+        persist_statistical_anomalies=io.persist_statistical_anomalies,
+        deliver=io.deliver,
+    )
+    result = run_daily_pipeline(user_id="u1", run_date=RUN, io=io)
+    assert result.ok
+    assert "metrics" not in persisted
+    assert result.daily_metrics == {"user_id": "u1", "metric_date": RUN}
+
+
 if __name__ == "__main__":
     import sys
 

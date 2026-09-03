@@ -147,7 +147,11 @@ def run_daily_pipeline(
                 window, metric="resting_hr", as_of=run_date
             ),
         )
-        if io.persist_daily_metrics is not None:
+        # Prefer ingest-time rollup (Apple Health webhook) for the wide table.
+        # Skip empty shells so a 6 AM briefing with no biometrics yet does not
+        # stamp a blank daily_health_metrics row over nothing useful.
+        has_metrics = any(k not in {"user_id", "metric_date"} for k in result.daily_metrics)
+        if io.persist_daily_metrics is not None and has_metrics:
             io.persist_daily_metrics(result.daily_metrics)
 
     def do_features() -> None:

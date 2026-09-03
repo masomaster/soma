@@ -1,4 +1,4 @@
-"""HTTP API (API Gateway v2) → raw S3 → ``biometrics`` + ``cardio_events`` upsert.
+"""HTTP API (API Gateway v2) → raw S3 → ``biometrics`` + ``daily_health_metrics`` + ``cardio_events``.
 
 Environment (set by CDK):
 
@@ -46,8 +46,18 @@ from pipeline.apple_health_webhook_event import (
     parse_json_body,
     raw_body_bytes,
 )
+from pipeline.biometrics_daily_rollup import (
+    event_dates_from_biometrics_rows,
+    rollup_biometrics_dates,
+)
 from pipeline.biometrics_upsert import upsert_biometrics
 from pipeline.cardio_upsert import delete_cardio_events_by_source_id, upsert_cardio_events
+from pipeline.daily_features_recompute import (
+    event_dates_from_rows,
+    feature_dates_affected_by_activity_days,
+    feature_dates_affected_by_metric_days,
+    recompute_daily_features,
+)
 from pipeline.lambda_secrets import (
     resolve_apple_health_webhook_secret_optional,
     resolve_db_connect_string,
@@ -140,10 +150,21 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         return _response(500, {"ok": False, "error": "db_config"})
 
     conn = psycopg2.connect(dsn)
+    days_rolled = 0
+    features_days = 0
+    as_of = utc.date()
     try:
         with conn:
             with conn.cursor() as cur:
                 upsert_biometrics(cur, bio_rows)
+                # Dashboard reads daily_health_metrics + daily_features — promote
+                # immediately so charts do not wait on the morning briefing Lambda.
+                rolled = rollup_biometrics_dates(
+                    cur,
+                    user_id=user_id,
+                    dates=event_dates_from_biometrics_rows(bio_rows),
+                )
+                days_rolled = len(rolled)
                 cardio_for_db, cardio_dropped_hevy = filter_apple_strength_cardio_when_hevy_present(
                     cur, user_id=user_id, cardio_rows=cardio_rows
                 )
@@ -159,6 +180,16 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
                     cur, user_id=user_id, source_ids=superseded_ids
                 )
                 upsert_cardio_events(cur, cardio_for_db)
+
+                metric_days = [r["metric_date"] for r in rolled]
+                activity_days = event_dates_from_rows(cardio_for_db)
+                feature_days = sorted(
+                    set(feature_dates_affected_by_metric_days(metric_days, through=as_of))
+                    | set(feature_dates_affected_by_activity_days(activity_days, through=as_of))
+                )
+                features_days = len(
+                    recompute_daily_features(cur, user_id=user_id, dates=feature_days)
+                )
     except Exception as exc:
         logger.exception("Postgres upsert failed: %s", exc)
         return _response(500, {"ok": False, "error": "database"})
@@ -166,10 +197,13 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         conn.close()
 
     logger.info(
-        "Apple Health webhook ok user=%s biometrics=%d cardio=%d "
+        "Apple Health webhook ok user=%s biometrics=%d daily_health_days=%d "
+        "daily_features_days=%d cardio=%d "
         "(dropped_hevy_dup=%d hub_dup=%d superseded=%d)",
         user_id,
         len(bio_rows),
+        days_rolled,
+        features_days,
         len(cardio_for_db),
         cardio_dropped_hevy,
         cardio_dropped_hub,
@@ -180,6 +214,8 @@ def handler(event: dict[str, Any], context: Any = None) -> dict[str, Any]:
         {
             "ok": True,
             "biometrics_upserted": len(bio_rows),
+            "daily_health_metrics_days": days_rolled,
+            "daily_features_days": features_days,
             "cardio_events_upserted": len(cardio_for_db),
             "cardio_events_dropped_hevy_strength_dup": cardio_dropped_hevy,
             "cardio_events_dropped_hub_near_dup": cardio_dropped_hub,

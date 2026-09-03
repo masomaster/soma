@@ -1,8 +1,9 @@
 # Apple Health webhook Lambda
 
 Thin handler: validate optional shared secret → parse JSON → **S3 raw** → normalize
-**biometrics** + **cardio_events** → Postgres upserts (service role via
-`DB_CONNECT_STRING`).
+**biometrics** + **cardio_events** → Postgres upserts → **rollup affected days into
+`daily_health_metrics`** and **recompute `daily_features`** (readiness / sleep debt /
+ACWR — dashboard path; does not wait on the briefing Lambda).
 
 Bundled with the same **pipeline Lambda layer** as the daily briefing function
 (`pipeline` + `psycopg2-binary`). `boto3` is provided by the Lambda runtime.
@@ -26,7 +27,7 @@ Bundled with the same **pipeline Lambda layer** as the daily briefing function
    - **Method:** POST, **JSON** body.  
    - **Headers:** add `X-Soma-User-Id: <your Supabase auth user UUID>` (same as `SOMA_USER_ID` in local smoke). If you set a webhook secret, add `X-Soma-Webhook-Secret: ...`.
 
-5. **Enable workouts + metrics** in the HAE export so `data.workouts` and `data.metrics` are populated (see `docs/plans/apple-health-export.md`).
+5. **Enable workouts + metrics** in the HAE export so `data.workouts` and `data.metrics` are populated (see `docs/plans/apple-health-export.md`). **Include Sleep Analysis** — recent Soma empties were caused by HAE automations that posted steps/weight but omitted `sleep_analysis`.
 
 ## Hevy overlap (strength)
 

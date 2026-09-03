@@ -476,6 +476,34 @@ def apply_tool_call(
     raise ValueError(f"Unknown tool: {tool_name!r}")
 
 
+def training_phase_goal_note(write: Mapping[str, Any]) -> str | None:
+    """Narrative my-goals.md line for a training-phase tool write, or None."""
+    action = write.get("action")
+    if action == "insert_training_phase":
+        row = write.get("row")
+        if not isinstance(row, Mapping):
+            return None
+        name = row.get("name") or "Training phase"
+        phase_type = row.get("phase_type") or "custom"
+        start = row.get("start_date")
+        end = row.get("end_date")
+        detail = row.get("target_notes") or row.get("notes") or ""
+        line = f"Training phase scheduled: {name} ({phase_type}) {start}–{end}."
+        if isinstance(detail, str) and detail.strip():
+            line = f"{line} {detail.strip()}"
+        return line
+    if action == "update_training_phase":
+        phase_id = write.get("phase_id")
+        updates = write.get("updates")
+        if not isinstance(phase_id, str) or not isinstance(updates, Mapping):
+            return None
+        if updates.get("is_active") is False:
+            return f"Training phase cancelled (id {phase_id})."
+        parts = [f"{k}={v}" for k, v in updates.items()]
+        return f"Training phase updated (id {phase_id}): {', '.join(parts)}."
+    return None
+
+
 def apply_coaching_writes(
     cur: Any,
     pending_writes: Sequence[Mapping[str, Any]],
@@ -484,7 +512,8 @@ def apply_coaching_writes(
 ) -> list[str]:
     """Persist validated coaching chat tool results to Postgres / guidelines.
 
-    ``append_note`` handles ``append_goal_note`` when Phase 10 storage is wired.
+    ``append_note`` handles ``append_goal_note`` and auto-mirrors training-phase
+    changes into ``my-goals.md`` when Phase 10 storage is wired.
     """
     from pipeline import persistence
 
@@ -519,6 +548,15 @@ def apply_coaching_writes(
             applied.append(
                 f"Training phase {row.get('name')} ({row.get('start_date')}–{row.get('end_date')})"
             )
+            note = training_phase_goal_note(write)
+            if note is not None:
+                if append_note is not None:
+                    applied.append(append_note(note))
+                else:
+                    applied.append(
+                        "Training phase saved to DB, but my-goals.md was not updated "
+                        "(SOMA_GUIDELINES_BUCKET / AWS credentials not configured)"
+                    )
         elif action == "update_training_phase":
             phase_id = write.get("phase_id")
             updates = write.get("updates")
@@ -529,6 +567,15 @@ def apply_coaching_writes(
                 cur, user_id=uid, phase_id=phase_id, updates=updates
             )
             applied.append(f"Updated training phase {phase_id}")
+            note = training_phase_goal_note(write)
+            if note is not None:
+                if append_note is not None:
+                    applied.append(append_note(note))
+                else:
+                    applied.append(
+                        "Training phase saved to DB, but my-goals.md was not updated "
+                        "(SOMA_GUIDELINES_BUCKET / AWS credentials not configured)"
+                    )
         elif action == "insert_journal_entry":
             row = write.get("row")
             if not isinstance(row, Mapping):
@@ -541,4 +588,9 @@ def apply_coaching_writes(
             text = write.get("text")
             if isinstance(text, str) and append_note is not None:
                 applied.append(append_note(text))
+            elif isinstance(text, str) and append_note is None:
+                applied.append(
+                    "Goal note not saved — SOMA_GUIDELINES_BUCKET / AWS credentials "
+                    "not configured on this app"
+                )
     return applied

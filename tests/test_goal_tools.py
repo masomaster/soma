@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from unittest.mock import patch
 
 import pytest
 
@@ -11,6 +12,7 @@ from pipeline.goal_tools import (
     apply_coaching_writes,
     apply_tool_call,
     parse_goal_patches_from_json,
+    training_phase_goal_note,
     validate_patch,
 )
 
@@ -123,24 +125,75 @@ def test_apply_tool_update_training_phase():
     assert out["updates"]["end_date"] == date(2024, 8, 1)
 
 
-def test_apply_coaching_writes_append_note():
+def test_training_phase_goal_note_insert():
+    write = apply_tool_call(
+        "set_training_phase",
+        {
+            "name": "Rowing Phase",
+            "phase_type": "running",
+            "start_date": "2026-09-03",
+            "end_date": "2026-10-14",
+            "target_notes": "Steady-state rowing 4–5x / week",
+        },
+        user_id="u1",
+    )
+    note = training_phase_goal_note(write)
+    assert note is not None
+    assert "Rowing Phase" in note
+    assert "2026-09-03" in note
+    assert "Steady-state" in note
+
+
+def test_apply_coaching_writes_mirrors_training_phase_to_goals():
     notes: list[str] = []
 
     def append_note(text: str) -> str:
         notes.append(text)
-        return "noted"
-
-    pending = [
-        apply_tool_call("append_goal_note", {"text": "Easy week ahead."}, user_id="u1")
-    ]
+        return "Appended note to my-goals.md"
 
     class _Cur:
         def execute(self, *args: object, **kwargs: object) -> None:
             pass
 
-    applied = apply_coaching_writes(_Cur(), pending, append_note=append_note)
-    assert applied == ["noted"]
-    assert notes == ["Easy week ahead."]
+    pending = [
+        apply_tool_call(
+            "set_training_phase",
+            {
+                "name": "6-week build",
+                "phase_type": "building",
+                "start_date": "2024-06-01",
+                "end_date": "2024-07-15",
+            },
+            user_id="u1",
+        )
+    ]
+    with patch("pipeline.persistence.insert_training_phase"):
+        applied = apply_coaching_writes(_Cur(), pending, append_note=append_note)
+    assert any("Training phase" in a for a in applied)
+    assert notes and "6-week build" in notes[0]
+    assert "Appended note to my-goals.md" in applied
+
+
+def test_apply_coaching_writes_warns_when_guidelines_storage_missing():
+    class _Cur:
+        def execute(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    pending = [
+        apply_tool_call(
+            "set_training_phase",
+            {
+                "name": "Deload",
+                "phase_type": "deload",
+                "start_date": "2024-06-01",
+                "end_date": "2024-06-07",
+            },
+            user_id="u1",
+        )
+    ]
+    with patch("pipeline.persistence.insert_training_phase"):
+        applied = apply_coaching_writes(_Cur(), pending, append_note=None)
+    assert any("my-goals.md was not updated" in a for a in applied)
 
 
 def test_apply_coaching_writes_upsert_goal():
