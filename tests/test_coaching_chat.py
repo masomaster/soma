@@ -50,6 +50,61 @@ def test_extract_tool_calls():
     assert calls[0]["name"] == "log_run"
 
 
+def test_extract_tool_calls_from_markdown_fence():
+    text = (
+        "I'll update your phases.\n"
+        "```json\n"
+        '{"tool_calls": [{"name": "set_training_phase", "arguments": '
+        '{"name": "Cardio focus", "phase_type": "running", '
+        '"start_date": "2026-08-21", "end_date": "2026-09-14"}}]}\n'
+        "```\n"
+    )
+    calls = extract_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "set_training_phase"
+
+
+def test_extract_tool_calls_embedded_in_prose():
+    text = (
+        'Got it — parking bulk for now. '
+        '{"tool_calls": [{"name": "deactivate_training_phase", '
+        '"arguments": {"phase_id": "abc-123"}}]}'
+    )
+    calls = extract_tool_calls(text)
+    assert len(calls) == 1
+    assert calls[0]["name"] == "deactivate_training_phase"
+
+
+def test_run_coaching_turn_strips_fenced_tool_json():
+    ctx = {"user_id": "u1", "training_phase": {"all_phases": []}}
+    reply = (
+        "Scheduled cardio through mid-September.\n"
+        "```json\n"
+        '{"tool_calls": [{"name": "set_training_phase", "arguments": '
+        '{"name": "Cardio", "phase_type": "running", '
+        '"start_date": "2026-08-21", "end_date": "2026-09-14"}}]}\n'
+        "```"
+    )
+    turn = run_coaching_turn(
+        user_id="u1",
+        user_message="Do cardio until Sept 14",
+        dashboard_context=ctx,
+        messages=[],
+        llm=lambda s, p: reply,
+    )
+    assert "tool_calls" not in turn["reply"]
+    assert "Scheduled cardio" in turn["reply"]
+    assert len(turn["pending_writes"]) == 1
+    assert turn["pending_writes"][0]["action"] == "insert_training_phase"
+
+
+def test_chat_system_requires_tools_for_phase_changes():
+    lower = CHAT_SYSTEM.lower()
+    assert "must emit tool_calls" in lower
+    assert "building" in lower
+    assert "deactivate_training_phase" in lower
+
+
 def test_run_coaching_turn_includes_guidelines_in_prompt():
     from pipeline.coaching_chat import format_chat_prompt
     from pipeline.guidelines import GuidelinesContext
