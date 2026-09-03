@@ -65,6 +65,65 @@ def test_sleep_hours_uses_max_when_sync_posts_duplicate_nights() -> None:
     assert sleep[0]["value"] == pytest.approx(7.5)
 
 
+def test_short_sleep_fragment_skipped_when_in_bed_much_longer() -> None:
+    """Google Health morning re-posts must not become the day's sleep total."""
+    body = {
+        "data": {
+            "metrics": [
+                {
+                    "name": "sleep_analysis",
+                    "units": "hr",
+                    "data": [
+                        {
+                            "date": "2024-06-01",
+                            "totalSleep": 9.35,
+                            "inBed": 9.5,
+                            "sleepStart": "2024-05-31 20:54:00 -0700",
+                            "sleepEnd": "2024-06-01 06:25:00 -0700",
+                            "deep": 1.5,
+                            "rem": 1.8,
+                        },
+                        {
+                            "date": "2024-06-01",
+                            "totalSleep": 1.53,
+                            "inBed": 9.52,
+                            "sleepStart": "2024-06-01 04:53:00 -0700",
+                            "sleepEnd": "2024-06-01 06:25:00 -0700",
+                            "deep": 0,
+                            "rem": 0.02,
+                        },
+                    ],
+                }
+            ]
+        }
+    }
+    rows = apple_health_export.normalize_apple_health_export_payload(body, user_id=_USER)
+    by_metric = {r["metric"]: r["value"] for r in rows}
+    assert by_metric["sleep_hours"] == pytest.approx(9.35)
+    assert by_metric["sleep_deep_hrs"] == pytest.approx(1.5)
+    assert by_metric["sleep_rem_hrs"] == pytest.approx(1.8)
+
+
+def test_upsert_biometrics_keeps_greater_sleep_on_conflict() -> None:
+    cur = MagicMock()
+    rows = [
+        {
+            "user_id": _USER,
+            "source": "apple_health_export",
+            "event_date": date(2024, 6, 1),
+            "metric": "sleep_hours",
+            "value": 1.5,
+            "unit": "h",
+            "raw_s3_key": "raw/u/apple_health_export/2024-06-01/frag.json",
+        }
+    ]
+    with patch("pipeline.biometrics_upsert.execute_values") as ev:
+        upsert_biometrics(cur, rows)
+    _c, sql, _values = ev.call_args[0]
+    assert "GREATEST(biometrics.value, EXCLUDED.value)" in sql
+    assert "sleep_hours" in sql
+
+
 def test_sleep_analysis_row_emits_deep_and_rem_stage_hours() -> None:
     payload = _load("health_auto_export_sleep_stages_redacted.json")
     rows = apple_health_export.normalize_apple_health_export_payload(payload, user_id=_USER)
@@ -318,6 +377,7 @@ def test_upsert_biometrics_uses_on_conflict_do_update() -> None:
     _c, sql, values = ev.call_args[0]
     assert "INSERT INTO biometrics" in sql
     assert "ON CONFLICT (user_id, source, event_date, metric) DO UPDATE" in sql
+    assert "EXCLUDED.value" in sql
     assert len(values) == 1
     assert values[0][0] == _USER
     assert values[0][3] == "steps"

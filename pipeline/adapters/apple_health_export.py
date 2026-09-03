@@ -165,6 +165,52 @@ def _sleep_hours_from_aggregated_row(entry: Mapping[str, Any]) -> float | None:
     return float(v)
 
 
+def _parse_hae_datetime(raw: str) -> datetime | None:
+    """Parse HAE ``sleepStart`` / ``sleepEnd`` timestamps."""
+    text = raw.strip()
+    if not text:
+        return None
+    for candidate in (text, text.replace(" ", "T", 1)):
+        try:
+            return datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+    try:
+        return datetime.strptime(text, "%Y-%m-%d %H:%M:%S %z")
+    except ValueError:
+        return None
+
+
+def _is_short_sleep_fragment(entry: Mapping[str, Any]) -> bool:
+    """True when HAE re-posted only the last hours of a longer night.
+
+    Google Health / Health Sync often emits a later ``sleep_analysis`` row for the
+    same calendar ``date`` with ``sleepStart`` in the early morning and
+    ``totalSleep`` ≪ ``inBed``. Those fragments must not become the day's sleep.
+    """
+    hrs = _sleep_hours_from_aggregated_row(entry)
+    if hrs is None:
+        # Stage-only rows (no totalSleep) are not fragments; keep processing.
+        return False
+
+    span: float | None = None
+    start_raw, end_raw = entry.get("sleepStart"), entry.get("sleepEnd")
+    if isinstance(start_raw, str) and isinstance(end_raw, str):
+        start, end = _parse_hae_datetime(start_raw), _parse_hae_datetime(end_raw)
+        if start is not None and end is not None and end > start:
+            span = (end - start).total_seconds() / 3600.0
+
+    in_bed = _num(entry.get("inBed"))
+    if in_bed is not None and in_bed > 72:
+        in_bed = in_bed / 3600.0
+
+    session = span if span is not None else hrs
+    # Long time-in-bed with a short reported session → morning fragment.
+    if in_bed is not None and in_bed >= 5.0 and session < 3.5 and session < in_bed * 0.45:
+        return True
+    return False
+
+
 def _sleep_stage_hours(value: float | None, *, units: str | None) -> float | None:
     """Coerce a sleep-stage duration to hours, tolerating hours/minutes/seconds.
 
@@ -247,6 +293,12 @@ def _iter_hae_metric_samples(
                 continue
             d = _parse_sample_date(d_raw)
             if d is None:
+                continue
+            if _is_short_sleep_fragment(entry):
+                logger.info(
+                    "Skipping short sleep fragment for %s (totalSleep/inBed mismatch)",
+                    d.isoformat(),
+                )
                 continue
             hrs = _sleep_hours_from_aggregated_row(entry)
             if hrs is not None:
