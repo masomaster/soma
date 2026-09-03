@@ -1699,12 +1699,9 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
                     delta = f"{this_wk - last_wk:+.1f} mi vs last week"
                 st.metric("🏃 Weekly mileage", _fmt(this_wk, suffix=" mi"), delta=delta)
         mode = "fixture" if _fixture_mode_enabled() else "live"
-        _render_training_phases(
-            ctx.get("training_phase"),
-            compact=False,
-            user_id=str(ctx.get("user_id") or ""),
-            mode=mode,
-        )
+        # Display-only here — Manage controls live on Training (st.tabs runs every
+        # tab body each run; duplicate End/Cancel keys crash Streamlit).
+        _render_training_phases(ctx.get("training_phase"), compact=False)
         # Compact week-streak glance — full month grids live on the Training tab.
         # Pace lights stay in the hero only (avoid repeating lift/cardio colors).
         cal = _load_workout_calendar(ctx, mode)
@@ -1918,8 +1915,14 @@ def _render_training_phases(
     compact: bool = False,
     user_id: str | None = None,
     mode: str = "fixture",
+    manage: bool = False,
 ) -> None:
-    """Show active and upcoming training blocks from dashboard context."""
+    """Show active and upcoming training blocks from dashboard context.
+
+    ``manage=True`` renders End/Cancel controls (Training tab only). Overview
+    must stay display-only: ``st.tabs`` executes every tab each run, so duplicate
+    button keys would raise ``StreamlitDuplicateElementKey``.
+    """
     if not phase_ctx:
         if not compact:
             st.caption("No training phases scheduled — ask Coaching chat to add one.")
@@ -1984,7 +1987,7 @@ def _render_training_phases(
                 if phase.get("notes"):
                     st.caption(phase["notes"])
 
-        if mode == "live" and user_id and all_phases:
+        if manage and mode == "live" and user_id and all_phases:
             st.markdown("**Manage phases**")
             st.caption(
                 "End today closes a block without deleting it. Cancel hides it from "
@@ -2003,7 +2006,7 @@ def _render_training_phases(
                 row_cols[0].markdown(f"**{label}** ({ptype}) · {dates}")
                 if row_cols[1].button(
                     "End today",
-                    key=f"phase_end:{phase_id}",
+                    key=f"training:phase_end:{phase_id}",
                     use_container_width=True,
                 ):
                     try:
@@ -2033,7 +2036,7 @@ def _render_training_phases(
                         st.error(str(exc))
                 if row_cols[2].button(
                     "Cancel",
-                    key=f"phase_cancel:{phase_id}",
+                    key=f"training:phase_cancel:{phase_id}",
                     use_container_width=True,
                 ):
                     try:
@@ -2261,6 +2264,7 @@ def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
         compact=False,
         user_id=str(ctx.get("user_id") or ""),
         mode=mode,
+        manage=True,
     )
     _render_workload_pace_lights(workload_pace)
     _render_workout_calendar(ctx, mode)
