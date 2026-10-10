@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
+
+import pytest
 
 from pipeline.weight_trend import (
     build_weight_trend,
@@ -150,3 +152,30 @@ def test_trend_follows_the_last_weigh_in_when_today_has_none():
 def test_weight_goal_from_text_ignores_unstructured_notes():
     assert weight_goal_from_text("Lift once a week.") == (None, None)
     assert weight_goal_from_text(None) == (None, None)
+
+
+def test_weight_points_compare_calendar_days_when_inputs_are_datetimes():
+    points = weight_points(
+        [_row(datetime(2026, 9, 3, 8, 30), 165.6)],
+        as_of=datetime(2026, 10, 10, 12, 0),
+    )
+    assert points == [(date(2026, 9, 3), 165.6)]
+
+
+def test_weight_points_compare_calendar_days_when_inputs_are_timestamps():
+    pd = pytest.importorskip("pandas")
+    points = weight_points(
+        [{"metric_date": pd.Timestamp("2026-09-03"), "body_weight_lbs": 165.6}],
+        as_of=pd.Timestamp("2026-10-10"),
+    )
+    assert points == [(date(2026, 9, 3), 165.6)]
+    trend = build_weight_trend(
+        [{"metric_date": pd.Timestamp("2026-09-03"), "body_weight_lbs": 165.6}],
+        as_of=pd.Timestamp("2026-10-10"),
+        phase_start=pd.Timestamp("2026-10-10"),
+        target_date=pd.Timestamp("2026-12-01"),
+    )
+    assert trend["latest_date"] == "2026-09-03"
+    assert trend["days_since_weigh_in"] == 37
+    assert trend["phase_start"] == "2026-10-10"
+    assert trend["target_date"] == "2026-12-01"

@@ -68,9 +68,16 @@ EFFORT_STRENGTH_MINUTES_PER_HARD_SET = 3.0
 
 
 def _as_date(value: Any) -> date | None:
-    """Coerce ``datetime``, plain ``date``, or ISO ``YYYY-MM-DD[...]`` string to ``date``."""
+    """Coerce ``datetime``, plain ``date``, or ISO ``YYYY-MM-DD[...]`` string to ``date``.
+
+    ``pandas.Timestamp`` is a ``datetime``, so it is included. ``pandas.NaT`` is
+    also a ``datetime``, but ``NaT.date()`` is still NaT, not a calendar day.
+    """
     if isinstance(value, datetime):
-        return value.date()
+        day = value.date()
+        if isinstance(day, datetime) or not isinstance(day, date):
+            return None
+        return day
     if isinstance(value, date):
         return value
     if isinstance(value, str) and value:

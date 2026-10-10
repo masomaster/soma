@@ -582,6 +582,18 @@ def _with_running_miles(weekly_rows: list[dict[str, Any]]) -> list[dict[str, Any
     return weekly_rows
 
 
+def _index_day(idx: Any) -> date | None:
+    """Calendar day for a chart index label.
+
+    ``pandas.Timestamp`` subclasses ``datetime.date``, so ``isinstance(idx, date)``
+    is true and must not be used to skip ``.date()``. Comparing that timestamp
+    with a plain ``date`` raises.
+    """
+    from pipeline.features import as_date
+
+    return as_date(idx)
+
+
 def _clip_frame(df, *, as_of: date, days: int):
     """Keep rows whose index falls in the selected chart window."""
     if df is None or getattr(df, "empty", True):
@@ -589,8 +601,8 @@ def _clip_frame(df, *, as_of: date, days: int):
     start = as_of - timedelta(days=days - 1)
 
     def _on_or_after(idx: Any) -> bool:
-        d = idx.date() if hasattr(idx, "date") and not isinstance(idx, date) else idx
-        return isinstance(d, date) and d >= start
+        d = _index_day(idx)
+        return d is not None and d >= start
 
     mask = [_on_or_after(idx) for idx in df.index]
     return df.loc[mask]
@@ -981,9 +993,8 @@ def _enrich_metrics_sleep_scores(mdf):
     }
 
     def _key(idx: Any) -> str:
-        if hasattr(idx, "date") and callable(idx.date) and not isinstance(idx, date):
-            idx = idx.date()
-        return str(idx)[:10]
+        d = _index_day(idx)
+        return d.isoformat() if d is not None else str(idx)[:10]
 
     mdf = mdf.copy()
     mdf["sleep_score"] = [by_date.get(_key(idx)) for idx in mdf.index]
@@ -1004,8 +1015,8 @@ def _attach_weight_rolling(mdf):
             continue
         if value != value:
             continue
-        d = idx.date() if hasattr(idx, "date") and not isinstance(idx, date) else idx
-        if isinstance(d, date):
+        d = _index_day(idx)
+        if d is not None:
             rows.append({"metric_date": d, "body_weight_lbs": value})
     if not rows:
         return mdf
@@ -1015,8 +1026,8 @@ def _attach_weight_rolling(mdf):
     avg_28 = rolling_means(points, window_days=28)
 
     def _lookup(mapping: dict[date, float], idx: Any) -> float | None:
-        d = idx.date() if hasattr(idx, "date") and not isinstance(idx, date) else idx
-        if not isinstance(d, date):
+        d = _index_day(idx)
+        if d is None:
             return None
         return mapping.get(d)
 
@@ -1417,12 +1428,8 @@ def _latest_and_delta(df, col: str, lookback: int = 7) -> tuple[float | None, fl
 
 
 def _as_of_from_ctx(ctx: dict) -> date:
-    raw = ctx.get("as_of")
-    if isinstance(raw, date):
-        return raw
-    if isinstance(raw, str) and len(raw) >= 10:
-        return date.fromisoformat(raw[:10])
-    return date.today()
+    parsed = _index_day(ctx.get("as_of"))
+    return parsed if parsed is not None else date.today()
 
 
 def _weight_history_rows(mdf) -> list[dict[str, Any]]:
@@ -1430,8 +1437,8 @@ def _weight_history_rows(mdf) -> list[dict[str, Any]]:
         return []
     rows: list[dict[str, Any]] = []
     for idx, val in mdf["body_weight_lbs"].dropna().items():
-        d = idx.date() if hasattr(idx, "date") and not isinstance(idx, date) else idx
-        if isinstance(d, date):
+        d = _index_day(idx)
+        if d is not None:
             rows.append({"metric_date": d, "body_weight_lbs": float(val)})
     return rows
 

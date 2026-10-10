@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 
+import pytest
+
 from pipeline import features as F
 
 RUN = date(2024, 6, 8)
@@ -15,6 +17,12 @@ def _d(days_ago: int) -> date:
 
 def test_as_date_normalizes_datetime_to_calendar_date() -> None:
     assert F.as_date(datetime(2024, 6, 1, 15, 30, 0)) == date(2024, 6, 1)
+
+
+def test_as_date_rejects_pandas_nat() -> None:
+    pd = pytest.importorskip("pandas")
+    assert F.as_date(pd.NaT) is None
+    assert F.as_date(pd.Timestamp("2026-06-06 15:00")) == date(2026, 6, 6)
 
 
 def test_rollup_pivots_known_metrics_and_ignores_unknown():

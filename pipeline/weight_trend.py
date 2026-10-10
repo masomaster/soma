@@ -41,10 +41,13 @@ def weight_points(
     as_of: date,
 ) -> list[tuple[date, float]]:
     """Sorted ``(date, lb)`` weigh-ins on or before ``as_of``. Later rows win a day."""
+    cutoff = as_date(as_of)
+    if cutoff is None:
+        return []
     by_date: dict[date, float] = {}
     for row in history:
         d = as_date(row.get("metric_date"))
-        if d is None or d > as_of:
+        if d is None or d > cutoff:
             continue
         value = _num(row.get("body_weight_lbs"))
         if value is None:
@@ -111,6 +114,11 @@ def build_weight_trend(
     ``change_since_first_lbs`` is the latest reading minus the earliest one in
     ``history``.
     """
+    as_of = as_date(as_of) or date.today()
+    if phase_start is not None:
+        phase_start = as_date(phase_start)
+    if target_date is not None:
+        target_date = as_date(target_date)
     points = weight_points(history, as_of=as_of)
     latest_date: date | None = None
     latest: float | None = None
