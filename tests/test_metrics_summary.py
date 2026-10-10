@@ -10,7 +10,7 @@ from pipeline.rules import Flag
 RUN = date(2024, 6, 8)  # Saturday — ISO week Mon 2024-06-03 … Sun 2024-06-09
 
 
-def test_build_glance_metrics_orders_and_formats_available_values():
+def test_build_glance_metrics_leads_with_weight_and_skips_recovery():
     week_activity = {
         "run_sessions": 3,
         "strength_sessions": 1,
@@ -28,31 +28,17 @@ def test_build_glance_metrics_orders_and_formats_available_values():
         week_activity=week_activity,
     )
     labels = [label for label, _ in metrics]
-    assert labels == [
-        "Runs (this week)",
-        "Strength (this week)",
-        "Cardio (this week)",
-        "Lifting tonnage (this week)",
-        "Run distance (this week)",
-        "Resting HR",
-        "HRV (last night)",
-        "Sleep (last night)",
-        "Body weight",
-        "Readiness",
-        "Red flags",
-    ]
+    assert labels == ["Body weight", "Weight vs 4-week avg"]
     values = dict(metrics)
-    assert values["Strength (this week)"] == "1 session · 10 hard sets"
-    assert values["Cardio (this week)"] == "2 sessions · 60 min"
-    assert values["Lifting tonnage (this week)"] == "3.2 short tons (6,500 lb)"
-    assert values["Run distance (this week)"] == "11.4 mi"
-    assert values["Resting HR"] == "50 bpm"
-    assert values["Readiness"] == "88/100"
-    assert values["Red flags"] == "None"
-    assert "Key lifts" not in labels
+    assert values["Body weight"] == "176.4 lb"
+    assert values["Weight vs 4-week avg"] == "Need more daily weigh-ins"
+    assert "Resting HR" not in labels
+    assert "Readiness" not in labels
+    assert "Red flags" not in labels
+    assert "Runs (this week)" not in labels
 
 
-def test_build_glance_metrics_omits_key_lifts_even_when_strength_progress_has_them():
+def test_build_glance_metrics_omits_key_lifts_and_week_over_week_volume():
     metrics = M.build_glance_metrics(
         features={},
         week_activity={
@@ -74,22 +60,23 @@ def test_build_glance_metrics_omits_key_lifts_even_when_strength_progress_has_th
     )
     labels = [label for label, _ in metrics]
     assert "Key lifts (latest)" not in labels
-    assert "Lifting vs last week" in labels
+    assert "Lifting vs last week" not in labels
+    assert labels == ["Body weight"]
 
 
-def test_build_glance_metrics_omits_missing_but_always_reports_red_flags():
+def test_build_glance_metrics_reports_missing_weigh_in():
     metrics = M.build_glance_metrics(features={}, daily_metrics=None, flags=[])
-    assert metrics == [("Red flags", "None")]
+    assert metrics == [("Body weight", "No weigh-in logged")]
 
 
-def test_red_flag_line_lists_only_warning_and_alert():
+def test_glance_does_not_list_recovery_flags():
     flags = [
         Flag(code="LOW_HRV", severity="alert", message="x"),
         Flag(code="LOW_SLEEP", severity="warning", message="y"),
         Flag(code="SPARSE_RECOVERY_DATA", severity="info", message="z"),
     ]
-    metrics = dict(M.build_glance_metrics(features={}, flags=flags))
-    assert metrics["Red flags"] == "2 — LOW_HRV, LOW_SLEEP"
+    labels = [label for label, _ in M.build_glance_metrics(features={}, flags=flags)]
+    assert "Red flags" not in labels
 
 
 def test_render_glance_block_is_heading_plus_bullets():
@@ -143,15 +130,55 @@ def test_calendar_week_glance_activity_excludes_strength_typed_cardio():
     assert week["strength_volume_lbs"] == 1000.0
 
 
-def test_format_glance_section_renders_full_markdown():
+def test_build_glance_metrics_shows_load_against_four_week_average():
+    metrics = dict(
+        M.build_glance_metrics(
+            features={},
+            weight_trend={
+                "latest_lbs": 165.0,
+                "readings_7d": 3,
+                "avg_7d_lbs": 165.2,
+                "readings_28d": 8,
+                "avg_28d_lbs": 166.0,
+                "vs_4wk_lbs": -0.8,
+            },
+            workload_pace={
+                "cardio": {
+                    "acute_load": 180,
+                    "four_week_avg_load": 140,
+                    "vs_monthly_avg_pct": 28.6,
+                    "load_unit": "min",
+                    "status": "yellow",
+                    "label": "Cautious — ease up a little",
+                },
+                "lifting": {
+                    "acute_load": 4000,
+                    "four_week_avg_load": 4200,
+                    "vs_monthly_avg_pct": -4.8,
+                    "load_unit": "lb",
+                    "status": "green",
+                    "label": "Good to go",
+                },
+            },
+        )
+    )
+    assert metrics["Body weight"] == "165.0 lb · 7-day avg 165.2 lb"
+    assert "−0.8 lb" in metrics["Weight vs 4-week avg"] or "-0.8 lb" in metrics["Weight vs 4-week avg"]
+    assert metrics["Cardio load"].startswith("180 min last 7d")
+    assert "4-wk avg 140 min" in metrics["Cardio load"]
+    assert "Cautious" in metrics["Cardio load"]
+    assert "Good to go" not in metrics["Lifting load"]
+    assert "4-wk avg 4200 lb" in metrics["Lifting load"]
+
+
+def test_format_glance_section_renders_weight_only_when_that_is_all_we_have():
     section = M.format_glance_section(
         features={"overall_readiness_score": 90.0},
-        daily_metrics={"resting_hr": 48},
+        daily_metrics={"resting_hr": 48, "body_weight_lbs": 170.2},
         flags=[Flag(code="LOW_SLEEP", severity="warning", message="x")],
     )
     assert section == (
         "## At a Glance\n\n"
-        "- **Resting HR:** 48 bpm\n"
-        "- **Readiness:** 90/100\n"
-        "- **Red flags:** 1 — LOW_SLEEP"
+        "- **Body weight:** 170.2 lb\n"
+        "- **Weight vs 4-week avg:** Need more daily weigh-ins"
     )

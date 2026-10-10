@@ -819,15 +819,14 @@ def _pace_light_card(title: str, domain: Mapping[str, Any] | None) -> None:
     unit = str(domain.get("load_unit") or "")
     if load is not None:
         st.metric("Last 7 days", _fmt(load, suffix=f" {unit}"))
-    wow = domain.get("wow_change_pct")
-    if isinstance(wow, (int, float)):
-        st.caption(f"Vs prior 7 days: {wow:+.1f}%")
-    acwr = domain.get("acwr")
-    if isinstance(acwr, (int, float)):
-        st.caption(f"ACWR (vs 4×7d avg): {acwr:.2f}")
+    avg = domain.get("four_week_avg_load")
+    if isinstance(avg, (int, float)):
+        st.caption(f"4-week avg: {_fmt(avg, suffix=f' {unit}')}")
     vs = domain.get("vs_monthly_avg_pct")
     if isinstance(vs, (int, float)):
-        st.caption(f"Vs 28d avg: {vs:+.1f}%")
+        st.caption(f"Vs 4-week avg: {vs:+.1f}%")
+    elif avg is None:
+        st.caption("4-week average not ready yet")
 
 
 def _render_workload_pace_lights(workload_pace: dict[str, Any] | None) -> None:
@@ -975,9 +974,45 @@ def _enrich_metrics_sleep_scores(mdf):
     return mdf
 
 
+def _attach_weight_rolling(mdf):
+    """Add calendar-day 7-day and 28-day weight means for the recovery chart."""
+    if mdf is None or getattr(mdf, "empty", True) or "body_weight_lbs" not in mdf.columns:
+        return mdf
+    from pipeline.weight_trend import rolling_means, weight_points
+
+    rows: list[dict[str, Any]] = []
+    for idx, val in mdf["body_weight_lbs"].items():
+        try:
+            value = float(val)
+        except (TypeError, ValueError):
+            continue
+        if value != value:
+            continue
+        d = idx.date() if hasattr(idx, "date") and not isinstance(idx, date) else idx
+        if isinstance(d, date):
+            rows.append({"metric_date": d, "body_weight_lbs": value})
+    if not rows:
+        return mdf
+    as_of = max(row["metric_date"] for row in rows)
+    points = weight_points(rows, as_of=as_of)
+    avg_7 = rolling_means(points, window_days=7)
+    avg_28 = rolling_means(points, window_days=28)
+
+    def _lookup(mapping: dict[date, float], idx: Any) -> float | None:
+        d = idx.date() if hasattr(idx, "date") and not isinstance(idx, date) else idx
+        if not isinstance(d, date):
+            return None
+        return mapping.get(d)
+
+    mdf = mdf.copy()
+    mdf["weight_7d_avg"] = [_lookup(avg_7, idx) for idx in mdf.index]
+    mdf["weight_28d_avg"] = [_lookup(avg_28, idx) for idx in mdf.index]
+    return mdf
+
+
 def _enrich_metrics_frame(mdf):
     """Apply all client-side metric enrichments for dashboard charts."""
-    return _enrich_metrics_trailing_avgs(_enrich_metrics_sleep_scores(mdf))
+    return _attach_weight_rolling(_enrich_metrics_trailing_avgs(_enrich_metrics_sleep_scores(mdf)))
 
 
 def _series_has_data(df, col: str) -> bool:
@@ -1317,23 +1352,13 @@ def _render_pace_charts(
     title: str,
     load_label: str,
 ) -> None:
-    """WoW change + load vs 4-week average charts for one pace domain."""
+    """Load versus the rolling 4-week average, with week-over-week as context."""
     df = _pace_weekly_df(workload_pace, domain_key)
     if df is None or getattr(df, "empty", True):
         st.caption(f"No {title.lower()} history yet.")
         return
     left, right = st.columns(2)
     with left:
-        with st.container(border=True):
-            st.markdown(f"**{title} · week-over-week %**")
-            _time_chart(
-                df,
-                {"wow_change_pct": "WoW %"},
-                grain="week",
-                y_title="% change vs prior week",
-            )
-            st.caption("Chart is Mon–Sun calendar weeks. Pace lights use rolling 7-day windows through today.")
-    with right:
         with st.container(border=True):
             st.markdown(f"**{title} · weekly load vs 4-wk avg**")
             _time_chart(
@@ -1345,7 +1370,20 @@ def _render_pace_charts(
                 grain="week",
                 y_title=load_label,
             )
-            st.caption("Points are Mon–Sun calendar weeks; the current week is in-progress until Sunday.")
+            st.caption(
+                "Pace lights use the last 7 days versus the prior four 7-day windows, "
+                "not this week-over-week chart."
+            )
+    with right:
+        with st.container(border=True):
+            st.markdown(f"**{title} · week-over-week %**")
+            _time_chart(
+                df,
+                {"wow_change_pct": "WoW %"},
+                grain="week",
+                y_title="% change vs prior week",
+            )
+            st.caption("Context only. The pace light ignores week-over-week change.")
 
 
 def _latest_and_delta(df, col: str, lookback: int = 7) -> tuple[float | None, float | None]:
@@ -1360,6 +1398,85 @@ def _latest_and_delta(df, col: str, lookback: int = 7) -> tuple[float | None, fl
         return (latest, None)
     prior = float(series.iloc[-min(lookback + 1, len(series))])
     return (latest, latest - prior)
+
+
+def _as_of_from_ctx(ctx: dict) -> date:
+    raw = ctx.get("as_of")
+    if isinstance(raw, date):
+        return raw
+    if isinstance(raw, str) and len(raw) >= 10:
+        return date.fromisoformat(raw[:10])
+    return date.today()
+
+
+def _weight_history_rows(mdf) -> list[dict[str, Any]]:
+    if mdf is None or getattr(mdf, "empty", True) or "body_weight_lbs" not in getattr(mdf, "columns", []):
+        return []
+    rows: list[dict[str, Any]] = []
+    for idx, val in mdf["body_weight_lbs"].dropna().items():
+        d = idx.date() if hasattr(idx, "date") and not isinstance(idx, date) else idx
+        if isinstance(d, date):
+            rows.append({"metric_date": d, "body_weight_lbs": float(val)})
+    return rows
+
+
+def _render_weight_metric(column, mdf, *, as_of: date) -> None:
+    """Weight tile: latest reading, delta versus the 4-week average."""
+    from pipeline.weight_trend import build_weight_trend
+
+    trend = build_weight_trend(_weight_history_rows(mdf), as_of=as_of)
+    latest = trend.get("latest_lbs")
+    delta = trend.get("vs_4wk_lbs")
+    delta_str = f"{delta:+.1f} lb vs 4-wk" if isinstance(delta, (int, float)) else None
+    column.metric("Weight", _fmt(latest, suffix=" lb"), delta=delta_str, delta_color="inverse")
+    days_since = trend.get("days_since_weigh_in")
+    if isinstance(days_since, int) and days_since >= 2:
+        column.caption(f"Last weigh-in {trend.get('latest_date')}")
+
+
+def _render_weight_log(ctx: dict, mode: str, mdf) -> None:
+    """Save one morning weigh-in onto ``daily_health_metrics`` without touching other columns."""
+    if mode != "live":
+        return
+    user_id = ctx.get("user_id")
+    if not user_id:
+        return
+    from pipeline.persistence import upsert_row
+    from pipeline.weight_trend import body_weight_log_row
+
+    history = _weight_history_rows(mdf)
+    default_lbs = round(float(history[-1]["body_weight_lbs"]), 1) if history else 165.0
+    st.caption("Log today's scale weight. Other metrics for that day stay as they are.")
+    with st.form("log_body_weight"):
+        cols = st.columns(2)
+        weight = cols[0].number_input(
+            "Weight (lb)",
+            min_value=80.0,
+            max_value=400.0,
+            value=default_lbs,
+            step=0.1,
+            format="%.1f",
+        )
+        weigh_date = cols[1].date_input("Date", value=_as_of_from_ctx(ctx))
+        submitted = st.form_submit_button("Save weigh-in")
+    if not submitted:
+        return
+    try:
+        row = body_weight_log_row(
+            user_id=str(user_id),
+            metric_date=weigh_date,
+            body_weight_lbs=float(weight),
+        )
+        with _scoped_conn(str(user_id), read_only=False) as conn:
+            with conn.cursor() as cur:
+                upsert_row(cur, "daily_health_metrics", row)
+            conn.commit()
+        _load_history_live.clear()
+        _load_live_context.clear()
+        st.success(f"Saved {row['body_weight_lbs']:.1f} lb for {weigh_date.isoformat()}")
+        st.rerun()
+    except Exception as exc:
+        st.error(str(exc))
 
 
 def _headline_metric(
@@ -1662,7 +1779,7 @@ def _render_hero(ctx: dict, mdf, fdf) -> None:
                      fallback=(ctx.get("today_metrics") or {}).get("sleep_hours"))
     _headline_metric(cols[2], "Resting HR", mdf, "resting_hr", suffix=" bpm",
                      higher_is_better=False, fallback=(ctx.get("today_metrics") or {}).get("resting_hr"))
-    _headline_metric(cols[3], "Weight", mdf, "body_weight_lbs", suffix=" lb", higher_is_better=False)
+    _render_weight_metric(cols[3], mdf, as_of=_as_of_from_ctx(ctx))
     _headline_metric(cols[4], "Readiness", fdf, "overall_readiness_score", fallback=readiness)
 
 
@@ -1743,7 +1860,7 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
         _render_alerts_row(ctx)
 
 
-def _tab_recovery(ctx: dict, mdf, fdf) -> None:
+def _tab_recovery(ctx: dict, mdf, fdf, mode: str = "fixture") -> None:
     m = ctx.get("today_metrics") or {}
     c = st.columns(4)
     _headline_metric(c[0], "HRV (rMSSD)", mdf, "hrv_rmssd", suffix=" ms", fallback=m.get("hrv_rmssd"))
@@ -1751,7 +1868,7 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
         c[0].caption("No HRV samples in Soma — see Apple Health → Heart → HRV.")
     _headline_metric(c[1], "Resting HR", mdf, "resting_hr", suffix=" bpm", higher_is_better=False,
                      fallback=m.get("resting_hr"))
-    _headline_metric(c[2], "Weight", mdf, "body_weight_lbs", suffix=" lb", higher_is_better=False)
+    _render_weight_metric(c[2], mdf, as_of=_as_of_from_ctx(ctx))
     _headline_metric(c[3], "Body fat", mdf, "body_fat_pct", suffix=" %", higher_is_better=False)
 
     left, right = st.columns(2)
@@ -1768,7 +1885,18 @@ def _tab_recovery(ctx: dict, mdf, fdf) -> None:
             )
         with st.container(border=True):
             st.markdown("**Body weight · by day**")
-            _padded_chart(mdf, {"body_weight_lbs": "Weight (lb)"}, pad=5, grain="day", y_title="lb")
+            _padded_chart(
+                mdf,
+                {
+                    "body_weight_lbs": "Weight (lb)",
+                    "weight_7d_avg": "7-day avg",
+                    "weight_28d_avg": "4-week avg",
+                },
+                pad=5,
+                grain="day",
+                y_title="lb",
+            )
+            _render_weight_log(ctx, mode, mdf)
     with right:
         with st.container(border=True):
             st.markdown("**Resting heart rate · by day**")
@@ -2864,7 +2992,7 @@ def main() -> None:
     with overview:
         _tab_overview(ctx, mdf, fdf)
     with recovery:
-        _tab_recovery(ctx, mdf, fdf)
+        _tab_recovery(ctx, mdf, fdf, mode)
     with training:
         _tab_training(ctx, mdf, fdf, wdf, mode)
     with sleep:

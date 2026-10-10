@@ -1,4 +1,4 @@
-"""Training pace indicators: rolling load change, vs monthly average, and RYG status.
+"""Training pace indicators: last 7 days versus a rolling 4-week average.
 
 Pure functions over already-loaded ``strength_events`` / ``cardio_events`` rows.
 Indicators follow sports-science load-monitoring practice:
@@ -6,18 +6,19 @@ Indicators follow sports-science load-monitoring practice:
 - **Acute:chronic ratio (ACWR):** last-7-day load ÷ average of the prior four
   7-day windows (28-day chronic baseline). Sweet spot ≈ 0.8–1.3; elevated
   injury-risk signal above ~1.5; underload below ~0.8.
-- **Week-over-week % change:** last 7 days vs the prior 7 days — flags rapid
-  ramps (>10–15% cardio, >12–20% strength).
-- **Vs monthly average %:** same chronic baseline expressed as percent delta.
+- **Vs 4-week average %:** the same chronic baseline expressed as a percent
+  delta. This is what sets the pace light.
+- **Week-over-week % change:** last 7 days vs the prior 7 days. Kept on the
+  series for charts. It does not move the light.
 
 **Pace lights** always use rolling windows ending on ``as_of`` (today), not a
 stale completed calendar week. Calendar-week series remain available for charts.
 
-Traffic lights:
+Traffic lights (versus the 4-week average only):
 
 - **Green** — load is fine to continue (includes underload / room to push).
-- **Yellow** — borderline overload; proceed carefully.
-- **Red** — overloaded; ease up.
+- **Yellow** — borderline high versus the 4-week average; proceed carefully.
+- **Red** — high versus the 4-week average; ease up.
 
 Strength-typed Apple Health workouts and Fitbit/Health Sync NEAT walks are
 excluded from cardio minutes so they are not double-counted against Hevy
@@ -95,25 +96,6 @@ def _status_from_acwr(
     return "green", None
 
 
-def _status_from_wow(
-    wow_pct: float | None,
-    *,
-    th: Mapping[str, float],
-    spike_yellow: float,
-    spike_red: float,
-) -> tuple[PaceStatus, PaceDirection | None]:
-    """WoW spikes can go yellow/red; drops are green (deload ≠ overload)."""
-    if wow_pct is None:
-        return "unknown", None
-    if wow_pct >= spike_red:
-        return "red", "high"
-    if wow_pct >= spike_yellow:
-        return "yellow", "high"
-    if wow_pct <= -th["pace_wow_drop_yellow_pct"]:
-        return "green", "low"
-    return "green", None
-
-
 def _status_from_vs_month(
     vs_pct: float | None, th: Mapping[str, float]
 ) -> tuple[PaceStatus, PaceDirection | None]:
@@ -175,23 +157,19 @@ def _enrich_weekly_rollups(
 def _compose_domain_status(
     *,
     acwr: float | None,
-    wow_pct: float | None,
     vs_month_pct: float | None,
     th: Mapping[str, float],
-    spike_yellow: float,
-    spike_red: float,
 ) -> tuple[PaceStatus, PaceDirection | None, list[str]]:
+    """Status from the last 7 days versus the prior four 7-day windows.
+
+    Week-over-week change is stored on the domain for charts and is not an
+    input here.
+    """
     status: PaceStatus = "unknown"
     direction: PaceDirection | None = None
     signals: list[str] = []
     for label, st, direc in (
         ("acwr", *_status_from_acwr(acwr, th)),
-        (
-            "wow_change",
-            *_status_from_wow(
-                wow_pct, th=th, spike_yellow=spike_yellow, spike_red=spike_red
-            ),
-        ),
         ("vs_monthly_avg", *_status_from_vs_month(vs_month_pct, th)),
     ):
         if st != "unknown":
@@ -204,7 +182,7 @@ def _compose_domain_status(
         elif st == status and direc == "high":
             # Prefer overload direction when severity ties (safer coaching copy).
             direction = "high"
-    if status == "unknown" and (acwr is not None or wow_pct is not None):
+    if status == "unknown" and acwr is not None:
         status = "green"
         direction = None
     return status, direction, signals
@@ -267,11 +245,9 @@ def rolling_pace_metrics(
     wow: float | None
     if prior_7d_load > 0:
         wow = round((acute_load - prior_7d_load) / prior_7d_load * 100.0, 1)
-    elif acute_load > 0:
-        # Return-from-rest / first load: no prior week to ratio against. Signal
-        # a large positive ramp so lights go yellow/red instead of "unknown".
-        wow = 100.0
     else:
+        # No prior week to ratio against (return from rest, or both windows empty).
+        # Leave this null so a missing baseline is not painted as a week-to-week spike.
         wow = None
     prior = [float(v) for v in prior_four_week_loads]
     if len(prior) < 4 or all(v <= 0 for v in prior):
@@ -320,8 +296,6 @@ def _domain_block(
     weekly_rollups: Sequence[Mapping[str, Any]],
     as_of: date,
     th: Mapping[str, float],
-    spike_yellow: float,
-    spike_red: float,
     load_fn: Callable[[date, date], float],
 ) -> dict[str, Any]:
     acute, prior_7d, four_weeks, acute_start, acute_end = _rolling_window_loads(
@@ -334,11 +308,8 @@ def _domain_block(
     )
     status, direction, signals = _compose_domain_status(
         acwr=_num(metrics["acwr"]),
-        wow_pct=_num(metrics["wow_change_pct"]),
         vs_month_pct=_num(metrics["vs_monthly_avg_pct"]),
         th=th,
-        spike_yellow=spike_yellow,
-        spike_red=spike_red,
     )
     latest = weekly_rollups[-1] if weekly_rollups else {}
     calendar_prior = weekly_rollups[-2] if len(weekly_rollups) >= 2 else {}
@@ -483,8 +454,6 @@ def build_workload_pace_summary(
         weekly_rollups=lifting_weekly,
         as_of=as_of,
         th=th,
-        spike_yellow=th["pace_wow_spike_yellow_strength_pct"],
-        spike_red=th["pace_wow_spike_red_strength_pct"],
         load_fn=lambda start, end: window_strength_load_lbs(
             strength_events, start=start, end=end
         ),
@@ -503,8 +472,6 @@ def build_workload_pace_summary(
         weekly_rollups=cardio_minutes_weekly,
         as_of=as_of,
         th=th,
-        spike_yellow=th["pace_wow_spike_yellow_cardio_pct"],
-        spike_red=th["pace_wow_spike_red_cardio_pct"],
         load_fn=lambda start, end: window_cardio_load(
             cardio_for_load, start=start, end=end, mode=None, metric="minutes"
         ),
@@ -550,18 +517,46 @@ def build_workload_pace_summary(
 
 
 def pace_status_message(domain: Mapping[str, Any]) -> str:
-    """One-line human summary for email / dashboard chips."""
+    """One-line summary of load versus the rolling 4-week average."""
     status = str(domain.get("status") or "unknown")
     label = str(domain.get("label") or _label_for(status, domain.get("direction")))  # type: ignore[arg-type]
     emoji = str(domain.get("emoji") or _STATUS_EMOJI.get(status, "⚪"))  # type: ignore[arg-type]
     bits: list[str] = [f"{emoji} {label}"]
-    acwr = domain.get("acwr")
-    wow = domain.get("wow_change_pct")
-    if isinstance(acwr, (int, float)):
-        bits.append(f"ACWR {acwr:.2f}")
-    if isinstance(wow, (int, float)):
-        bits.append(f"WoW {wow:+.1f}%")
+    acute = domain.get("acute_load")
+    avg = domain.get("four_week_avg_load")
+    unit = str(domain.get("load_unit") or "").strip()
+    if isinstance(acute, (int, float)):
+        bits.append(f"{acute:g} {unit} last 7d".strip())
+    if isinstance(avg, (int, float)):
+        bits.append(f"4-wk avg {avg:g} {unit}".strip())
     vs = domain.get("vs_monthly_avg_pct")
     if isinstance(vs, (int, float)):
-        bits.append(f"vs 4-wk avg {vs:+.1f}%")
+        bits.append(f"{vs:+.1f}% vs 4-wk avg")
     return " · ".join(bits)
+
+
+def format_load_vs_four_week(domain: Mapping[str, Any]) -> str | None:
+    """Glance value: last-7-day load against the rolling 4-week average.
+
+    Omits the traffic-light emoji. A yellow/red label is appended only when
+    the 7-day load is high versus that average.
+    """
+    acute = domain.get("acute_load")
+    if not isinstance(acute, (int, float)):
+        return None
+    unit = str(domain.get("load_unit") or "").strip()
+    unit_suffix = f" {unit}" if unit else ""
+    parts = [f"{acute:g}{unit_suffix} last 7d"]
+    avg = domain.get("four_week_avg_load")
+    if isinstance(avg, (int, float)):
+        parts.append(f"4-wk avg {avg:g}{unit_suffix}")
+    else:
+        parts.append("4-week average not ready")
+    vs = domain.get("vs_monthly_avg_pct")
+    if isinstance(vs, (int, float)):
+        parts.append(f"{vs:+.1f}% vs 4-wk avg")
+    status = str(domain.get("status") or "")
+    label = domain.get("label")
+    if status in {"yellow", "red"} and label:
+        parts.append(str(label))
+    return " · ".join(parts)

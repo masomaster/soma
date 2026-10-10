@@ -176,8 +176,8 @@ def test_running_and_cycling_weekly_rollups_present():
     assert summary["cycling"]["weekly_rollups"][-1]["load"] == 12.0
 
 
-def test_return_from_rest_is_yellow_not_unknown():
-    """Acute load after all-zero prior windows must not paint 'Building baseline'."""
+def test_return_from_rest_without_four_week_baseline_stays_unknown():
+    """A first session after empty weeks is not a week-to-week overload."""
     as_of = date(2024, 7, 11)
     events = [
         _cardio_row(event_date=as_of, activity_type="Run", duration_min=60),
@@ -185,21 +185,49 @@ def test_return_from_rest_is_yellow_not_unknown():
     summary = build_workload_pace_summary(strength_events=[], cardio_events=events, as_of=as_of)
     cardio = summary["cardio"]
     assert cardio["acute_load"] == 60.0
-    assert cardio["status"] in ("yellow", "red")
-    assert cardio["direction"] == "high"
-    assert "Building baseline" not in cardio["label"]
+    assert cardio["four_week_avg_load"] is None
+    assert cardio["wow_change_pct"] is None
+    assert cardio["status"] == "unknown"
+    assert "Building baseline" in cardio["label"]
 
 
-def test_pace_status_message_includes_emoji():
+def test_week_over_week_spike_does_not_set_the_light():
+    """A jump versus last week stays green when it matches the 4-week average."""
+    as_of = date(2024, 6, 16)
+    events: list[dict] = []
+    # Prior four windows and the acute window are 10k. The week before acute
+    # is also one of those windows, so WoW is flat. Add a quiet week just
+    # before acute by putting the previous window's load on a day that is NOT
+    # in the prior-7d window... simpler: make prior 7d small and the other
+    # three chronic weeks large enough that acute matches the 4-week mean.
+    # Windows ending as_of-28, -21, -14 are 20k; window ending as_of-7 is 2k;
+    # acute is 15.5k. Mean of prior four = (20+20+20+2)/4 = 15.5, ACWR = 1.0.
+    # WoW = (15.5-2)/2 = +675%.
+    for back, reps in ((4, 20), (3, 20), (2, 20), (1, 2)):
+        end = as_of - timedelta(days=7 * back)
+        events.append(_strength_row(event_date=end, reps=reps, weight_lbs=1000))
+    events.append(_strength_row(event_date=as_of, reps=15, weight_lbs=1000))
+    # 15*1000 = 15000; chronic = (20000+20000+20000+2000)/4 = 15500; ACWR ~ 0.97.
+    summary = build_workload_pace_summary(strength_events=events, cardio_events=[], as_of=as_of)
+    lifting = summary["lifting"]
+    assert lifting["wow_change_pct"] is not None and lifting["wow_change_pct"] > 100
+    assert lifting["status"] == "green"
+    assert lifting["direction"] in (None, "low")
+
+
+def test_pace_status_message_uses_four_week_average():
     domain = {
         "status": "yellow",
         "emoji": "🟡",
         "label": "Cautious — ease up a little",
+        "load_unit": "min",
+        "acute_load": 180,
+        "four_week_avg_load": 140,
         "acwr": 1.35,
         "wow_change_pct": 12.0,
-        "vs_monthly_avg_pct": 18.0,
+        "vs_monthly_avg_pct": 28.6,
     }
     msg = pace_status_message(domain)
     assert "🟡" in msg
-    assert "ACWR" in msg
-    assert "WoW" in msg
+    assert "vs 4-wk avg" in msg
+    assert "WoW" not in msg

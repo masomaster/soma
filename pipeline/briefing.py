@@ -54,8 +54,11 @@ SYSTEM_GUIDELINES = (
     "modality-split external exposure (minutes or US short tons) and "
     "effort_unified_index_* as a heuristic combined trend—not HR TRIMP or "
     "clinical stress. "
-    "WORKLOAD_PACE lights: red means overload; yellow underload means room to "
-    "build — never call underload 'overloaded'. "
+    "WORKLOAD_PACE lights compare the last 7 days with the average of the prior "
+    "four 7-day windows (a rolling 4-week baseline). Week-over-week change does "
+    "not set the light. Red means that 7-day load is high versus the 4-week "
+    "average; yellow is a milder elevation. Underload stays green — never call "
+    "underload overloaded. "
     "STATISTICAL_SIGNALS lists z-score outliers vs the athlete's prior daily baseline "
     "(see baseline_n). Do not contradict listed z-scores or directions; if the "
     "anomalies list is empty, do not invent statistical outliers. "
@@ -71,14 +74,21 @@ SYSTEM_GUIDELINES = (
     "A DATA_QUALITY_* flag means a metric looks mis-recorded (e.g. a run's distance); "
     "mention it briefly and neutrally as a 'worth verifying' note — never alarm, and do "
     "not treat the suspect number as real. "
-    "FORMAT: write ONLY Markdown bullet points for the coaching body — 3 to 5 "
-    "short bullets of concrete actions, suggestions, or reminders for today. "
-    "No paragraph prose, no numbered lists, no closing question. Each bullet is "
-    "one tight line. An optional single bold lead-in line before the bullets is "
-    "OK only when it names the top signal. "
+    "FOCUS: the note covers the WEIGHT_TREND block and whether cardio or lifting "
+    "load is high versus the 4-week rolling average (injury). Do not recap sleep, "
+    "HRV, resting heart rate, readiness, session counts, tonnage, mileage, or "
+    "week-over-week changes. Mention a flag only when it is a warning or alert "
+    "about training load or a mis-recorded distance. If TRAINING_PHASE is a "
+    "fat-loss block, one short reminder about protein and that the deficit is in "
+    "the kitchen is enough — do not write a meal plan, and do not schedule "
+    "TrainerRoad or a 5K. "
+    "FORMAT: write ONLY Markdown bullet points for the coaching body — 2 to 4 "
+    "short bullets. No paragraph prose, no numbered lists, no closing question. "
+    "Each bullet is one tight line. An optional single bold lead-in line before "
+    "the bullets is OK only when it names the top signal. "
     "Do NOT write your own title, date, or greeting line — a 'Morning Check-In' "
     "header is added for you, so begin directly with the substance. "
-    "Keep the whole note under 120 words."
+    "Keep the whole note under 80 words."
 )
 
 # LLM client contract: given (system, user_prompt) return the assistant text.
@@ -202,6 +212,7 @@ def build_prompt(
     training_phase: Mapping[str, Any] | None = None,
     athlete_journal: Sequence[Mapping[str, Any]] | None = None,
     workload_pace: Mapping[str, Any] | None = None,
+    weight_trend: Mapping[str, Any] | None = None,
 ) -> str:
     """Render the user prompt: the pre-computed flags + features the model must narrate."""
     flag_lines = (
@@ -283,10 +294,17 @@ def build_prompt(
             if k != "as_of"
         }
         pace_block = (
-            "WORKLOAD_PACE (pre-computed green/yellow/red training pace lights from "
-            "rolling 7-day windows — green includes underload; yellow/red are overload "
-            "only; narrate briefly when yellow or red; do not recompute):\n"
+            "WORKLOAD_PACE (last 7 days versus the average of the prior four 7-day "
+            "windows — the light is that 4-week comparison, not week-over-week; "
+            "green includes underload; yellow/red mean the 7-day load is high versus "
+            "the 4-week average; narrate when yellow or red; do not recompute):\n"
             f"{json.dumps(compact_pace, indent=2, sort_keys=True, default=str)}\n\n"
+        )
+    weight_block = ""
+    if weight_trend:
+        weight_block = (
+            "WEIGHT_TREND (pre-computed from daily weigh-ins — narrate; do not recompute):\n"
+            f"{json.dumps(weight_trend, indent=2, sort_keys=True, default=str)}\n\n"
         )
     return (
         f"{guidelines_block}"
@@ -302,6 +320,7 @@ def build_prompt(
         f"{strength_block}"
         f"{phase_block}"
         f"{journal_block}"
+        f"{weight_block}"
         f"{pace_block}"
         "UNITS / INTERPRETATION (do not contradict):\n"
         "- strength_tonnage_7d is US short tons (2000 lb): sum over the window of "
@@ -349,6 +368,7 @@ def generate_briefing(
     training_phase: Mapping[str, Any] | None = None,
     athlete_journal: Sequence[Mapping[str, Any]] | None = None,
     workload_pace: Mapping[str, Any] | None = None,
+    weight_trend: Mapping[str, Any] | None = None,
     model: str = DEFAULT_BRIEFING_MODEL,
 ) -> Briefing:
     """Build the prompt, call the injected ``llm``, and return a :class:`Briefing`.
@@ -379,6 +399,7 @@ def generate_briefing(
         training_phase=training_phase,
         athlete_journal=athlete_journal,
         workload_pace=workload_pace,
+        weight_trend=weight_trend,
     )
     note = llm(SYSTEM_GUIDELINES, prompt).strip()
     if not note:
@@ -393,6 +414,7 @@ def generate_briefing(
         strength_progress=strength_for_glance,
         training_phase=training_phase,
         workload_pace=workload_pace,
+        weight_trend=weight_trend,
     )
     note = _prepend_title(
         _strip_trailing_question(note), feature_date, glance_block=glance_block
@@ -414,6 +436,8 @@ def generate_briefing(
         features_json["training_phase"] = training_phase
     if athlete_journal:
         features_json["athlete_journal"] = list(athlete_journal)
+    if weight_trend:
+        features_json["weight_trend"] = weight_trend
     if workload_pace:
         features_json["workload_pace"] = {
             k: (

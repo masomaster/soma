@@ -96,8 +96,7 @@ def test_generate_briefing_uses_llm_and_maps_to_row():
     assert briefing.coaching_note == (
         "# Morning Check-In · Saturday, June 8\n\n"
         "## At a Glance\n\n"
-        "- **Readiness:** 44/100\n"
-        "- **Red flags:** 1 — LOW_HRV\n\n"
+        "- **Body weight:** No weigh-in logged\n\n"
         "Take it easy today; HRV is down."
     )
     assert briefing.flags == ["LOW_HRV"]
@@ -143,16 +142,14 @@ def test_generate_briefing_leads_with_glance_summary():
     glance_idx = note.index("## At a Glance")
     prose_idx = note.index("Ease cardio")
     assert note.index("# Morning Check-In") < glance_idx < prose_idx
-    assert "- **Runs (this week):** 4" in note
-    assert "- **Strength (this week):** 3 sessions · 42 hard sets" in note
-    assert "- **Cardio (this week):** 2 sessions · 95 min" in note
-    assert "- **Lifting tonnage (this week):** 12.5 short tons (25,000 lb)" in note
-    assert "- **Resting HR:** 52 bpm" in note
-    assert "- **HRV (last night):** 48 ms" in note
-    assert "- **Sleep (last night):** 7.5 h" in note
-    assert "- **Readiness:** 71/100" in note
+    assert "- **Body weight:** No weigh-in logged" in note
+    assert "Runs (this week)" not in note
+    assert "Resting HR" not in note
+    assert "HRV (last night)" not in note
+    assert "Sleep (last night)" not in note
+    assert "Readiness" not in note
     assert "Key lifts" not in note
-    assert "- **Red flags:** 1 — HIGH_TRAINING_LOAD" in note
+    assert "Red flags" not in note
     assert "action bullets" in B.SYSTEM_GUIDELINES or "bullet points" in B.SYSTEM_GUIDELINES
 
 
@@ -184,7 +181,7 @@ def test_generate_briefing_replaces_llm_supplied_title():
     assert briefing.coaching_note == (
         "# Morning Check-In · Thursday, July 2\n\n"
         "## At a Glance\n\n"
-        "- **Red flags:** None\n\n"
+        "- **Body weight:** No weigh-in logged\n\n"
         "Solid recovery overnight."
     )
     assert briefing.coaching_note.count("Morning Check-In") == 1
@@ -201,7 +198,7 @@ def test_generate_briefing_strips_trailing_question():
     assert briefing.coaching_note == (
         "# Morning Check-In · Thursday, July 2\n\n"
         "## At a Glance\n\n"
-        "- **Red flags:** None\n\n"
+        "- **Body weight:** No weigh-in logged\n\n"
         "Recovery looks solid."
     )
     assert "?" not in briefing.coaching_note

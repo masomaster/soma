@@ -36,6 +36,7 @@ from pipeline.rules import Flag
 from pipeline.strength_analytics import build_strength_progress_summary
 from pipeline.training_phase import build_training_phase_context
 from pipeline.athlete_journal import format_journal_for_prompt
+from pipeline.weight_trend import build_weight_trend, weight_goal_from_text
 from pipeline.workload_pace import build_workload_pace_summary
 
 logger = logging.getLogger(__name__)
@@ -293,6 +294,22 @@ def run_daily_pipeline(
             else []
         )
         training_phase = build_training_phase_context(phases, as_of=run_date)
+        active_phase = training_phase.get("active") if isinstance(training_phase, Mapping) else None
+        phase_start = None
+        target_loss_lbs = None
+        target_date = None
+        if isinstance(active_phase, Mapping):
+            phase_start = features_mod.as_date(active_phase.get("start_date"))
+            notes = active_phase.get("target_notes")
+            target_loss_lbs, target_date = weight_goal_from_text(notes if isinstance(notes, str) else None)
+        metrics_window = list(result.daily_metrics_window or [])
+        weight_trend = build_weight_trend(
+            metrics_window,
+            as_of=run_date,
+            phase_start=phase_start,
+            target_loss_lbs=target_loss_lbs,
+            target_date=target_date,
+        )
         journal_rows = (
             list(io.load_journal_entries(user_id, run_date))
             if io.load_journal_entries is not None
@@ -315,6 +332,7 @@ def run_daily_pipeline(
             training_phase=training_phase,
             athlete_journal=athlete_journal,
             workload_pace=workload_pace,
+            weight_trend=weight_trend,
         )
         if io.persist_briefing is not None:
             io.persist_briefing(result.briefing.to_row())
