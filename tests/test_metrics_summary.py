@@ -31,7 +31,9 @@ def test_build_glance_metrics_leads_with_weight_and_skips_recovery():
     assert labels == ["Body weight", "Weight vs 4-week avg"]
     values = dict(metrics)
     assert values["Body weight"] == "176.4 lb"
-    assert values["Weight vs 4-week avg"] == "Need more daily weigh-ins"
+    assert values["Weight vs 4-week avg"] == (
+        "Not enough weigh-ins in the 4 weeks before the last reading"
+    )
     assert "Resting HR" not in labels
     assert "Readiness" not in labels
     assert "Red flags" not in labels
@@ -180,5 +182,5 @@ def test_format_glance_section_renders_weight_only_when_that_is_all_we_have():
     assert section == (
         "## At a Glance\n\n"
         "- **Body weight:** 170.2 lb\n"
-        "- **Weight vs 4-week avg:** Need more daily weigh-ins"
+        "- **Weight vs 4-week avg:** Not enough weigh-ins in the 4 weeks before the last reading"
     )

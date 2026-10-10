@@ -4,10 +4,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
-import pytest
-
 from pipeline.weight_trend import (
-    body_weight_log_row,
     build_weight_trend,
     format_weight_glance,
     rolling_means,
@@ -47,7 +44,9 @@ def test_sparse_history_does_not_invent_a_seven_day_average():
     assert trend["vs_4wk_lbs"] is None
     lines = dict(format_weight_glance(trend))
     assert "37d ago" in lines["Body weight"]
-    assert lines["Weight vs 4-week avg"] == "Need more daily weigh-ins"
+    assert lines["Weight vs 4-week avg"] == (
+        "Not enough weigh-ins in the 4 weeks before the last reading"
+    )
 
 
 def test_vs_four_week_average_uses_calendar_days():
@@ -128,11 +127,24 @@ def test_rolling_means_do_not_cross_calendar_gaps():
     assert means[date(2026, 6, 1)] == 160.0
 
 
-def test_body_weight_log_row_rejects_out_of_range():
-    row = body_weight_log_row(user_id="u1", metric_date=date(2026, 10, 10), body_weight_lbs=165.25)
-    assert row["body_weight_lbs"] == 165.25
-    with pytest.raises(ValueError):
-        body_weight_log_row(user_id="u1", metric_date=date(2026, 10, 10), body_weight_lbs=20)
+def test_trend_follows_the_last_weigh_in_when_today_has_none():
+    as_of = date(2026, 10, 10)
+    last = date(2026, 9, 3)
+    history = [
+        _row(last - timedelta(days=20), 160.0),
+        _row(last - timedelta(days=10), 162.0),
+        _row(last - timedelta(days=2), 164.0),
+        _row(last, 165.0),
+    ]
+    trend = build_weight_trend(history, as_of=as_of)
+    assert trend["days_since_weigh_in"] == 37
+    assert trend["readings_28d"] == 4
+    assert trend["avg_7d_lbs"] == 164.5
+    assert trend["vs_4wk_lbs"] == 1.8
+    assert trend["change_since_first_lbs"] == 5.0
+    assert trend["first_date"] == "2026-08-14"
+    text = dict(format_weight_glance(trend))
+    assert "+5.0 lb since 2026-08-14" in text["Weight since first reading"]
 
 
 def test_weight_goal_from_text_ignores_unstructured_notes():

@@ -20,9 +20,6 @@ _WEIGHT_GOAL_RE = re.compile(
     re.IGNORECASE,
 )
 
-_MIN_WEIGHT_LBS = 80.0
-_MAX_WEIGHT_LBS = 400.0
-
 
 def _num(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
@@ -97,28 +94,6 @@ def weight_goal_from_text(text: str | None) -> tuple[float | None, date | None]:
     return float(match.group("lbs")), goal_date
 
 
-def body_weight_log_row(
-    *,
-    user_id: str,
-    metric_date: date,
-    body_weight_lbs: float,
-) -> dict[str, Any]:
-    """Sparse ``daily_health_metrics`` row that records one weigh-in.
-
-    Other columns for that day are left untouched by the sparse upsert.
-    """
-    weight = float(body_weight_lbs)
-    if weight < _MIN_WEIGHT_LBS or weight > _MAX_WEIGHT_LBS:
-        raise ValueError(
-            f"body_weight_lbs must be between {_MIN_WEIGHT_LBS:.0f} and {_MAX_WEIGHT_LBS:.0f}"
-        )
-    return {
-        "user_id": user_id,
-        "metric_date": metric_date,
-        "body_weight_lbs": round(weight, 2),
-    }
-
-
 def build_weight_trend(
     history: Sequence[Mapping[str, Any]],
     *,
@@ -130,29 +105,48 @@ def build_weight_trend(
     """Latest weight, 7-day and 28-day means, and optional cut progress.
 
     ``vs_4wk_lbs`` is the recent 7-day mean (or the latest reading) minus the
-    mean of weigh-ins in the 28 days ending ``as_of``. It is omitted when the
-    28-day window has fewer than two readings. ``change_4w_lbs`` compares the
-    last 7 days with the 7 days ending four weeks earlier.
+    mean of weigh-ins in the 28 days ending on the last weigh-in. Windows follow
+    the scale readings, so a gap after the last Renpho sync does not wipe the
+    trend. Averages are omitted when a window has fewer than two readings.
+    ``change_since_first_lbs`` is the latest reading minus the earliest one in
+    ``history``.
     """
     points = weight_points(history, as_of=as_of)
     latest_date: date | None = None
     latest: float | None = None
+    first_date: date | None = None
+    first: float | None = None
     if points:
+        first_date, first = points[0]
         latest_date, latest = points[-1]
+    anchor = latest_date or as_of
 
-    avg_7d, readings_7d = _mean_between(points, as_of - timedelta(days=6), as_of)
-    avg_28d, readings_28d = _mean_between(points, as_of - timedelta(days=27), as_of)
+    avg_7d, readings_7d = _mean_between(points, anchor - timedelta(days=6), anchor)
+    avg_28d, readings_28d = _mean_between(points, anchor - timedelta(days=27), anchor)
     prior_7d, prior_n = _mean_between(
-        points, as_of - timedelta(days=34), as_of - timedelta(days=28)
+        points, anchor - timedelta(days=34), anchor - timedelta(days=28)
     )
+    if readings_7d < 2:
+        avg_7d = None
+    if readings_28d < 2:
+        avg_28d = None
 
-    current = avg_7d if readings_7d else latest
+    current = avg_7d if readings_7d >= 2 else latest
     vs_4wk: float | None = None
     if current is not None and avg_28d is not None and readings_28d >= 2:
         vs_4wk = current - avg_28d
     change_4w: float | None = None
     if avg_7d is not None and prior_7d is not None and prior_n:
         change_4w = avg_7d - prior_7d
+    change_since_first: float | None = None
+    if (
+        latest is not None
+        and first is not None
+        and latest_date is not None
+        and first_date is not None
+        and latest_date > first_date
+    ):
+        change_since_first = latest - first
 
     phase_baseline_lbs: float | None = None
     phase_baseline_date: date | None = None
@@ -198,6 +192,9 @@ def build_weight_trend(
         "avg_28d_lbs": _round1(avg_28d),
         "vs_4wk_lbs": _round1(vs_4wk),
         "change_4w_lbs": _round1(change_4w),
+        "first_date": first_date.isoformat() if first_date else None,
+        "first_lbs": _round1(first),
+        "change_since_first_lbs": _round1(change_since_first),
         "phase_start": phase_start.isoformat() if phase_start else None,
         "phase_baseline_lbs": _round1(phase_baseline_lbs),
         "phase_baseline_date": phase_baseline_date.isoformat() if phase_baseline_date else None,
@@ -232,7 +229,12 @@ def format_weight_glance(trend: Mapping[str, Any] | None) -> list[tuple[str, str
             detail += f" · {float(change_4w):+.1f} lb over 4 weeks"
         lines.append(("Weight vs 4-week avg", detail))
     elif (trend.get("readings_28d") or 0) < 2:
-        lines.append(("Weight vs 4-week avg", "Need more daily weigh-ins"))
+        lines.append(("Weight vs 4-week avg", "Not enough weigh-ins in the 4 weeks before the last reading"))
+
+    since_first = trend.get("change_since_first_lbs")
+    first_date = trend.get("first_date")
+    if isinstance(since_first, (int, float)) and first_date:
+        lines.append(("Weight since first reading", f"{float(since_first):+.1f} lb since {first_date}"))
 
     target = trend.get("target_loss_lbs")
     target_date = trend.get("target_date")
