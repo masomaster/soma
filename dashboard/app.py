@@ -1001,45 +1001,9 @@ def _enrich_metrics_sleep_scores(mdf):
     return mdf
 
 
-def _attach_weight_rolling(mdf):
-    """Add calendar-day 7-day and 28-day weight means for the recovery chart."""
-    if mdf is None or getattr(mdf, "empty", True) or "body_weight_lbs" not in mdf.columns:
-        return mdf
-    from pipeline.weight_trend import rolling_means, weight_points
-
-    rows: list[dict[str, Any]] = []
-    for idx, val in mdf["body_weight_lbs"].items():
-        try:
-            value = float(val)
-        except (TypeError, ValueError):
-            continue
-        if value != value:
-            continue
-        d = _index_day(idx)
-        if d is not None:
-            rows.append({"metric_date": d, "body_weight_lbs": value})
-    if not rows:
-        return mdf
-    as_of = max(row["metric_date"] for row in rows)
-    points = weight_points(rows, as_of=as_of)
-    avg_7 = rolling_means(points, window_days=7)
-    avg_28 = rolling_means(points, window_days=28)
-
-    def _lookup(mapping: dict[date, float], idx: Any) -> float | None:
-        d = _index_day(idx)
-        if d is None:
-            return None
-        return mapping.get(d)
-
-    mdf = mdf.copy()
-    mdf["weight_7d_avg"] = [_lookup(avg_7, idx) for idx in mdf.index]
-    mdf["weight_28d_avg"] = [_lookup(avg_28, idx) for idx in mdf.index]
-    return mdf
-
-
 def _enrich_metrics_frame(mdf):
     """Apply all client-side metric enrichments for dashboard charts."""
-    return _attach_weight_rolling(_enrich_metrics_trailing_avgs(_enrich_metrics_sleep_scores(mdf)))
+    return _enrich_metrics_trailing_avgs(_enrich_metrics_sleep_scores(mdf))
 
 
 def _series_has_data(df, col: str) -> bool:
@@ -1625,9 +1589,9 @@ def _render_auth_gate(cookie_manager) -> bool:
 
 
 _RANGE_OPTIONS: dict[str, int] = {"14d": 14, "30d": 30, "90d": 90, "6mo": 180}
-# Scale readings are sparse and can sit outside the selected chart range.
-# Weight charts always look back at least this far.
-_WEIGHT_HISTORY_DAYS = 180
+# The Weight tab shows daily weigh-ins for up to a year, independent of the
+# sidebar chart range. 370 matches the metrics-history cap.
+_WEIGHT_HISTORY_DAYS = 370
 
 
 def _render_sidebar(
@@ -1853,17 +1817,263 @@ def _tab_overview(ctx: dict, mdf, fdf) -> None:
         _render_alerts_row(ctx)
 
 
-def _tab_recovery(ctx: dict, mdf, fdf, *, weight_df=None) -> None:
-    m = ctx.get("today_metrics") or {}
+def _metric_history_rows(mdf, columns: tuple[str, ...]) -> list[dict[str, Any]]:
+    """Date-indexed metric frame back into row dicts. NaN cells are omitted."""
+    if mdf is None or getattr(mdf, "empty", True):
+        return []
+    rows: list[dict[str, Any]] = []
+    for idx, row in mdf.iterrows():
+        day = _index_day(idx)
+        if day is None:
+            continue
+        item: dict[str, Any] = {"metric_date": day}
+        for col in columns:
+            if col not in mdf.columns:
+                continue
+            try:
+                value = float(row[col])
+            except (TypeError, ValueError):
+                continue
+            if value == value:
+                item[col] = value
+        rows.append(item)
+    return rows
+
+
+def _loss_cell_style(value: Any) -> str:
+    if isinstance(value, (int, float)) and value < 0:
+        return "background-color: #c7f0c2; color: #1b4332"
+    return ""
+
+
+def _render_weight_chart(rows: list[dict[str, Any]]) -> None:
+    """Daily weigh-ins, the 7-day prior average, and a straight trend line."""
+    import altair as alt
+    import pandas as pd
+
+    from pipeline.weight_tracking import weight_trend_line
+
+    points = [
+        (row["metric_date"], float(row["body_weight_lbs"]))
+        for row in rows
+        if row.get("body_weight_lbs") is not None
+    ]
+    records: list[dict[str, Any]] = []
+    for row in rows:
+        day = row["metric_date"]
+        if row.get("body_weight_lbs") is not None:
+            records.append({"day": day, "series": "Weight (lb)", "value": row["body_weight_lbs"]})
+        if row.get("avg_7d_lbs") is not None:
+            records.append({"day": day, "series": "7-day prior avg", "value": row["avg_7d_lbs"]})
+    for day, value in weight_trend_line(points):
+        records.append({"day": day, "series": "Trend", "value": value})
+    if not records:
+        st.caption("No scale readings in Soma yet. They arrive from Apple Health after a Renpho sync.")
+        return
+
+    frame = pd.DataFrame(records)
+    frame["day"] = pd.to_datetime(frame["day"])
+    lo = float(frame["value"].min()) - 0.8
+    hi = float(frame["value"].max()) + 0.8
+    if lo == hi:
+        lo, hi = lo - 1.0, hi + 1.0
+    base = alt.Chart(frame).encode(
+        x=alt.X("day:T", title="Day", axis=alt.Axis(format="%b %d", labelAngle=-40)),
+        y=alt.Y("value:Q", scale=alt.Scale(domain=[lo, hi], zero=False), title="lb"),
+        color=alt.Color(
+            "series:N",
+            title=None,
+            scale=alt.Scale(
+                domain=["Weight (lb)", "7-day prior avg", "Trend"],
+                range=["#1b4332", "#52b788", "#95d5b2"],
+            ),
+            legend=alt.Legend(orient="top"),
+        ),
+        tooltip=[
+            alt.Tooltip("day:T", title="Day", format="%Y-%m-%d"),
+            "series:N",
+            alt.Tooltip("value:Q", format=".1f"),
+        ],
+    )
+    lines = base.mark_line(strokeWidth=2).encode(
+        strokeDash=alt.StrokeDash(
+            "series:N",
+            scale=alt.Scale(
+                domain=["Weight (lb)", "7-day prior avg", "Trend"],
+                range=[[1, 0], [1, 0], [7, 4]],
+            ),
+            legend=None,
+        )
+    )
+    dots = (
+        base.transform_filter(alt.datum.series == "Weight (lb)")
+        .mark_point(filled=True, size=28)
+    )
+    st.altair_chart((lines + dots).properties(height=360), use_container_width=True)
+
+
+def _render_weekly_change_chart(rows: list[dict[str, Any]]) -> None:
+    """7-day average today minus the 7-day average from 7 days earlier."""
+    import altair as alt
+    import pandas as pd
+
+    series = [
+        {"day": row["metric_date"], "change": row["weekly_change_lbs"]}
+        for row in rows
+        if row.get("weekly_change_lbs") is not None
+    ]
+    if len(series) < 2:
+        st.caption("Weekly change appears once two 7-day averages are a week apart.")
+        return
+    frame = pd.DataFrame(series)
+    frame["day"] = pd.to_datetime(frame["day"])
+    values = [float(row["change"]) for row in series]
+    lo = min(min(values), -2.0) - 0.4
+    hi = max(max(values), 0.0) + 0.4
+    line = (
+        alt.Chart(frame)
+        .mark_line(strokeWidth=2, color="#1d4e89")
+        .encode(
+            x=alt.X("day:T", title="Day", axis=alt.Axis(format="%b %d", labelAngle=-40)),
+            y=alt.Y(
+                "change:Q",
+                scale=alt.Scale(domain=[lo, hi], zero=False),
+                title="lb",
+            ),
+            tooltip=[
+                alt.Tooltip("day:T", title="Day", format="%Y-%m-%d"),
+                alt.Tooltip("change:Q", title="Weekly change (lb)", format="+.1f"),
+            ],
+        )
+    )
+    guides = pd.DataFrame(
+        [
+            {"y": 0.0, "label": "0"},
+            {"y": -1.0, "label": "-1"},
+            {"y": -2.0, "label": "-2"},
+        ]
+    )
+    rules = (
+        alt.Chart(guides)
+        .mark_rule(strokeDash=[5, 4], color="#e63946")
+        .encode(y="y:Q")
+    )
+    st.altair_chart((rules + line).properties(height=260), use_container_width=True)
+    st.caption(
+        "Lower numbers are better. Anything below 0 is losing weight on average "
+        "over the previous week. Ideal is between −1 and −2 lb."
+    )
+
+
+def _tab_weight(ctx: dict, weight_df) -> None:
+    """Daily weight log: 7-day prior average, week-over-week change, body fat."""
+    from pipeline.weight_tracking import daily_weight_log
+
+    as_of = _as_of_from_ctx(ctx)
+    history = _metric_history_rows(weight_df, ("body_weight_lbs", "body_fat_pct"))
+    rows = daily_weight_log(history, end=as_of)
+    weigh_ins = [row for row in rows if row.get("body_weight_lbs") is not None]
+    if not weigh_ins:
+        st.info("No scale readings in Soma yet. They arrive from Apple Health after a Renpho sync.")
+        return
+
+    latest = weigh_ins[-1]
+    # Tiles follow the as-of day, which is the last log row. A gap with no
+    # weigh-in in the trailing week leaves the average blank instead of
+    # repeating the last week that still had a reading.
+    as_of_row = rows[-1]
+    latest_avg = as_of_row.get("avg_7d_lbs")
+    latest_change = as_of_row.get("weekly_change_lbs")
+    latest_fat = next((row["body_fat_pct"] for row in reversed(rows) if row.get("body_fat_pct") is not None), None)
     c = st.columns(4)
+    change_delta = f"{latest_change:+.1f} lb vs prior week" if isinstance(latest_change, (int, float)) else None
+    c[0].metric(
+        "Weight",
+        f"{latest['body_weight_lbs']:.1f} lb",
+        delta=change_delta,
+        delta_color="inverse",
+    )
+    c[0].caption(f"Last weigh-in {latest['metric_date'].isoformat()}")
+    c[1].metric("7-day prior avg", f"{latest_avg:.1f} lb" if isinstance(latest_avg, (int, float)) else "—")
+    c[2].metric(
+        "Weekly change",
+        f"{latest_change:+.1f} lb" if isinstance(latest_change, (int, float)) else "—",
+        delta_color="inverse",
+    )
+    c[3].metric("Body fat", f"{latest_fat:.1f} %" if isinstance(latest_fat, (int, float)) else "—")
+    st.caption(
+        f"{len(weigh_ins)} weigh-ins · {weigh_ins[0]['metric_date'].isoformat()}–"
+        f"{weigh_ins[-1]['metric_date'].isoformat()}. "
+        "Every calendar day is listed. The sidebar chart range does not clip this tab."
+    )
+
+    with st.container(border=True):
+        st.markdown("**Body weight · by day**")
+        _render_weight_chart(rows)
+    left, right = st.columns(2)
+    with left:
+        with st.container(border=True):
+            st.markdown("**Weekly weight gain/loss**")
+            _render_weekly_change_chart(rows)
+    with right:
+        with st.container(border=True):
+            st.markdown("**Body fat · by day**")
+            fat_rows = [
+                {"metric_date": row["metric_date"], "body_fat_pct": row["body_fat_pct"]}
+                for row in rows
+                if row.get("body_fat_pct") is not None
+            ]
+            _padded_chart(
+                _history_df(fat_rows, "metric_date"),
+                {"body_fat_pct": "Body fat %"},
+                pad=0.4,
+                grain="day",
+                y_title="%",
+                empty="No body-fat readings in this history.",
+            )
+
+    import pandas as pd
+
+    table = pd.DataFrame(
+        [
+            {
+                "Day": pd.Timestamp(row["metric_date"]),
+                "Weight (lbs)": row.get("body_weight_lbs"),
+                "7-day prior avg.": row.get("avg_7d_lbs"),
+                "Weekly weight gain/loss": row.get("weekly_change_lbs"),
+                "Body fat (%)": row.get("body_fat_pct"),
+            }
+            for row in reversed(rows)
+        ]
+    )
+    styled = table.style.format(
+        {
+            "Weight (lbs)": "{:.1f}",
+            "7-day prior avg.": "{:.1f}",
+            "Weekly weight gain/loss": "{:+.1f}",
+            "Body fat (%)": "{:.1f}",
+        },
+        na_rep="",
+    ).map(_loss_cell_style, subset=["Weekly weight gain/loss"])
+    st.dataframe(
+        styled,
+        use_container_width=True,
+        hide_index=True,
+        height=420,
+        column_config={
+            "Day": st.column_config.DateColumn("Day", format="MMM D, YYYY"),
+        },
+    )
+
+
+def _tab_recovery(ctx: dict, mdf, fdf) -> None:
+    m = ctx.get("today_metrics") or {}
+    c = st.columns(2)
     _headline_metric(c[0], "HRV (rMSSD)", mdf, "hrv_rmssd", suffix=" ms", fallback=m.get("hrv_rmssd"))
     if not _series_has_data(mdf, "hrv_rmssd") and m.get("hrv_rmssd") is None:
         c[0].caption("No HRV samples in Soma — see Apple Health → Heart → HRV.")
     _headline_metric(c[1], "Resting HR", mdf, "resting_hr", suffix=" bpm", higher_is_better=False,
                      fallback=m.get("resting_hr"))
-    weight_frame = mdf if weight_df is None else weight_df
-    _render_weight_metric(c[2], weight_frame, as_of=_as_of_from_ctx(ctx))
-    _headline_metric(c[3], "Body fat", mdf, "body_fat_pct", suffix=" %", higher_is_better=False)
 
     left, right = st.columns(2)
     with left:
@@ -1877,38 +2087,16 @@ def _tab_recovery(ctx: dict, mdf, fdf, *, weight_df=None) -> None:
                 y_title="ms",
                 empty="No HRV samples in Soma yet. Check Apple Health → Heart → HRV, then HAE export.",
             )
-        with st.container(border=True):
-            st.markdown("**Body weight · by day**")
-            _padded_chart(
-                weight_frame,
-                {
-                    "body_weight_lbs": "Weight (lb)",
-                    "weight_7d_avg": "7-day avg",
-                    "weight_28d_avg": "4-week avg",
-                },
-                pad=2,
-                grain="day",
-                y_title="lb",
-                empty="No scale readings in Soma yet. They arrive from Apple Health after a Renpho sync.",
-            )
-            weight_rows = _weight_history_rows(weight_frame)
-            if weight_rows:
-                st.caption(
-                    f"{len(weight_rows)} weigh-ins from Apple Health · "
-                    f"{weight_rows[0]['metric_date'].isoformat()}–"
-                    f"{weight_rows[-1]['metric_date'].isoformat()}. "
-                    "Shown even when the chart range is shorter."
-                )
     with right:
         with st.container(border=True):
             st.markdown("**Resting heart rate · by day**")
             _padded_chart(mdf, {"resting_hr": "Resting HR"}, pad=5, grain="day", y_title="bpm")
-        with st.container(border=True):
-            st.markdown("**Blood oxygen (SpO₂) · by day**")
-            if _series_has_data(mdf, "spo2_pct"):
-                _padded_chart(mdf, {"spo2_pct": "SpO₂ %"}, pad=2, grain="day", y_title="%")
-            else:
-                st.caption("No SpO₂ in this range — not synced from Health yet.")
+    with st.container(border=True):
+        st.markdown("**Blood oxygen (SpO₂) · by day**")
+        if _series_has_data(mdf, "spo2_pct"):
+            _padded_chart(mdf, {"spo2_pct": "SpO₂ %"}, pad=2, grain="day", y_title="%")
+        else:
+            st.caption("No SpO₂ in this range — not synced from Health yet.")
 
 
 def _cardio_mode_totals(ctx: dict, mode: str) -> dict[str, dict[str, float]]:
@@ -2990,13 +3178,15 @@ def main() -> None:
 
     _render_hero(ctx, mdf, fdf, weight_df=weight_df)
 
-    overview, recovery, training, sleep, coaching = st.tabs(
-        ["📊 Overview", "❤️ Recovery", "🏋️ Training", "😴 Sleep", "💬 Coaching"]
+    overview, recovery, weight, training, sleep, coaching = st.tabs(
+        ["📊 Overview", "❤️ Recovery", "⚖️ Weight", "🏋️ Training", "😴 Sleep", "💬 Coaching"]
     )
     with overview:
         _tab_overview(ctx, mdf, fdf)
     with recovery:
-        _tab_recovery(ctx, mdf, fdf, weight_df=weight_df)
+        _tab_recovery(ctx, mdf, fdf)
+    with weight:
+        _tab_weight(ctx, weight_df)
     with training:
         _tab_training(ctx, mdf, fdf, wdf, mode)
     with sleep:
