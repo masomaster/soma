@@ -13,6 +13,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -20,13 +21,7 @@ logger = logging.getLogger(__name__)
 DROPBOX_TOKEN_URL = "https://api.dropboxapi.com/oauth2/token"
 DROPBOX_LIST_URL = "https://api.dropboxapi.com/2/files/list_folder"
 DROPBOX_LIST_CONTINUE_URL = "https://api.dropboxapi.com/2/files/list_folder/continue"
-DROPBOX_SEARCH_URL = "https://api.dropboxapi.com/2/files/search_v2"
-DROPBOX_SEARCH_CONTINUE_URL = "https://api.dropboxapi.com/2/files/search/continue_v2"
 DROPBOX_DOWNLOAD_URL = "https://content.dropboxapi.com/2/files/download"
-
-# Extensions for search_v2; ``.fit.gz`` etc. match as ``gz`` then pass ``is_activity_filename``.
-_ACTIVITY_SEARCH_EXTENSIONS = ("fit", "tcx", "gpx", "gz")
-_SEARCH_PAGE_SIZE = 100
 
 
 class DropboxApiError(Exception):
@@ -192,18 +187,21 @@ def _file_entry_from_metadata(entry: dict[str, Any]) -> DropboxFileEntry | None:
     )
 
 
-def _file_entry_from_search_match(match: dict[str, Any]) -> DropboxFileEntry | None:
-    """Extract a file entry from a ``search_v2`` match object."""
-    meta_wrap = match.get("metadata")
-    if not isinstance(meta_wrap, dict):
-        return None
-    # MetadataV2: {".tag": "metadata", "metadata": {FileMetadata...}}
-    if meta_wrap.get(".tag") == "metadata":
-        inner = meta_wrap.get("metadata")
-        if not isinstance(inner, dict):
-            return None
-        return _file_entry_from_metadata(inner)
-    return _file_entry_from_metadata(meta_wrap)
+def _modified_rank(entry: DropboxFileEntry) -> tuple[int, float]:
+    """Sort key: missing timestamps first, then newest ``client_modified``."""
+    raw = entry.client_modified
+    if not raw:
+        return (0, 0.0)
+    text = raw.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError:
+        return (0, 0.0)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return (1, -dt.timestamp())
 
 
 def iter_activity_files_newest_first(
@@ -214,53 +212,22 @@ def iter_activity_files_newest_first(
 ) -> Iterator[DropboxFileEntry]:
     """Yield activity files under ``folder_path``, newest modified first.
 
-    Uses ``search_v2`` with ``order_by=last_modified_time`` so callers can stop
-    once entries fall outside a lookback window — avoiding a full folder walk
-    when many old FIT files accumulate.
+    Uses ``list_folder``. Dropbox ``search_v2`` rejects an empty query, so it
+    cannot list a folder. The full listing is collected before sorting because
+    ``list_folder`` page order is not chronological. Files with no timestamp
+    are yielded first so a later lookback cutoff does not drop them.
     """
-    path = folder_path.strip()
-    if path == "/":
-        path = ""
-    result = _post_json(
-        DROPBOX_SEARCH_URL,
-        access_token=access_token,
-        payload={
-            # Empty query + extensions lists all matching files in ``path``.
-            "query": "",
-            "options": {
-                "path": path,
-                "max_results": _SEARCH_PAGE_SIZE,
-                "order_by": "last_modified_time",
-                "filename_only": True,
-                "file_status": "active",
-                "file_extensions": list(_ACTIVITY_SEARCH_EXTENSIONS),
-            },
-        },
-        urlopen=urlopen,
-    )
-    while True:
-        for match in result.get("matches") or []:
-            if not isinstance(match, dict):
-                continue
-            entry = _file_entry_from_search_match(match)
-            if entry is None:
-                continue
-            if not is_activity_filename(entry.name):
-                continue
-            yield entry
-        if not result.get("has_more"):
-            break
-        cursor = result.get("cursor")
-        if not isinstance(cursor, str) or not cursor:
-            raise DropboxApiError(
-                "Dropbox search_v2 has_more=true but cursor is missing or invalid"
-            )
-        result = _post_json(
-            DROPBOX_SEARCH_CONTINUE_URL,
+    files = [
+        entry
+        for entry in iter_folder_files(
             access_token=access_token,
-            payload={"cursor": cursor},
+            folder_path=folder_path,
             urlopen=urlopen,
         )
+        if is_activity_filename(entry.name)
+    ]
+    files.sort(key=_modified_rank)
+    yield from files
 
 
 def download_file(

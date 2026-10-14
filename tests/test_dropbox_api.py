@@ -152,66 +152,56 @@ def test_iter_folder_files_has_more_without_cursor_raises() -> None:
         )
 
 
-def test_iter_activity_files_newest_first_search_and_continue() -> None:
+def test_iter_activity_files_newest_first_sorts_across_pages() -> None:
     calls: list[str] = []
 
     def urlopen(req: Any, timeout: float = 0) -> _FakeResp:  # noqa: ARG001
         calls.append(req.full_url)
         if "continue" in req.full_url:
             payload = {
-                "matches": [
+                "entries": [
                     {
-                        "metadata": {
-                            ".tag": "metadata",
-                            "metadata": {
-                                ".tag": "file",
-                                "name": "older.fit",
-                                "path_display": "/Apps/WahooFitness/older.fit",
-                                "path_lower": "/apps/wahoofitness/older.fit",
-                                "content_hash": "h2",
-                                "client_modified": "2026-07-01T12:00:00Z",
-                            },
-                        }
+                        ".tag": "file",
+                        "name": "older.fit",
+                        "path_display": "/Apps/WahooFitness/older.fit",
+                        "path_lower": "/apps/wahoofitness/older.fit",
+                        "content_hash": "h2",
+                        "client_modified": "2026-07-01T12:00:00Z",
                     }
                 ],
                 "has_more": False,
             }
         else:
             body = json.loads(req.data.decode())
-            assert body["query"] == ""
-            opts = body["options"]
-            assert opts["order_by"] == "last_modified_time"
-            assert "fit" in opts["file_extensions"]
+            assert body["path"] == "/Apps/WahooFitness"
+            assert body["recursive"] is False
             payload = {
-                "matches": [
+                "entries": [
                     {
-                        "metadata": {
-                            ".tag": "metadata",
-                            "metadata": {
-                                ".tag": "file",
-                                "name": "newer.fit",
-                                "path_display": "/Apps/WahooFitness/newer.fit",
-                                "path_lower": "/apps/wahoofitness/newer.fit",
-                                "content_hash": "h1",
-                                "client_modified": "2026-07-20T12:00:00Z",
-                            },
-                        }
+                        ".tag": "file",
+                        "name": "newer.fit",
+                        "path_display": "/Apps/WahooFitness/newer.fit",
+                        "path_lower": "/apps/wahoofitness/newer.fit",
+                        "content_hash": "h1",
+                        "client_modified": "2026-07-20T12:00:00Z",
                     },
                     {
-                        "metadata": {
-                            ".tag": "metadata",
-                            "metadata": {
-                                ".tag": "file",
-                                "name": "notes.gz",
-                                "path_display": "/Apps/WahooFitness/notes.gz",
-                                "path_lower": "/apps/wahoofitness/notes.gz",
-                                "content_hash": "skip",
-                            },
-                        }
+                        ".tag": "file",
+                        "name": "undated.fit",
+                        "path_display": "/Apps/WahooFitness/undated.fit",
+                        "path_lower": "/apps/wahoofitness/undated.fit",
+                        "content_hash": "skip",
+                    },
+                    {
+                        ".tag": "file",
+                        "name": "notes.txt",
+                        "path_display": "/Apps/WahooFitness/notes.txt",
+                        "path_lower": "/apps/wahoofitness/notes.txt",
+                        "content_hash": "txt",
                     },
                 ],
                 "has_more": True,
-                "cursor": "sc1",
+                "cursor": "c1",
             }
         return _FakeResp(json.dumps(payload).encode())
 
@@ -220,14 +210,15 @@ def test_iter_activity_files_newest_first_search_and_continue() -> None:
             access_token="at", folder_path="/Apps/WahooFitness", urlopen=urlopen
         )
     )
-    assert [f.name for f in files] == ["newer.fit", "older.fit"]
-    assert any("search/continue_v2" in u for u in calls)
+    # Missing timestamps sort ahead of dated files; page order does not.
+    assert [f.name for f in files] == ["undated.fit", "newer.fit", "older.fit"]
+    assert any("list_folder/continue" in u for u in calls)
 
 
 def test_iter_activity_files_has_more_without_cursor_raises() -> None:
     def urlopen(req: Any, timeout: float = 0) -> _FakeResp:  # noqa: ARG001
         payload = {
-            "matches": [],
+            "entries": [],
             "has_more": True,
         }
         return _FakeResp(json.dumps(payload).encode())
