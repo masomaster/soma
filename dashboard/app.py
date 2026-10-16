@@ -835,7 +835,10 @@ def _readiness_meta(score: Any) -> tuple[str, str]:
 
 
 def _pace_light_card(title: str, domain: Mapping[str, Any] | None) -> None:
-    """Render a single workload-pace traffic light with supporting metrics."""
+    """Render a single workload-pace traffic light with supporting metrics.
+
+    Leads with vs 4-week avg % — that comparison sets the green/yellow/red light.
+    """
     if not domain:
         st.caption(f"{title}: no data yet")
         return
@@ -843,18 +846,18 @@ def _pace_light_card(title: str, domain: Mapping[str, Any] | None) -> None:
     label = str(domain.get("label") or "Building baseline")
     st.markdown(f"### {emoji} {title}", help=pace_status_message(domain))
     st.caption(label)
-    load = domain.get("acute_load")
     unit = str(domain.get("load_unit") or "")
-    if load is not None:
-        st.metric("Last 7 days", _fmt(load, suffix=f" {unit}"))
-    avg = domain.get("four_week_avg_load")
-    if isinstance(avg, (int, float)):
-        st.caption(f"4-week avg: {_fmt(avg, suffix=f' {unit}')}")
     vs = domain.get("vs_monthly_avg_pct")
+    avg = domain.get("four_week_avg_load")
     if isinstance(vs, (int, float)):
-        st.caption(f"Vs 4-week avg: {vs:+.1f}%")
+        st.metric("Vs 4-week avg", f"{vs:+.1f}%")
     elif avg is None:
         st.caption("4-week average not ready yet")
+    load = domain.get("acute_load")
+    if load is not None:
+        st.caption(f"Last 7 days: {_fmt(load, suffix=f' {unit}')}")
+    if isinstance(avg, (int, float)):
+        st.caption(f"4-week avg: {_fmt(avg, suffix=f' {unit}')}")
 
 
 def _render_workload_pace_lights(workload_pace: dict[str, Any] | None) -> None:
@@ -2606,22 +2609,26 @@ def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
     _render_workout_calendar(ctx, mode)
 
     c = st.columns(4)
-    c[0].metric("Lifting · last 7d", _fmt(lifting.get("acute_load"), suffix=" lb"))
-    c[1].metric("Cardio · last 7d", _fmt(cardio.get("acute_load"), suffix=" min"))
 
-    def _acwr_txt(domain: Mapping[str, Any]) -> str:
-        v = domain.get("acwr")
-        return f"{v:.2f}" if isinstance(v, (int, float)) else "—"
+    def _vs_4wk_txt(domain: Mapping[str, Any]) -> str:
+        v = domain.get("vs_monthly_avg_pct")
+        return f"{v:+.1f}%" if isinstance(v, (int, float)) else "—"
 
-    c[2].metric(
-        "Lifting ACWR",
-        _acwr_txt(lifting),
-        help="Last 7 days ÷ average of the prior four 7-day windows. Yellow/red = overload only; underload stays green.",
+    c[0].metric(
+        "Lifting vs 4-wk",
+        _vs_4wk_txt(lifting),
+        help="Last 7 days of lifting volume versus the average of the prior four 7-day windows. Sets the lifting pace light (yellow/red = overload only).",
     )
+    c[1].metric(
+        "Cardio vs 4-wk",
+        _vs_4wk_txt(cardio),
+        help="Last 7 days of running mileage versus the average of the prior four 7-day windows. Sets the cardio pace light — minutes do not count.",
+    )
+    c[2].metric("Lifting · last 7d", _fmt(lifting.get("acute_load"), suffix=" lb"))
     c[3].metric(
-        "Cardio ACWR",
-        _acwr_txt(cardio),
-        help="Last 7 days ÷ average of the prior four 7-day windows. Yellow/red = overload only; underload stays green.",
+        "Running · last 7d",
+        _fmt(cardio.get("acute_load"), suffix=" mi"),
+        help="Running mileage in the last 7 days (same series as the cardio pace light).",
     )
 
     wow = strength_progress.get("week_over_week_change_pct")
@@ -2661,12 +2668,13 @@ def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
         with st.container(border=True):
             st.markdown("**Cardio minutes · by calendar week**")
             _chart(
-                _pace_weekly_df(workload_pace, "cardio"),
+                _pace_weekly_df(workload_pace, "cardio_minutes"),
                 {"load": "Minutes"},
                 grain="week",
                 empty="No cardio weeks yet.",
                 y_title="min",
             )
+            st.caption("Tracking only — minutes do not set the cardio pace light.")
         with st.container(border=True):
             st.markdown("**Lifting volume · by calendar week**")
             _chart(
@@ -2678,11 +2686,13 @@ def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
             )
     with right:
         with st.container(border=True):
-            st.markdown("**Cardio ACWR · by calendar week**")
+            st.markdown("**Running mileage ACWR · by calendar week**")
             _acwr_band_chart(_pace_weekly_df(workload_pace, "cardio"))
+            st.caption("Cardio pace light uses running miles vs the 4-week average.")
         with st.container(border=True):
             st.markdown("**Lifting ACWR · by calendar week**")
             _acwr_band_chart(_pace_weekly_df(workload_pace, "lifting"))
+            st.caption("Lifting pace light uses volume vs the 4-week average.")
 
     st.markdown("###### Weekly activity · by calendar week (separate scales)")
     week_cols = st.columns(3)
@@ -2722,7 +2732,9 @@ def _tab_training(ctx: dict, mdf, fdf, wdf, mode: str) -> None:
     with pace_row[0]:
         _render_pace_charts(workload_pace, domain_key="lifting", title="Lifting", load_label="lb")
     with pace_row[1]:
-        _render_pace_charts(workload_pace, domain_key="cardio", title="Cardio", load_label="min")
+        _render_pace_charts(
+            workload_pace, domain_key="cardio", title="Running (cardio light)", load_label="mi"
+        )
 
     st.markdown("###### Running & cycling · by calendar week")
     cardio_pace_row = st.columns(2)

@@ -133,4 +133,9 @@ def test_workload_pace_ignores_fitbit_walk_inflation():
         cardio_events=cardio,
         as_of=as_of,
     )
-    assert summary["cardio"]["acute_load"] == 60.0
+    # Cardio light is running miles only — a Fitbit walk + ride contribute 0 mi.
+    assert summary["cardio"]["acute_load"] == 0.0
+    # Minutes tracking still records the ride (walk excluded by training-load filter).
+    minute_loads = [r["load"] for r in summary["cardio_minutes"]["weekly_rollups"]]
+    assert 60.0 in minute_loads
+    assert 300.0 not in minute_loads

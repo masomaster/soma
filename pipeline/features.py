@@ -28,6 +28,8 @@ from pipeline.cardio_quality import (
     DEFAULT_RUN_PACE_MAX_SEC_MI,
     DEFAULT_RUN_PACE_MIN_SEC_MI,
     assess_cardio_quality,
+    cardio_mode,
+    is_overrecorded_distance,
     is_strength_like_cardio_activity,
 )
 from pipeline.sleep_score import DEFAULT_SLEEP_NEED_HOURS, compute_sleep_score
@@ -240,18 +242,27 @@ def calendar_week_strength_volume(
 
 
 def _cardio_training_load(
-    cardio_events: Sequence[Mapping[str, Any]], *, as_of: date
+    cardio_events: Sequence[Mapping[str, Any]],
+    *,
+    as_of: date,
+    run_pace_min_sec_mi: float = DEFAULT_RUN_PACE_MIN_SEC_MI,
 ) -> dict[str, Any]:
-    """Legacy cardio windows plus ``training_load_cardio_minutes_*`` (7d + 28d)."""
+    """Legacy cardio windows plus ``training_load_cardio_minutes_*`` (7d + 28d).
+
+    ``acute_chronic_ratio`` is **running mileage** (7d ÷ 28d weekly avg), not
+    minutes — minutes still feed training_load / session counts for tracking, but
+    overload flags and readiness use mileage so cycling/walk minutes cannot trip
+    the cardio light.
+    """
     # Lazy import avoids features ↔ cardio_training_load ↔ apple_health_cardio_dedup cycle.
     from pipeline.cardio_training_load import filter_cardio_for_training_load
 
     sessions_7d: set[date] = set()
     minutes_7d = 0.0
     minutes_14d = 0.0
-    minutes_acute = 0.0
-    minutes_chronic = 0.0
     minutes_28d = 0.0
+    run_miles_acute = 0.0
+    run_miles_chronic = 0.0
     for ev in filter_cardio_for_training_load(cardio_events):
         d = _as_date(ev.get("event_date"))
         if d is None:
@@ -260,14 +271,23 @@ def _cardio_training_load(
         if _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS):
             sessions_7d.add(d)
             minutes_7d += minutes
-            minutes_acute += minutes
         if _in_window(d, as_of=as_of, days=14):
             minutes_14d += minutes
         if _in_window(d, as_of=as_of, days=CHRONIC_WINDOW_DAYS):
-            minutes_chronic += minutes
             minutes_28d += minutes
-    chronic_weekly_avg = minutes_chronic / (CHRONIC_WINDOW_DAYS / ACUTE_WINDOW_DAYS)
-    acwr = round(minutes_acute / chronic_weekly_avg, 3) if chronic_weekly_avg > 0 else None
+        if cardio_mode(ev.get("activity_type")) != "running":
+            continue
+        if is_overrecorded_distance(ev, run_pace_min_sec_mi=run_pace_min_sec_mi):
+            continue
+        miles = _num(ev.get("distance_miles")) or 0.0
+        if _in_window(d, as_of=as_of, days=ACUTE_WINDOW_DAYS):
+            run_miles_acute += miles
+        if _in_window(d, as_of=as_of, days=CHRONIC_WINDOW_DAYS):
+            run_miles_chronic += miles
+    chronic_weekly_avg = run_miles_chronic / (CHRONIC_WINDOW_DAYS / ACUTE_WINDOW_DAYS)
+    acwr = (
+        round(run_miles_acute / chronic_weekly_avg, 3) if chronic_weekly_avg > 0 else None
+    )
     return {
         "cardio_sessions_7d": len(sessions_7d),
         "cardio_minutes_7d": round(minutes_7d, 2),
@@ -484,7 +504,13 @@ def compute_daily_features(
     """
     features: dict[str, Any] = {"user_id": user_id, "feature_date": feature_date}
     features.update(_strength_training_load(strength_events, as_of=feature_date))
-    features.update(_cardio_training_load(cardio_events, as_of=feature_date))
+    features.update(
+        _cardio_training_load(
+            cardio_events,
+            as_of=feature_date,
+            run_pace_min_sec_mi=run_pace_min_sec_mi,
+        )
+    )
     features.update(
         _cardio_quality_features(
             cardio_events,

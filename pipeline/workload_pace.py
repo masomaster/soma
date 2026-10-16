@@ -7,12 +7,19 @@ Indicators follow sports-science load-monitoring practice:
   7-day windows (28-day chronic baseline). Sweet spot ≈ 0.8–1.3; elevated
   injury-risk signal above ~1.5; underload below ~0.8.
 - **Vs 4-week average %:** the same chronic baseline expressed as a percent
-  delta. This is what sets the pace light.
+  delta. This is what sets the pace light (listed first in briefing/dashboard).
 - **Week-over-week % change:** last 7 days vs the prior 7 days. Kept on the
   series for charts. It does not move the light.
 
 **Pace lights** always use rolling windows ending on ``as_of`` (today), not a
 stale completed calendar week. Calendar-week series remain available for charts.
+
+Domain loads that drive lights:
+
+- **Lifting** — working-set volume (lb) last 7d vs the prior four 7d averages.
+- **Cardio** — **running mileage only** (mi). Cardio minutes and cycling are
+  tracked for charts but do not move the green/yellow/red light or overload
+  copy.
 
 Traffic lights (versus the 4-week average only):
 
@@ -21,9 +28,10 @@ Traffic lights (versus the 4-week average only):
 - **Red** — high versus the 4-week average; ease up.
 
 Strength-typed Apple Health workouts and Fitbit/Health Sync NEAT walks are
-excluded from cardio minutes so they are not double-counted against Hevy
-lifting volume or inflate overload lights. Query-time near-dup collapse covers
-historical Apple/Strava/Wahoo mirrors still present in the DB.
+excluded from cardio minutes rollups so they are not double-counted against
+Hevy lifting volume. Over-recorded run distances are excluded from mileage.
+Query-time near-dup collapse covers historical Apple/Strava/Wahoo mirrors
+still present in the DB.
 """
 
 from __future__ import annotations
@@ -459,21 +467,13 @@ def build_workload_pace_summary(
         ),
     )
 
+    # Minutes stay available for tracking charts; they do not set the light.
     cardio_minutes_weekly = weekly_load_rollups(
         cardio_for_load,
         as_of=as_of,
         weeks=lookback_weeks,
         week_load_fn=lambda ev, week_start: calendar_week_cardio_load(
             ev, week_start=week_start, mode=None, metric="minutes"
-        ),
-    )
-    cardio = _domain_block(
-        load_unit="min",
-        weekly_rollups=cardio_minutes_weekly,
-        as_of=as_of,
-        th=th,
-        load_fn=lambda start, end: window_cardio_load(
-            cardio_for_load, start=start, end=end, mode=None, metric="minutes"
         ),
     )
 
@@ -489,6 +489,22 @@ def build_workload_pace_summary(
             run_pace_min_sec_mi=run_pace_min_sec_mi,
         ),
     )
+    # Cardio pace light = running mileage vs the rolling 4-week average only.
+    cardio = _domain_block(
+        load_unit="mi",
+        weekly_rollups=running_miles_weekly,
+        as_of=as_of,
+        th=th,
+        load_fn=lambda start, end: window_cardio_load(
+            cardio_for_load,
+            start=start,
+            end=end,
+            mode="running",
+            metric="miles",
+            run_pace_min_sec_mi=run_pace_min_sec_mi,
+        ),
+    )
+
     cycling_miles_weekly = weekly_load_rollups(
         cardio_for_load,
         as_of=as_of,
@@ -505,6 +521,10 @@ def build_workload_pace_summary(
         "as_of": as_of.isoformat(),
         "lifting": lifting,
         "cardio": cardio,
+        "cardio_minutes": {
+            "load_unit": "min",
+            "weekly_rollups": cardio_minutes_weekly,
+        },
         "running": {
             "load_unit": "mi",
             "weekly_rollups": running_miles_weekly,
@@ -517,11 +537,17 @@ def build_workload_pace_summary(
 
 
 def pace_status_message(domain: Mapping[str, Any]) -> str:
-    """One-line summary of load versus the rolling 4-week average."""
+    """One-line summary of load versus the rolling 4-week average.
+
+    Leads with the vs-4-week change — the metric that sets the light.
+    """
     status = str(domain.get("status") or "unknown")
     label = str(domain.get("label") or _label_for(status, domain.get("direction")))  # type: ignore[arg-type]
     emoji = str(domain.get("emoji") or _STATUS_EMOJI.get(status, "⚪"))  # type: ignore[arg-type]
     bits: list[str] = [f"{emoji} {label}"]
+    vs = domain.get("vs_monthly_avg_pct")
+    if isinstance(vs, (int, float)):
+        bits.append(f"{vs:+.1f}% vs 4-wk avg")
     acute = domain.get("acute_load")
     avg = domain.get("four_week_avg_load")
     unit = str(domain.get("load_unit") or "").strip()
@@ -529,15 +555,13 @@ def pace_status_message(domain: Mapping[str, Any]) -> str:
         bits.append(f"{acute:g} {unit} last 7d".strip())
     if isinstance(avg, (int, float)):
         bits.append(f"4-wk avg {avg:g} {unit}".strip())
-    vs = domain.get("vs_monthly_avg_pct")
-    if isinstance(vs, (int, float)):
-        bits.append(f"{vs:+.1f}% vs 4-wk avg")
     return " · ".join(bits)
 
 
 def format_load_vs_four_week(domain: Mapping[str, Any]) -> str | None:
     """Glance value: last-7-day load against the rolling 4-week average.
 
+    Leads with the percent change versus the 4-week average (the light signal).
     Omits the traffic-light emoji. A yellow/red label is appended only when
     the 7-day load is high versus that average.
     """
@@ -546,15 +570,16 @@ def format_load_vs_four_week(domain: Mapping[str, Any]) -> str | None:
         return None
     unit = str(domain.get("load_unit") or "").strip()
     unit_suffix = f" {unit}" if unit else ""
-    parts = [f"{acute:g}{unit_suffix} last 7d"]
+    parts: list[str] = []
+    vs = domain.get("vs_monthly_avg_pct")
+    if isinstance(vs, (int, float)):
+        parts.append(f"{vs:+.1f}% vs 4-wk avg")
+    parts.append(f"{acute:g}{unit_suffix} last 7d")
     avg = domain.get("four_week_avg_load")
     if isinstance(avg, (int, float)):
         parts.append(f"4-wk avg {avg:g}{unit_suffix}")
     else:
         parts.append("4-week average not ready")
-    vs = domain.get("vs_monthly_avg_pct")
-    if isinstance(vs, (int, float)):
-        parts.append(f"{vs:+.1f}% vs 4-wk avg")
     status = str(domain.get("status") or "")
     label = domain.get("label")
     if status in {"yellow", "red"} and label:

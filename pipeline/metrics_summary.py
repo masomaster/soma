@@ -1,8 +1,10 @@
 """Deterministic "At a Glance" metrics summary for the daily briefing.
 
-The daily briefing **leads** with weight trend and last-7-day training load
-versus the rolling 4-week average. Per ``.cursor/rules/soma.mdc`` these numbers
-are PRE-COMPUTED. The LLM never produces them; it only narrates afterwards.
+The daily briefing **leads** with weight trend, then cardio/lifting load
+versus the rolling 4-week average (percent change first — that is what sets
+the pace light). Cardio uses **running mileage**; lifting uses working-set
+volume. Per ``.cursor/rules/soma.mdc`` these numbers are PRE-COMPUTED. The LLM
+never produces them; it only narrates afterwards.
 
 Recovery metrics, session counts, and week-over-week pace lights are not
 rendered here. A weight line is always present (``No weigh-in logged`` when

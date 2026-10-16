@@ -108,7 +108,7 @@ def test_underload_is_green_not_yellow():
 def test_build_workload_pace_summary_cardio_acwr_green_zone():
     as_of = date(2024, 6, 16)
     events: list[dict] = []
-    # One 60-min session at the end of acute + each of the four prior 7d windows.
+    # One 5-mi run at the end of acute + each of the four prior 7d windows.
     for back in range(4, -1, -1):
         end = as_of - timedelta(days=7 * back)
         events.append(
@@ -121,10 +121,12 @@ def test_build_workload_pace_summary_cardio_acwr_green_zone():
         )
     summary = build_workload_pace_summary(strength_events=[], cardio_events=events, as_of=as_of)
     cardio = summary["cardio"]
+    assert cardio["load_unit"] == "mi"
     assert cardio["status"] == "green"
     assert cardio["acwr"] is not None
     assert 0.8 <= cardio["acwr"] <= 1.3
     assert cardio["direction"] in (None, "low")
+    assert cardio["acute_load"] == 5.0
 
 
 def test_steady_cardio_not_red_from_stale_calendar_week():
@@ -133,20 +135,54 @@ def test_steady_cardio_not_red_from_stale_calendar_week():
     events: list[dict] = []
     # Big completed calendar week far in the past (Jun 24–30) should not drive status.
     events.append(
-        _cardio_row(event_date=date(2024, 6, 29), activity_type="Run", duration_min=200)
+        _cardio_row(
+            event_date=date(2024, 6, 29),
+            activity_type="Run",
+            duration_min=200,
+            distance_miles=20.0,
+        )
     )
-    # Steady recent rolling windows at ~60 min each.
+    # Steady recent rolling windows at ~5 mi each.
     for back in range(4, 0, -1):
         end = as_of - timedelta(days=7 * back)
         events.append(
-            _cardio_row(event_date=end, activity_type="Run", duration_min=60)
+            _cardio_row(
+                event_date=end, activity_type="Run", duration_min=60, distance_miles=5.0
+            )
         )
-    events.append(_cardio_row(event_date=as_of, activity_type="Run", duration_min=60))
+    events.append(
+        _cardio_row(event_date=as_of, activity_type="Run", duration_min=60, distance_miles=5.0)
+    )
     summary = build_workload_pace_summary(strength_events=[], cardio_events=events, as_of=as_of)
     cardio = summary["cardio"]
     assert cardio["status"] == "green"
-    assert cardio["acute_load"] == 60.0
+    assert cardio["acute_load"] == 5.0
     assert cardio["direction"] in (None, "low")
+
+
+def test_cardio_light_ignores_non_run_minutes():
+    """Long rides must not trip the cardio pace light — only running mileage counts."""
+    as_of = date(2024, 6, 16)
+    events: list[dict] = []
+    for back in range(4, 0, -1):
+        end = as_of - timedelta(days=7 * back)
+        events.append(
+            _cardio_row(
+                event_date=end, activity_type="Run", duration_min=40, distance_miles=4.0
+            )
+        )
+    # Huge bike volume in the acute window; running stays flat at 4 mi.
+    events.append(
+        _cardio_row(event_date=as_of, activity_type="Ride", duration_min=300, distance_miles=80.0)
+    )
+    events.append(
+        _cardio_row(event_date=as_of, activity_type="Run", duration_min=40, distance_miles=4.0)
+    )
+    summary = build_workload_pace_summary(strength_events=[], cardio_events=events, as_of=as_of)
+    cardio = summary["cardio"]
+    assert cardio["acute_load"] == 4.0
+    assert cardio["status"] == "green"
+    assert summary["cardio_minutes"]["weekly_rollups"]
 
 
 def test_strength_typed_cardio_excluded_from_cardio_minutes():
@@ -180,11 +216,13 @@ def test_return_from_rest_without_four_week_baseline_stays_unknown():
     """A first session after empty weeks is not a week-to-week overload."""
     as_of = date(2024, 7, 11)
     events = [
-        _cardio_row(event_date=as_of, activity_type="Run", duration_min=60),
+        _cardio_row(
+            event_date=as_of, activity_type="Run", duration_min=60, distance_miles=5.0
+        ),
     ]
     summary = build_workload_pace_summary(strength_events=[], cardio_events=events, as_of=as_of)
     cardio = summary["cardio"]
-    assert cardio["acute_load"] == 60.0
+    assert cardio["acute_load"] == 5.0
     assert cardio["four_week_avg_load"] is None
     assert cardio["wow_change_pct"] is None
     assert cardio["status"] == "unknown"
@@ -220,9 +258,9 @@ def test_pace_status_message_uses_four_week_average():
         "status": "yellow",
         "emoji": "🟡",
         "label": "Cautious — ease up a little",
-        "load_unit": "min",
-        "acute_load": 180,
-        "four_week_avg_load": 140,
+        "load_unit": "mi",
+        "acute_load": 18,
+        "four_week_avg_load": 14,
         "acwr": 1.35,
         "wow_change_pct": 12.0,
         "vs_monthly_avg_pct": 28.6,
@@ -231,3 +269,5 @@ def test_pace_status_message_uses_four_week_average():
     assert "🟡" in msg
     assert "vs 4-wk avg" in msg
     assert "WoW" not in msg
+    # Change over four weeks leads the numeric summary.
+    assert msg.index("+28.6% vs 4-wk avg") < msg.index("18 mi last 7d")

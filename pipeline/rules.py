@@ -192,7 +192,7 @@ def evaluate(
                 code="HIGH_TRAINING_LOAD",
                 severity="alert",
                 message=(
-                    f"Acute:chronic training load is {acwr:.2f}, above the "
+                    f"Acute:chronic running mileage is {acwr:.2f}, above the "
                     f"{th['max_acute_chronic_ratio']:.1f} injury-risk threshold."
                 ),
                 evidence={

@@ -146,10 +146,10 @@ def test_build_glance_metrics_shows_load_against_four_week_average():
             },
             workload_pace={
                 "cardio": {
-                    "acute_load": 180,
-                    "four_week_avg_load": 140,
+                    "acute_load": 18,
+                    "four_week_avg_load": 14,
                     "vs_monthly_avg_pct": 28.6,
-                    "load_unit": "min",
+                    "load_unit": "mi",
                     "status": "yellow",
                     "label": "Cautious — ease up a little",
                 },
@@ -166,9 +166,11 @@ def test_build_glance_metrics_shows_load_against_four_week_average():
     )
     assert metrics["Body weight"] == "165.0 lb · 7-day avg 165.2 lb"
     assert "−0.8 lb" in metrics["Weight vs 4-week avg"] or "-0.8 lb" in metrics["Weight vs 4-week avg"]
-    assert metrics["Cardio load"].startswith("180 min last 7d")
-    assert "4-wk avg 140 min" in metrics["Cardio load"]
+    assert metrics["Cardio load"].startswith("+28.6% vs 4-wk avg")
+    assert "18 mi last 7d" in metrics["Cardio load"]
+    assert "4-wk avg 14 mi" in metrics["Cardio load"]
     assert "Cautious" in metrics["Cardio load"]
+    assert metrics["Lifting load"].startswith("-4.8% vs 4-wk avg")
     assert "Good to go" not in metrics["Lifting load"]
     assert "4-wk avg 4200 lb" in metrics["Lifting load"]
 
