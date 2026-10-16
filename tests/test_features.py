@@ -54,10 +54,16 @@ def test_compute_daily_features_windows_and_readiness():
         {"event_date": _d(0), "set_type": "warmup", "reps": 10, "weight_lbs": 40},
         {"event_date": _d(2), "set_type": "working", "reps": 8, "weight_lbs": 50},
     ]
+    # Distances keep the same 7:13 acute:chronic shape as minutes so ACWR stays 2.154.
     cardio = [
-        {"event_date": _d(0), "duration_min": 30},
-        {"event_date": _d(3), "duration_min": 40},
-        {"event_date": _d(20), "duration_min": 60},  # chronic window only
+        {"event_date": _d(0), "duration_min": 30, "activity_type": "Run", "distance_miles": 3.0},
+        {"event_date": _d(3), "duration_min": 40, "activity_type": "Run", "distance_miles": 4.0},
+        {
+            "event_date": _d(20),
+            "duration_min": 60,
+            "activity_type": "Run",
+            "distance_miles": 6.0,
+        },  # chronic window only
     ]
 
     f = F.compute_daily_features(
@@ -91,7 +97,7 @@ def test_compute_daily_features_windows_and_readiness():
     assert f["cardio_sessions_7d"] == 2
     assert f["cardio_minutes_7d"] == 70.0
     assert f["cardio_minutes_14d"] == 70.0
-    # acute=70, chronic=130 over 28d -> weekly avg 32.5 -> 70/32.5
+    # acute=7 mi, chronic=13 mi over 28d -> weekly avg 3.25 -> 7/3.25
     assert f["acute_chronic_ratio"] == 2.154
     assert f["sleep_debt_7d"] == 7.0  # (8-7) * 7 days
     assert f["hrv_suppressed_days"] == 1  # only the 30ms day is below 0.85 * baseline
@@ -105,11 +111,11 @@ def test_readiness_uses_configurable_acwr_threshold():
         for i in range(7)
     ]
     cardio = [
-        {"event_date": _d(0), "duration_min": 30},
-        {"event_date": _d(3), "duration_min": 40},
-        {"event_date": _d(20), "duration_min": 60},
+        {"event_date": _d(0), "duration_min": 30, "activity_type": "Run", "distance_miles": 3.0},
+        {"event_date": _d(3), "duration_min": 40, "activity_type": "Run", "distance_miles": 4.0},
+        {"event_date": _d(20), "duration_min": 60, "activity_type": "Run", "distance_miles": 6.0},
     ]
-    # ACWR ~2.15; with a raised threshold of 3.0 the training-load penalty is skipped.
+    # ACWR ~2.15 on running miles; with a raised threshold of 3.0 the penalty is skipped.
     f = F.compute_daily_features(
         user_id="u1",
         feature_date=RUN,
@@ -121,6 +127,19 @@ def test_readiness_uses_configurable_acwr_threshold():
     )
     # 100 - min(40, 7*4=28) - min(40, 1*8) = 64 (no -20 ACWR penalty)
     assert f["overall_readiness_score"] == 64.0
+
+
+def test_acute_chronic_ratio_ignores_non_run_minutes():
+    """Cycling/walk minutes must not inflate the cardio overload ratio."""
+    cardio = [
+        {"event_date": _d(0), "duration_min": 120, "activity_type": "Ride", "distance_miles": 30.0},
+        {"event_date": _d(0), "duration_min": 30, "activity_type": "Run", "distance_miles": 3.0},
+        {"event_date": _d(20), "duration_min": 30, "activity_type": "Run", "distance_miles": 3.0},
+    ]
+    f = F.compute_daily_features(user_id="u1", feature_date=RUN, cardio_events=cardio)
+    # acute 3 mi; chronic 6 mi over 28d → weekly avg 1.5 → ACWR 2.0 (ride ignored).
+    assert f["cardio_minutes_7d"] == 150.0
+    assert f["acute_chronic_ratio"] == 2.0
 
 
 def test_compute_daily_features_handles_empty_inputs():
